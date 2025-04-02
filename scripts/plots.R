@@ -1,0 +1,246 @@
+#!/usr/bin/env Rscript
+# Plot benchmark and test results
+library(tidyverse)
+library(ggpubr)
+dir.create("plots", showWarnings = FALSE)
+
+theme_set(theme_pubclean() + theme(legend.position = 'right',
+                                   plot.title = element_text(hjust = 0.5),
+                                   plot.subtitle = element_text(hjust = 0.5),
+                                   strip.background = element_blank(),
+                                   legend.key = element_blank()))
+
+# Correctness tests
+test_pairs <- tribble(
+  ~observed, ~expected,
+  "exact_sensor_align", "grna_sensor",
+  "exact_sensor_align_paired", "grna_sensor",
+  "exact_sensor_inframe", "grna_sensor",
+  "exact_sensor_inframe_paired", "grna_sensor",
+  "exact_sensor_pattern", "grna_sensor",
+  "exact_sensor_pattern_paired", "grna_sensor",
+  "pegrna_exact_align", "pegrna",
+  "pegrna_exact_align_paired", "pegrna",
+  "pegrna_exact_pattern", "pegrna",
+  "pegrna_exact_pattern_paired", "pegrna",
+  "hamming_sensor_inframe", "grna_sensor",
+  "levenshtein_sensor_inframe", "grna_sensor",
+  "bounded-levenshtein_sensor_inframe", "grna_sensor"
+)
+
+test_pair <- function(observed, expected) {
+  true_counts <- read_tsv(str_c("tests/", expected, ".true_counts.tsv"))
+  obs_counts <- read_tsv(str_c("tests/", observed, ".counts.tsv"))
+  
+  reg_names <- select(true_counts, -group, -ends_with("_nearest"), -combination_status, -combinations_in_library, -combination_indexes, -count) %>%
+    colnames()
+  
+  true_exact <- apply(select(true_counts, one_of(reg_names)) == select(true_counts, ends_with("_nearest")), 1, all)
+  
+  # Test region extraction
+  all_obs <- full_join(
+    obs_counts,
+    select(true_counts, -ends_with("_nearest"), -combination_status, -combinations_in_library, -combination_indexes) %>% rename(true_count = count)
+  ) %>%
+    mutate(observed = observed, expected = expected, id = str_c("i", 1:n()), split = "all_regions") %>%
+    select(observed, expected, split, id, combination_status, count, true_count)
+  
+  lib_file <- str_c("tests/", observed, ".library_counts.tsv")
+  if (file.exists(lib_file)) {
+    all_obs <- full_join(
+      read_tsv(lib_file),
+      select(true_counts, group, ends_with("_nearest"), true_count = count) %>%
+        rename_with(~str_remove(., "_nearest"), ends_with("_nearest")) %>%
+        count(across(c(-true_count)), wt = true_count, name = "true_count")
+    ) %>%
+      mutate(observed = observed, expected = expected, id = str_c("i", 1:n()), split = "library") %>%
+      select(observed, expected, split, id, combination_status, count, true_count) %>%
+      bind_rows(all_obs, .)
+  }
+  
+  summary_file <- str_c("tests/", observed, ".summary.tsv")
+  if (file.exists(summary_file)) {
+    all_obs <- full_join(
+      read_tsv(summary_file),
+      select(true_counts, combination_status, true_count = count) %>%
+        mutate(combination_status = if_else(
+          combination_status %in% c("match", "recombination"),
+          str_c(if_else(true_exact, "exact", "nearest"), "_", combination_status),
+          combination_status
+        )) %>%
+        count(combination_status, wt = true_count, name = "true_count"),
+      by = join_by(metric == combination_status)
+    ) %>%
+      filter(!metric == "total") %>%
+      mutate(observed = observed, expected = expected, id = metric, split = "summary") %>%
+      select(observed, expected, split, id, count, true_count) %>%
+      bind_rows(all_obs, .)
+  }
+  
+  all_obs
+}
+quiet_test <- purrr::quietly(test_pair)
+
+test_counts <- map2(test_pairs$observed, test_pairs$expected, ~quiet_test(.x, .y)$result) %>%
+  bind_rows() %>%
+  replace_na(replace = list(count = 0, true_count = 0))
+
+category_colours <- c(
+  "match" = "green", "exact_match" = "green", "nearest_match" = "darkgreen",
+  "mismatch" = "orange", "nonmatch" = "red", 
+  "recombination" = "blue", "exact_recombination" = "blue", "nearest_recombination" = "darkblue",
+  "low_mean_quality" = "brown", "bad_alignment" = "grey", "multimatch" = "purple"
+)
+
+p_all_scatter <- filter(test_counts, split == "all_regions") %>%
+  ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
+  facet_wrap(~observed, scales = "free") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_point(shape = 20) +
+  scale_x_continuous(transform = "pseudo_log") +
+  scale_y_continuous(transform = "pseudo_log") +
+  scale_colour_manual(values = category_colours) +
+  labs(x = "Simulated Count", y = "Observed Count")
+ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height = 30, width = 30)
+
+p_library_scatter <- filter(test_counts, split == "library") %>%
+  ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
+  facet_wrap(~observed, scales = "free") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_point(shape = 20) +
+  scale_x_continuous(transform = "pseudo_log") +
+  scale_y_continuous(transform = "pseudo_log") +
+  scale_colour_manual(values = category_colours) +
+  labs(x = "Simulated Count", y = "Observed Count")
+ggsave("plots/test_library_scatter.png", p_library_scatter, units = "cm", height = 30, width = 30)
+
+p_summary_scatter <- filter(test_counts, split == "summary") %>%
+  filter(!id == "uncompared") %>%
+  pivot_longer(c(count, true_count), names_to = "group", values_to = "count") %>%
+  mutate(group = c(count = "Observed", true_count = "Expected")[group],
+         id = factor(id, levels = names(category_colours))) %>%
+  ggplot(aes(x = group, y = count, fill = id)) +
+  facet_wrap(~observed) +
+  geom_col(position = position_stack(), width = 0.7) +
+  scale_fill_manual(name = "", values = category_colours) +
+  labs(x = "", y = "Count")
+ggsave("plots/test_summary_scatter.png", p_summary_scatter, units = "cm", height = 30, width = 30)
+
+count_cors <- filter(test_counts, split == "all_regions") %>%
+  group_by(observed) %>%
+  group_modify(~broom::tidy(cor.test(.$count, .$true_count)))
+
+p_test_cors <- ggplot(count_cors, aes(y = observed, x = estimate, xmin = conf.low, xmax = conf.high)) +
+  geom_col(fill = "#377eb8", width = 0.6) +
+  geom_errorbarh(height = 0.3) +
+  labs(x = "Pearson's r", y = "") +
+  theme(panel.grid.major.x = element_line(colour = "grey", linetype = "dotted"),
+        panel.grid.major.y = element_blank(),
+        axis.ticks.y = element_blank())
+ggsave("plots/test_observed_expected_correlation.png", p_test_cors, units = "cm", height = 12, width = 16)
+  
+# Benchmarks
+na_or_zero <- function(x) {
+  if_else(is.na(x), 0, x)
+}
+
+time_label <- function(x) {
+  out <- str_c(x, "s")
+  out[x >= 60] <- str_c(round(x[x >= 60]/60, 1), "min")
+  out[x >= 3600] <- str_c(round(x[x >= 3600]/3600, 1), "h")
+  return(out)
+}
+
+# Captures any number of benchmark TSVs called bench1, bench2, ...
+bench_cols <- c(
+  "name", "fwd", "rev", "lib_spec", "mode", "metric",
+  "no_cache", "sort", "group", "library_counts",
+  "library_size", "read_length", "additional_args",
+  "total_time", "reads", "region_time", "region_rate",
+  "unique_regions", "library_time", "library_rate",
+  "summary_size", "summary_time", "summary_rate"
+)
+benchmark <- dir("benchmark/", pattern = "bench[0-9]*.tsv", full.names = TRUE) %>%
+  set_names(1:length(.)) %>%
+  map(read_tsv, col_names = bench_cols, skip = 1) %>%
+  bind_rows(.id = "rep")
+
+p_format <- filter(benchmark, str_detect(name, "Format")) %>%
+  select(rep, name, total_time, region_time) %>%
+  mutate(format = c("Format (fq)"="Fastq", "Format (fa)"="Fasta")[name]) %>%
+  pivot_longer(ends_with("time"), names_to = "type", values_to = "time") %>%
+  ggplot(aes(x = format, y = time, fill = rep)) +
+  facet_wrap(~type, nrow = 1, labeller = labeller(type = c(total_time="Total", region_time="Region Extraction"))) +
+  geom_col(position = position_dodge(), width = 0.6) +
+  scale_fill_brewer(name = "Rep", palette = "Dark2") +
+  labs(x = "", y = "Time (s)", caption = "Using inframe matching with simulated 1M read gRNA files")
+ggsave("plots/bench_file_format.png", p_format, units = "cm", height = 12, width = 16)
+
+p_mode <- filter(benchmark, str_detect(name, "Extraction")) %>%
+  mutate(paired = if_else(rev == "None", "Single-end", "Paired-end"),
+         library = str_match(name, "\\((.*)/.*/.*\\)")[,2],
+         library = str_c(str_to_lower(library), "\n(", read_length, "nt)"),
+         mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align"))) %>%
+  select(rep, library, read_length, mode, paired, time = region_time) %>%
+  group_by(library, read_length, mode, paired) %>%
+  summarise(mean = mean(time), min = min(time), max = max(time), .groups = "drop") %>%
+  ggplot(aes(x = library, y = mean, ymin = min, ymax = max, colour = mode, shape = paired, group = mode)) +
+  geom_errorbar(position = position_dodge(width = 0.5), width = 0.5, show.legend = FALSE) +
+  geom_point(position = position_dodge(width = 0.5)) +
+  scale_colour_brewer(name = "", palette = "Set1") +
+  scale_shape_discrete(name = "") +
+  labs(x = "", y = "Region Extraction Time (s)",
+       caption = "Based on simulated 1M read gRNA fastq files with no mutations")
+ggsave("plots/bench_mode.png", p_mode, units = "cm", height = 12, width = 16)
+
+p_metric <- filter(benchmark, str_detect(name, "Library comparison")) %>%
+  select(rep, metric, library_time, library_rate) %>%
+  pivot_longer(c(library_time, library_rate), names_to = "type", values_to = "value") %>%
+  mutate(metric = factor(metric, levels = c("exact", "hamming", "bounded-levenshtein", "levenshtein"))) %>%
+  {
+    ggplot(., aes(x = metric, y = value, fill = metric)) +
+      geom_boxplot(show.legend = FALSE) +
+      facet_wrap(~type, scales = "free_y", strip.position = "left",
+                 labeller = labeller(type = c(library_rate = "Items/s", library_time = "Time (s)"))) +
+      scale_fill_brewer(palette = "Set2") +
+      labs(x = "Distance Metric", y = "",
+           caption = "Based on simulated 1M read gRNA fastq files from a 10k library") +
+      theme(strip.placement = "outside")
+  }
+ggsave("plots/bench_metric.png", p_metric, units = "cm", height = 12, width = 30)
+
+p_lib_size <- filter(benchmark, str_detect(name, "Library size")) %>%
+  select(rep, name, library_size, library_time, library_rate) %>%
+  pivot_longer(c(library_time, library_rate), names_to = "type", values_to = "time") %>%
+  group_by(library_size, type) %>%
+  summarise(mean = mean(time), min = min(time), max = max(time), .groups = "drop") %>%
+  ggplot(aes(x = library_size, y = mean, ymin = min, ymax = max)) +
+  facet_wrap(~type, scales = "free_y", strip.position = "left",
+             labeller = labeller(type = c(library_rate = "Items/s", library_time = "Time (s)"))) +
+  geom_errorbar(width = 2000, show.legend = FALSE) +
+  geom_point() +
+  labs(x = "Library Size", y = "",
+       caption = "Based on simulated 1M read gRNA files with moderate mutation") +
+  theme(strip.placement = "outside")
+ggsave("plots/bench_lib_size.png", p_lib_size, units = "cm", height = 12, width = 16)
+
+p_read_count <- filter(benchmark, str_detect(name, "Sequence file size")) %>%
+  select(rep, name, reads, total_time, region_time, library_time, summary_time) %>%
+  pivot_longer(ends_with("time"), names_to = "type", values_to = "time") %>%
+  group_by(reads, type) %>%
+  summarise(mean = mean(time), min = min(time), max = max(time), .groups = "drop") %>%
+  filter(type != "summary_time") %>%
+  {
+    bar_width <- 0.05 * log10(max(.$reads))
+    ggplot(., aes(x = reads, y = mean, ymin = min, ymax = max, colour = type)) +
+      geom_line() +
+      geom_point() +
+      geom_errorbar(width = bar_width) +
+      scale_y_log10() +
+      scale_x_log10() +
+      scale_colour_brewer(palette = "Set1", labels = c(total_time="Total", region_time="Region Extraction",
+                                                       summary_time="Summarisation", library_time = "Library")) +
+      labs(x = "Number of Reads", y = "Time (s)",
+           caption = "Based on simulated gRNA files using a 10k library with moderate mutation")
+  }
+ggsave("plots/bench_read_count.png", p_read_count, units = "cm", height = 12, width = 16)

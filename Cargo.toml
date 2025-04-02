@@ -1,0 +1,45 @@
+[package]
+name = "dnacomb"
+version = "0.1.0"
+edition = "2024"
+authors = ["Alistair Dunham", "Eric Hidari"]
+description = "Count the occurances of structured sequence reads and compare to an expected library"
+documentation = "https://github.com/allydunham/dnacomb"
+readme = "README.md"
+homepage = "https://github.com/allydunham/dnacomb"
+repository = "https://github.com/allydunham/dnacomb"
+license = "MIT"
+keywords = ["cli", "bioinformatics", "sequencing", "reads", "library"]
+categories = ["command-line-utilities", "science", "bioinformatics"]
+publish = false
+exclude = [
+    "scripts/",
+    "config/",
+    "benchmark/",
+    "tests/"
+]
+
+[lib]
+name = "dnacomb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dnacomb"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+clap = { version = "4.3.19", features = ["derive", "wrap_help"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+bio = "*"
+anyhow = "*"
+csv = "*"
+flate2 = "*"
+regex = "*"
+log = { version = "0.4", features = ["max_level_trace", "release_max_level_info"] }
+env_logger = "*"
+itertools = "*"
+
+[dev-dependencies]

@@ -1,0 +1,9 @@
+*.tsv
+*.csv
+*.fq*
+*.fa*
+/target
+/test
+/benchmark
+/plots
+.Rproj.user
