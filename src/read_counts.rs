@@ -342,7 +342,7 @@ fn merge_seqs(
         (_, RegionCompleteness::Complete) => Ok(Some((r_reg.0, r_reg.2))),
 
         // Both partial in same way - use highest quality
-        // Weird situation but some read trimming could lead her potentially
+        // Weird situation but some read trimming could lead here potentially
         (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial5Prime) => {
             WARN_MERGE.call_once(|| {
                 log::warn!(

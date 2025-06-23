@@ -216,13 +216,8 @@ If you expect observed indels are likely real mutation rather than sequencing er
 
 ### Current limitations
 
-The current release is generally robust but tests show a few situations where observed counts differ from simulated expectations:
-
-* Pattern matching is not robust to mutations in flank sequences, leading to a level of undercounting and lots of non-matches that should be assignable.
-* Paired reads sometimes lead to missed library assignment when the read partially overlaps a region. The regions are still counted just not assigned to the library fully. This can generally be mitigated by pairing reads ahead of processing, which is more robust in any case.
-
-Both cases can be seen in the plots from the integration tests, for instance in the summary counts:
+The current release is generally robust but tests show pattern matching is not robust to mutations in flank sequences, leading to a level of undercounting and lots of non-matches that should be assignable. This can be seen in the plots from the integration tests, for instance in the summary counts:
 
 ![summary counts](plots/test_summary_scatter.png)
 
-We are working on improving these features in upcoming patches.
+We are working on improving this with fuzzy pattern matching in upcoming patches.

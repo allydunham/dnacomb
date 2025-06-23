@@ -43,7 +43,7 @@ def main():
     if not os.path.exists("tests/grna.fq"):
         print("    Basic gRNA library... ", end="")
         generate_test_data(lib_spec="config/grna.json", number=10000, library_size=100,
-                               output="tests/grna")
+                           output="tests/grna")
         print("done")
 
     if not os.path.exists("tests/grna.fa"):

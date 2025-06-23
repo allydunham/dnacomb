@@ -951,12 +951,6 @@ impl Library {
         let query_len = seq.len();
 
         for reg in regions.iter() {
-            // Hamming distance only applicaple for matching length, ignore
-            // non-matching lengths
-            if seq.len() != reg.sequence.len() {
-                continue;
-            }
-
             let reg_end = cmp::min(query_len, reg.sequence.len());
 
             // Use appropriate hamming implemntation (other branch should be
@@ -996,12 +990,6 @@ impl Library {
         let query_len = seq.len();
 
         for reg in regions.iter() {
-            // Hamming distance only applicaple for matching length, ignore
-            // non-matching lengths
-            if seq.len() != reg.sequence.len() {
-                continue;
-            }
-
             let end = reg.sequence.len();
             let start = end.saturating_sub(query_len);
 
