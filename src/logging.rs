@@ -216,9 +216,10 @@ impl ProgressStyle {
     pub fn new(log_fn: Option<Arc<LogFn>>) -> Self {
         Self { log_fn }
     }
+}
 
-    /// Set a custom logging function.
-    pub fn default() -> Self {
+impl Default for ProgressStyle {
+    fn default() -> Self {
         ProgressStyle::new(Some(Arc::new(|msg| info!("{}", msg))))
     }
 }

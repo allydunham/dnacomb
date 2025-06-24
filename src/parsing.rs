@@ -13,6 +13,8 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::str;
 
+use crate::errors::{FastaError, ReadPairError};
+
 pub type ReadKey = (Vec<u8>, Option<Vec<u8>>);
 
 /// Pair of linked Fastq reads
@@ -34,90 +36,6 @@ impl ReadPair {
         } else {
             (self.forward.seq().to_vec(), None)
         }
-    }
-}
-
-/// Error type for sequences
-#[derive(Debug)]
-pub enum FastaError {
-    Fasta(io::Error),
-    Fastq(fastq::Error),
-}
-
-impl fmt::Display for FastaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FastaError::Fasta(e) => write!(f, "{}", e),
-            FastaError::Fastq(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for FastaError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for FastaError {
-    fn from(err: io::Error) -> FastaError {
-        FastaError::Fasta(err)
-    }
-}
-
-impl From<fastq::Error> for FastaError {
-    fn from(err: fastq::Error) -> FastaError {
-        FastaError::Fastq(err)
-    }
-}
-
-/// Error type for read pairs
-#[derive(Debug)]
-pub enum Error {
-    ReadPair {
-        forward: Option<FastaError>,
-        reverse: Option<FastaError>,
-    },
-    Format {
-        desc: String,
-    },
-    EarlyExhastion {
-        read: String,
-    },
-    IO(io::Error),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::ReadPair { forward, reverse } => match (forward, reverse) {
-                (Some(forward), Some(reverse)) => write!(
-                    f,
-                    "Error in both reads.\nForward: {}\nReverse: {}",
-                    forward, reverse
-                ),
-                (Some(forward), None) => write!(f, "Error in forward read: {}", forward),
-                (None, Some(reverse)) => write!(f, "Error in reverse read: {}", reverse),
-                (None, None) => write!(f, "Unknown read parsing error"),
-            },
-            Error::Format { desc } => write!(f, "{}", desc),
-            Error::EarlyExhastion { read } => {
-                write!(f, "Paired reads out of sync: {} exhausted first", read)
-            }
-            Error::IO(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::IO(err)
     }
 }
 
@@ -263,7 +181,7 @@ impl ReadPairParser {
         group: Option<Regex>,
         max_reads: u64,
         default_quality: u8,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ReadPairError> {
         let f_records = forward.get_records(default_quality)?;
         let r_records = match reverse {
             Some(x) => Some(x.get_records(default_quality)?),
@@ -306,7 +224,7 @@ impl ReadPairParser {
 }
 
 impl Iterator for ReadPairParser {
-    type Item = Result<ReadPair, Error>;
+    type Item = Result<ReadPair, ReadPairError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if (self.max_reads > 0) && (self.read_count == self.max_reads) {
@@ -326,7 +244,7 @@ impl Iterator for ReadPairParser {
                     forward: f,
                     reverse: None,
                 })),
-                Some(Err(e)) => Some(Err(Error::ReadPair {
+                Some(Err(e)) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(e),
                     reverse: None,
                 })),
@@ -352,22 +270,22 @@ impl Iterator for ReadPairParser {
                 (None, None) => None,
 
                 // Error combinations
-                (Some(Ok(_)), Some(Err(r))) => Some(Err(Error::ReadPair {
+                (Some(Ok(_)), Some(Err(r))) => Some(Err(ReadPairError::ReadPair {
                     forward: None,
                     reverse: Some(r),
                 })),
-                (Some(Err(f)), Some(Ok(_))) => Some(Err(Error::ReadPair {
+                (Some(Err(f)), Some(Ok(_))) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(f),
                     reverse: None,
                 })),
-                (Some(Err(f)), Some(Err(r))) => Some(Err(Error::ReadPair {
+                (Some(Err(f)), Some(Err(r))) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(f),
                     reverse: Some(r),
                 })),
-                (Some(_), None) => Some(Err(Error::EarlyExhastion {
+                (Some(_), None) => Some(Err(ReadPairError::EarlyExhastion {
                     read: "Reverse".to_string(),
                 })),
-                (None, Some(_)) => Some(Err(Error::EarlyExhastion {
+                (None, Some(_)) => Some(Err(ReadPairError::EarlyExhastion {
                     read: "Forward".to_string(),
                 })),
             }
@@ -395,7 +313,7 @@ impl SeqPath {
     fn get_records(
         &self,
         default_quality: u8,
-    ) -> Result<Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>, Error> {
+    ) -> Result<Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>, ReadPairError> {
         let fmt = match self.format {
             SeqFormat::Auto => detect_seq_format(&self.path)?,
             SeqFormat::Fasta | SeqFormat::Fastq => self.format,
@@ -405,12 +323,15 @@ impl SeqPath {
             Compression::Auto => detect_gzip(&self.path),
             Compression::Gzip | Compression::None => self.gzip,
         };
-        debug!("Using format {} and compression {} for {}", fmt, gzip, self.path);
+        debug!(
+            "Using format {} and compression {} for {}",
+            fmt, gzip, self.path
+        );
 
         let reader: BufReader<File> = BufReader::new(File::open(&self.path)?);
 
         match (gzip, fmt) {
-            (Compression::Auto, _) | (_, SeqFormat::Auto) => Err(Error::Format {
+            (Compression::Auto, _) | (_, SeqFormat::Auto) => Err(ReadPairError::Format {
                 desc: "Gzip::Auto or SeqFormat::Auto remained after parsing".to_string(),
             }),
             (Compression::None, SeqFormat::Fasta) => {
@@ -469,7 +390,7 @@ impl fmt::Display for SeqFormat {
 }
 
 /// Detect file format from a string path
-fn detect_seq_format(path: &str) -> Result<SeqFormat, Error> {
+fn detect_seq_format(path: &str) -> Result<SeqFormat, ReadPairError> {
     if str::ends_with(path, ".fa")
         || str::ends_with(path, ".fa.gz")
         || str::ends_with(path, ".fasta")
@@ -483,7 +404,7 @@ fn detect_seq_format(path: &str) -> Result<SeqFormat, Error> {
     {
         Ok(SeqFormat::Fastq)
     } else {
-        Err(Error::Format {
+        Err(ReadPairError::Format {
             desc: format!(
                 "Can't auto-detect format of {path} (assumes .fa/.fasta \
              or .fq/fastq ending with optional .gz)"

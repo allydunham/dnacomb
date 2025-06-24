@@ -11,93 +11,12 @@ use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::io;
 use std::rc::Rc;
+use std::str::FromStr;
 
-/// Error type for LibSpec
-///
-/// Includes a range of possible errors and wraps downstream errors from other
-/// modules.
-#[derive(Debug)]
-pub enum LibSpecError {
-    /// Generic LibSpec error
-    LibSpec { desc: String },
-
-    /// One or more errors invalidating a library, returned from .validate()
-    InvalidLibSpec { errs: Vec<String> },
-
-    /// A region has min length greater than max length
-    MinGreaterThanMax { id: String, min: usize, max: usize },
-
-    /// Duplicate regions in library
-    DuplicateRegion { id: String },
-
-    /// Required region missing
-    MissingRegion { id: String },
-
-    /// Required region missing
-    NeighbouringVariable { id: String },
-
-    /// IO errors
-    IOError(io::Error),
-
-    /// JSON Error
-    ParsingError(serde_json::Error),
-}
-
-impl fmt::Display for LibSpecError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LibSpecError::InvalidLibSpec { errs } => {
-                writeln!(f, "Multiple LibSpec errors detected:")?;
-                for err in errs {
-                    writeln!(f, "{}", err)?;
-                }
-                Ok(())
-            }
-            LibSpecError::MinGreaterThanMax { id, min, max } => {
-                write!(
-                    f,
-                    "Region {}: min_length ({}) cannot be greater than max_length ({})",
-                    id, min, max
-                )
-            }
-            LibSpecError::DuplicateRegion { id } => {
-                write!(f, "Duplciated region id {} in LibSpec", id)
-            }
-            LibSpecError::MissingRegion { id } => {
-                write!(f, "{} not found in LibSpec Region list", id)
-            }
-            LibSpecError::LibSpec { desc } => write!(f, "{}", desc),
-            LibSpecError::NeighbouringVariable { id } => {
-                write!(f, "Variable region {} follows another variable region", id)
-            }
-            LibSpecError::IOError(e) => write!(f, "Error reading LibSpec JSON file: {}", e),
-            LibSpecError::ParsingError(e) => write!(f, "Error parsing LibSpec JSON: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for LibSpecError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for LibSpecError {
-    fn from(err: io::Error) -> LibSpecError {
-        LibSpecError::IOError(err)
-    }
-}
-
-impl From<serde_json::Error> for LibSpecError {
-    fn from(err: serde_json::Error) -> LibSpecError {
-        LibSpecError::ParsingError(err)
-    }
-}
+use crate::errors::{LibSpecError, LibraryError};
 
 /// LibSpec region types
 ///
@@ -147,6 +66,11 @@ impl Region {
             Region::Fixed { length, .. } => *length,
             Region::Library { max_length, .. } => *max_length,
         }
+    }
+
+    // Is the region "empty" (i.e. of 0 length)
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// If the region is variable (i.e. to be extracted during counting)
@@ -215,13 +139,6 @@ impl LibrarySpec {
     pub fn from_file(path: &str) -> Result<LibrarySpec, LibSpecError> {
         let json_str: String = read_to_string(path)?;
         let lib_spec: LibrarySpec = LibrarySpec::from_str(&json_str)?;
-        Ok(lib_spec)
-    }
-
-    /// Parse a LibrarySpec from a JSON string
-    pub fn from_str(spec: &str) -> Result<LibrarySpec, LibSpecError> {
-        let lib_spec: LibrarySpec = serde_json::from_str::<LibrarySpec>(spec)?;
-        lib_spec.validate()?;
         Ok(lib_spec)
     }
 
@@ -534,11 +451,15 @@ impl LibrarySpec {
 
         for region in &self.regions {
             match region {
-                Region::Library { min_length, max_length, .. } => {
+                Region::Library {
+                    min_length,
+                    max_length,
+                    ..
+                } => {
                     if min_length != max_length {
                         count += 1
                     }
-                },
+                }
                 Region::Fixed { .. } => continue,
             }
         }
@@ -547,46 +468,14 @@ impl LibrarySpec {
     }
 }
 
-/// Error type for library
-#[derive(Debug)]
-pub enum LibraryError {
-    /// Generic Library error
-    Library { desc: String },
+impl FromStr for LibrarySpec {
+    type Err = LibSpecError;
 
-    /// Duplicate regions in library
-    DuplicateRegion { id: String },
-
-    /// Required region missing
-    MissingRegion { id: String },
-
-    /// IO errors
-    IOError(csv::Error),
-}
-
-impl fmt::Display for LibraryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LibraryError::DuplicateRegion { id } => {
-                write!(f, "Duplicated region id {} in Library", id)
-            }
-            LibraryError::MissingRegion { id } => {
-                write!(f, "{} not found in Library Region list", id)
-            }
-            LibraryError::Library { desc } => write!(f, "{}", desc),
-            LibraryError::IOError(e) => write!(f, "Error reading Library TSV file: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for LibraryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<csv::Error> for LibraryError {
-    fn from(err: csv::Error) -> LibraryError {
-        LibraryError::IOError(err)
+    /// Parse a LibrarySpec from a JSON string
+    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+        let lib_spec: LibrarySpec = serde_json::from_str::<LibrarySpec>(spec)?;
+        lib_spec.validate()?;
+        Ok(lib_spec)
     }
 }
 
@@ -736,10 +625,14 @@ impl Library {
         let mut exact_matches = HashMap::new();
         for key in regions.keys() {
             exact_matches.insert(key.clone(), HashMap::new());
-            for reg in regions.get(key).expect("Key known to be in regions HashMap") {
-                exact_matches.get_mut(key)
-                             .expect("Key just added to exact_matchs")
-                             .insert(reg.sequence.clone(), reg.clone());
+            for reg in regions
+                .get(key)
+                .expect("Key known to be in regions HashMap")
+            {
+                exact_matches
+                    .get_mut(key)
+                    .expect("Key just added to exact_matchs")
+                    .insert(reg.sequence.clone(), reg.clone());
             }
         }
 
@@ -788,6 +681,12 @@ impl Library {
             .len()
     }
 
+    #[allow(dead_code)] // not used in count_reads but useful for users
+    /// Check is the library is empty
+    pub fn is_empty(&self) -> bool {
+        self.library.is_empty()
+    }
+
     /// Compare an observed sequence to the library
     ///
     /// Itentify the library members that most closely match a query sequence, with options
@@ -819,7 +718,7 @@ impl Library {
                 return Ok(Some(LibraryMatch {
                     matches: vec![hit.clone()],
                     distance: 0,
-                }))
+                }));
             }
         }
 
