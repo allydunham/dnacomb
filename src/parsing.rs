@@ -372,7 +372,7 @@ impl fmt::Display for SeqPath {
 }
 
 /// Sequence file format
-#[derive(Clone, ValueEnum, Debug, Copy)]
+#[derive(Clone, ValueEnum, Debug, Copy, PartialEq)]
 pub enum SeqFormat {
     Auto,
     Fasta,
@@ -444,5 +444,16 @@ fn detect_gzip(path: &str) -> Compression {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_seq_detection() {
+        assert_eq!(detect_seq_format("path/file.fa.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
+        assert_eq!(detect_seq_format("path/file.fasta.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
+        assert_eq!(detect_seq_format("path/file.fa").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
+        assert_eq!(detect_seq_format("path/file.fasta").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
+        assert_eq!(detect_seq_format("path/file.fq.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
+        assert_eq!(detect_seq_format("path/file.fastq.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
+        assert_eq!(detect_seq_format("path/file.fq").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
+        assert_eq!(detect_seq_format("path/file.fastq").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
+        assert!(detect_seq_format("path/file.not_fasta_ext").is_err());
+    }
 }
-

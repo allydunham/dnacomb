@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn seq_to_string() {
-        let seq: Sequence = vec![0x41, 0x43, 0x47, 0x54];
+        let seq: Sequence = vec![b'A', b'C', b'G', b'T'];
         let string: String = "ACGT".to_string();
         assert_eq!(seq_to_string_or_log(&seq), string)
     }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn seq_to_string_warning() {
-        let seq: Sequence = vec![0x41, 0x43, 0x47, 0xC0];
+        let seq: Sequence = vec![b'A', b'C', b'G', 0xC0]; // Invalid UTF-8 byte
         let string: String = "".to_string();
         assert_eq!(seq_to_string_or_log(&seq), string)
     }

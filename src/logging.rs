@@ -223,11 +223,3 @@ impl Default for ProgressStyle {
         ProgressStyle::new(Some(Arc::new(|msg| info!("{}", msg))))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-
-}
-

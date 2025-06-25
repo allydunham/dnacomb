@@ -11,7 +11,7 @@ use bio::bio_types::alignment::Alignment;
 /// Calculate the mean of a fastq quality vector
 pub fn mean_quality(qual: &[u8]) -> f32 {
     let total: u32 = qual.iter().fold(0, |a, e| a + *e as u32);
-    total as f32 / qual.len() as f32
+    total as f32 / qual.len() as f32 - 33.0 // Subtract 33 as Phred scores are shifted 33 in byte codepoints
 }
 
 /// Container for filtered reads
@@ -207,5 +207,11 @@ impl AlignmentTolerance {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_mean_quality() {
+        let qual = vec![b'F', b'F', b'H', b'H'];
+        let mean: f32 = 38.0;
+        assert_eq!(mean_quality(&qual), mean)
+    }
 }
 

@@ -4,5 +4,9 @@ use dnacomb::lib_spec;
 
 #[test]
 fn load_lib_spec() {
-    assert_eq!(1, 1)
+    let path = "config/grna_sensor.json";
+
+    let ls = lib_spec::LibrarySpec::from_file(path);
+
+    assert!(!ls.is_err());
 }
