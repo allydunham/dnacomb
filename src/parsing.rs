@@ -439,3 +439,10 @@ fn detect_gzip(path: &str) -> Compression {
         Compression::None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+}
+

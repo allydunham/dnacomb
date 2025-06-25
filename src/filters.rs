@@ -202,3 +202,10 @@ impl AlignmentTolerance {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+}
+

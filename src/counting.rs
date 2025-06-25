@@ -1646,3 +1646,11 @@ fn count_paired_raw(
 
     Ok(counts)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+}
+

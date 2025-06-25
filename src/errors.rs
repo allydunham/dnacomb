@@ -303,3 +303,30 @@ impl From<io::Error> for ReadPairError {
         ReadPairError::IO(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seq_to_string() {
+        let seq: Sequence = vec![0x41, 0x43, 0x47, 0x54];
+        let string: String = "ACGT".to_string();
+        assert_eq!(seq_to_string_or_log(&seq), string)
+    }
+
+    #[test]
+    fn seq_to_string_empty() {
+        let seq: Sequence = vec![];
+        let string: String = "".to_string();
+        assert_eq!(seq_to_string_or_log(&seq), string)
+    }
+
+    #[test]
+    fn seq_to_string_warning() {
+        let seq: Sequence = vec![0x41, 0x43, 0x47, 0xC0];
+        let string: String = "".to_string();
+        assert_eq!(seq_to_string_or_log(&seq), string)
+    }
+}
+

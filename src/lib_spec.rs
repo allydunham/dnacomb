@@ -1227,3 +1227,10 @@ pub enum PartialMatching {
     FivePrimeOnly,
     ThreePrimeOnly,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    
+}

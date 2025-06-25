@@ -29,8 +29,8 @@ test_pairs <- tribble(
 )
 
 test_pair <- function(observed, expected) {
-  true_counts <- read_tsv(str_c("tests/", expected, ".true_counts.tsv"))
-  obs_counts <- read_tsv(str_c("tests/", observed, ".counts.tsv"))
+  true_counts <- read_tsv(str_c("data/tests/", expected, ".true_counts.tsv"))
+  obs_counts <- read_tsv(str_c("data/tests/", observed, ".counts.tsv"))
   
   reg_names <- select(true_counts, -group, -ends_with("_nearest"), -combination_status, -combinations_in_library, -combination_indexes, -count) %>%
     colnames()
@@ -45,7 +45,7 @@ test_pair <- function(observed, expected) {
     mutate(observed = observed, expected = expected, id = str_c("i", 1:n()), split = "all_regions") %>%
     select(observed, expected, split, id, combination_status, count, true_count)
   
-  lib_file <- str_c("tests/", observed, ".library_counts.tsv")
+  lib_file <- str_c("data/tests/", observed, ".library_counts.tsv")
   if (file.exists(lib_file)) {
     all_obs <- full_join(
       read_tsv(lib_file),
@@ -58,7 +58,7 @@ test_pair <- function(observed, expected) {
       bind_rows(all_obs, .)
   }
   
-  summary_file <- str_c("tests/", observed, ".summary.tsv")
+  summary_file <- str_c("data/tests/", observed, ".summary.tsv")
   if (file.exists(summary_file)) {
     all_obs <- full_join(
       read_tsv(summary_file),
@@ -160,7 +160,7 @@ bench_cols <- c(
   "unique_regions", "library_time", "library_rate",
   "summary_size", "summary_time", "summary_rate"
 )
-benchmark <- dir("benchmark/", pattern = "bench[0-9]*.tsv", full.names = TRUE) %>%
+benchmark <- dir("data/benchmark/", pattern = "bench[0-9]*.tsv", full.names = TRUE) %>%
   set_names(1:length(.)) %>%
   map(read_tsv, col_names = bench_cols, skip = 1) %>%
   bind_rows(.id = "rep")
