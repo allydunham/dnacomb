@@ -2,6 +2,7 @@
 # Plot benchmark and test results
 library(tidyverse)
 library(ggpubr)
+library(ggh4x)
 dir.create("plots", showWarnings = FALSE)
 
 theme_set(theme_pubclean() + theme(legend.position = 'right',
@@ -11,22 +12,10 @@ theme_set(theme_pubclean() + theme(legend.position = 'right',
                                    legend.key = element_blank()))
 
 # Correctness tests
-test_pairs <- tribble(
-  ~observed, ~expected,
-  "exact_sensor_align", "grna_sensor",
-  "exact_sensor_align_paired", "grna_sensor",
-  "exact_sensor_inframe", "grna_sensor",
-  "exact_sensor_inframe_paired", "grna_sensor",
-  "exact_sensor_pattern", "grna_sensor",
-  "exact_sensor_pattern_paired", "grna_sensor",
-  "pegrna_exact_align", "pegrna",
-  "pegrna_exact_align_paired", "pegrna",
-  "pegrna_exact_pattern", "pegrna",
-  "pegrna_exact_pattern_paired", "pegrna",
-  "hamming_sensor_inframe", "grna_sensor",
-  "levenshtein_sensor_inframe", "grna_sensor",
-  "bounded-levenshtein_sensor_inframe", "grna_sensor"
-)
+test_pairs <- tibble(
+  observed = str_remove(dir("data/tests/", pattern = "*\\.counts.tsv"), ".counts.tsv")
+) %>%
+  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "expected", "end"), cols_remove = FALSE)
 
 test_pair <- function(observed, expected) {
   true_counts <- read_tsv(str_c("data/tests/", expected, ".true_counts.tsv"))
@@ -81,9 +70,11 @@ test_pair <- function(observed, expected) {
 }
 quiet_test <- purrr::quietly(test_pair)
 
-test_counts <- map2(test_pairs$observed, test_pairs$expected, ~quiet_test(.x, .y)$result) %>%
+test_counts <- map2(test_pairs$observed, test_pairs$expected, ~quiet_test(.x, .y)$result, .progress = TRUE) %>%
   bind_rows() %>%
-  replace_na(replace = list(count = 0, true_count = 0))
+  replace_na(replace = list(count = 0, true_count = 0)) %>%
+  select(-expected) %>%
+  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "library", "end"), cols_remove = TRUE)
 
 category_colours <- c(
   "match" = "green", "exact_match" = "green", "nearest_match" = "darkgreen",
@@ -94,25 +85,27 @@ category_colours <- c(
 
 p_all_scatter <- filter(test_counts, split == "all_regions") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_wrap(~observed, scales = "free") +
+  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
   scale_x_continuous(transform = "pseudo_log") +
   scale_y_continuous(transform = "pseudo_log") +
   scale_colour_manual(values = category_colours) +
-  labs(x = "Simulated Count", y = "Observed Count")
-ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height = 30, width = 30)
+  labs(x = "Simulated Count", y = "Observed Count") +
+  theme(legend.position = "bottom")
+ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height = 50, width = 50)
 
 p_library_scatter <- filter(test_counts, split == "library") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_wrap(~observed, scales = "free") +
+  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
   scale_x_continuous(transform = "pseudo_log") +
   scale_y_continuous(transform = "pseudo_log") +
   scale_colour_manual(values = category_colours) +
-  labs(x = "Simulated Count", y = "Observed Count")
-ggsave("plots/test_library_scatter.png", p_library_scatter, units = "cm", height = 30, width = 30)
+  labs(x = "Simulated Count", y = "Observed Count") +
+  theme(legend.position = "bottom")
+ggsave("plots/test_library_scatter.png", p_library_scatter, units = "cm", height = 50, width = 50)
 
 p_summary_scatter <- filter(test_counts, split == "summary") %>%
   filter(!id == "uncompared") %>%
@@ -120,24 +113,27 @@ p_summary_scatter <- filter(test_counts, split == "summary") %>%
   mutate(group = c(count = "Observed", true_count = "Expected")[group],
          id = factor(id, levels = names(category_colours))) %>%
   ggplot(aes(x = group, y = count, fill = id)) +
-  facet_wrap(~observed) +
+  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
   geom_col(position = position_stack(), width = 0.7) +
   scale_fill_manual(name = "", values = category_colours) +
-  labs(x = "", y = "Count")
+  labs(x = "", y = "Count") +
+  theme(legend.position = "bottom")
 ggsave("plots/test_summary_scatter.png", p_summary_scatter, units = "cm", height = 30, width = 30)
 
 count_cors <- filter(test_counts, split == "all_regions") %>%
-  group_by(observed) %>%
-  group_modify(~broom::tidy(cor.test(.$count, .$true_count)))
+  group_by(mode, distance, library, end) %>%
+  group_modify(~broom::tidy(cor.test(.$count, .$true_count))) %>%
+  ungroup()
 
-p_test_cors <- ggplot(count_cors, aes(y = observed, x = estimate, xmin = conf.low, xmax = conf.high)) +
+p_test_cors <- ggplot(count_cors, aes(y = str_c(mode, ", ", distance, ", ", library, ", ", end),
+                                      x = estimate, xmin = conf.low, xmax = conf.high)) +
   geom_col(fill = "#377eb8", width = 0.6) +
   geom_errorbarh(height = 0.3) +
   labs(x = "Pearson's r", y = "") +
   theme(panel.grid.major.x = element_line(colour = "grey", linetype = "dotted"),
         panel.grid.major.y = element_blank(),
         axis.ticks.y = element_blank())
-ggsave("plots/test_observed_expected_correlation.png", p_test_cors, units = "cm", height = 12, width = 16)
+ggsave("plots/test_observed_expected_correlation.png", p_test_cors, units = "cm", height = 30, width = 16)
   
 # Benchmarks
 na_or_zero <- function(x) {

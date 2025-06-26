@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Run end-to-end tests using a variety of input conditions
+Run end-to-end tests using a variety of input sequence mutation levels
 """
 import sys
 import os
+from itertools import product
 from utils import run_tool
 from generate_test_data import generate_test_data
 
@@ -40,77 +41,97 @@ def main():
     run_test("Basic functionality", f_file="", additional_args=["--help"])
 
     print("Generating test data")
-    if not os.path.exists(f"{root}/grna.fq"):
-        print("    Basic gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna.json", number=10000, library_size=100,
-                           output=f"{root}/grna")
+    if not os.path.exists(f"{root}/perfect_grna.fq"):
+        print("    Perfect gRNA library... ", end="")
+        generate_test_data(lib_spec="config/grna.json", number=1000, library_size=100,
+                           output=f"{root}/perfect_grna")
         print("done")
 
-    if not os.path.exists(f"{root}/grna.fa"):
-        print("    Basic gRNA Fasta library... ", end="")
-        generate_test_data(lib_spec="config/grna.json", number=10000, library_size=100,
-                           output=f"{root}/grna", seqformat="fa")
-        print("done")
-
-    if not os.path.exists(f"{root}/grna_sensor.fq"):
+    if not os.path.exists(f"{root}/mutant_grna_sensor.fq"):
         print("    Mutant sensor gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna_sensor.json", number=10000, library_size=100,
-                           output="data/tests/grna_sensor", contamination_rate=0.05,
-                           recombination_rate=0.05, mismatch_rate=0.05,
-                           sub_rate=0.01, indel_rate=0.001)
+        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+                           output=f"{root}/mutant_grna_sensor", contamination_rate=0,
+                           recombination_rate=0, mismatch_rate=0,
+                           sub_rate=0.01, indel_rate=0)
         print("done")
 
-    if not os.path.exists(f"{root}/pegrna.fq"):
-        print("    pegRNA library... ", end="")
-        generate_test_data(lib_spec="config/pegrna.json", number=10000, library_size=100,
-                           output=f"{root}/pegrna", contamination_rate=0.05,
+    if not os.path.exists(f"{root}/indel_grna_sensor.fq"):
+        print("    Indel sensor gRNA library... ", end="")
+        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+                           output=f"{root}/indel_grna_sensor", contamination_rate=0,
+                           recombination_rate=0, mismatch_rate=0,
+                           sub_rate=0, indel_rate=0.01)
+        print("done")
+
+    if not os.path.exists(f"{root}/recombined_grna_sensor.fq"):
+        print("    Recombined sensor gRNA library... ", end="")
+        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+                           output=f"{root}/recombined_grna_sensor", contamination_rate=0,
+                           recombination_rate=0.05, mismatch_rate=0,
+                           sub_rate=0, indel_rate=0)
+        print("done")
+
+    if not os.path.exists(f"{root}/mutant_pegrna.fq"):
+        print("    Mutant pegRNA library... ", end="")
+        generate_test_data(lib_spec="config/pegrna.json", number=1000, library_size=100,
+                           output=f"{root}/mutant_pegrna", contamination_rate=0,
+                           recombination_rate=0, mismatch_rate=0,
+                           sub_rate=0.01, indel_rate=0)
+        print("done")
+
+    if not os.path.exists(f"{root}/messy_pegrna.fq"):
+        print("    Fully mutated pegRNA library... ", end="")
+        generate_test_data(lib_spec="config/pegrna.json", number=1000, library_size=100,
+                           output=f"{root}/messy_pegrna", contamination_rate=0.05,
                            recombination_rate=0.05, mismatch_rate=0.05,
                            sub_rate=0.01, indel_rate=0.001)
         print("done")
 
     print("\nRunning main tests:")
-    # Reading plain fasta
-    run_test("Fasta reading", f_file=f"{root}/grna.fa", output="fasta", mode="full-read",
-             verbose=True, sort=True, library_counts=False, rm_output=True)
-    run_test("Fastq reading", f_file=f"{root}/grna.fq", output="fastq", mode="full-read",
+    # Basic function
+    run_test("Basic function", f_file=f"{root}/perfect_grna.fq", output="fastq", mode="full-read",
              verbose=True, sort=True, library_counts=False, rm_output=True)
 
     # Full read counts
-    run_test("Total counts", f_file=f"{root}/grna.fq", output="total_counts", mode="full-read",
+    run_test("Total counts", f_file=f"{root}/perfect_grna.fq",
+             output="total_counts", mode="full-read",
              verbose=True, sort=True, library_counts=False, rm_output=True)
-    run_test("Paired total counts", f_file=f"{root}/grna_forward.fq",
-             r_file=f"{root}/grna_reverse.fq", output="total_pairs",
+    run_test("Paired total counts", f_file=f"{root}/perfect_grna_forward.fq",
+             r_file=f"{root}/perfect_grna_reverse.fq", output="total_pairs",
              mode="full-read", verbose=True, sort=True, library_counts=False,
              rm_output=True)
 
-    # Exact matches using each mode in single/paired
-    for i in ["inframe", "pattern", "align"]:
-        run_test(f"Exact {i}", f_file="tests/grna_sensor.fq", output=f"{root}/exact_sensor_{i}",
-                 lib_spec="config/grna_sensor.json", mode=i, metric="exact", verbose=True,
-                 sort=True)
-        run_test(f"Exact paired {i}", f_file="tests/grna_sensor_forward.fq",
-                r_file="tests/grna_sensor_reverse.fq", output=f"{root}/exact_sensor_{i}_paired",
-                lib_spec="config/grna_sensor.json", mode=i, metric="exact", verbose=True,
-                sort=True)
+    # Combination of different params
+    param_combs = product(
+        ["inframe", "pattern", "align"],
+        ["exact", "hamming", "bounded-levenshtein", "levenshtein"],
+        ["perfect_grna", "mutant_grna_sensor", "indel_grna_sensor", "indel_grna_sensor",
+         "recombined_grna_sensor", "mutant_pegrna", "messy_pegrna"]
+    )
+    lib_specs = {
+        "perfect_grna": "grna",
+        "mutant_grna_sensor": "grna_sensor",
+        "indel_grna_sensor": "grna_sensor",
+        "indel_grna_sensor": "grna_sensor",
+         "recombined_grna_sensor": "grna_sensor",
+         "mutant_pegrna": "pegrna",
+         "messy_pegrna": "pegrna"
+    }
+    for (mode, dist, lib) in param_combs:
+        expected_code = 1 if mode == "inframe" and lib in ["mutant_pegrna", "messy_pegrna"] else 0
+        spec = f"config/{lib_specs[lib]}.json"
 
-    # Variable length regions
-    for i in ["inframe", "pattern", "align"]:
-        run_test(f"Variable exact {i}", f_file=f"{root}/pegrna.fq",
-                 output=f"{root}/pegrna_exact_{i}",
-                 mode=i, metric="exact", verbose=True, sort=True,
-                 lib_spec="config/pegrna.json",
-                 expected_code=1 if i == "inframe" else 0)
-        run_test(f"Variable exact paired {i}", f_file=f"{root}/pegrna_forward.fq",
-                 r_file=f"{root}/pegrna_reverse.fq", output=f"{root}/pegrna_exact_{i}_paired",
-                 mode=i, metric="exact", verbose=True, sort=True,
-                 lib_spec="config/pegrna.json",
-                 expected_code=1 if i == "inframe" else 0)
+        run_test(f"{mode} {dist} {lib} single end", f_file=f"{root}/{lib}.fq",
+                 output=f"{root}/{mode}:{dist}:{lib}:single",
+                 mode=mode, metric=dist, verbose=True, sort=True,
+                 lib_spec=spec,
+                 expected_code=expected_code)
 
-    # Distance metrics
-    for i in ["hamming", "bounded-levenshtein", "levenshtein"]:
-        run_test(f"{i}", f_file=f"{root}/grna_sensor.fq", output=f"{root}/{i}_sensor_inframe",
-                 mode="inframe", metric=i, verbose=True, sort=True,
-                 lib_spec="config/grna_sensor.json")
+        run_test(f"{mode} {dist} {lib} paired end", f_file=f"{root}/{lib}_forward.fq",
+                 r_file=f"{root}/{lib}_reverse.fq", output=f"{root}/{mode}:{dist}:{lib}:paired",
+                 mode=mode, metric=dist, verbose=True, sort=True,
+                 lib_spec=spec,
+                 expected_code=expected_code)
 
     print(f"\nTesting complete {sum(results)}/{len(results)} passed")
     if all(results):

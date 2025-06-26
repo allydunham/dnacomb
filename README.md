@@ -216,8 +216,17 @@ If you expect observed indels are likely real mutation rather than sequencing er
 
 ### Current limitations
 
-The current release is generally robust but tests show pattern matching is not robust to mutations in flank sequences, leading to a level of undercounting and lots of non-matches that should be assignable. This can be seen in the plots from the integration tests, for instance in the summary counts:
+The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
+We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
 
-![summary counts](plots/test_summary_scatter.png)
+![summary counts](plots/test_summary_bars.png)
 
-We are working on improving this with fuzzy pattern matching in upcoming patches.
+For unmutated sequences all methods give perfect counts as expected and alignment is generally robust across simulated mutations.
+The inframe matching approach is generally ok as long as region lengths don't vary and there aren't too many indels.
+On the other hand, pattern matching approaches are very sensitive to mutations in the flanking sequences, with many unassigned reads in tests that are likely assignable.
+We are working on making the pattern matching approach more robust as it gives a nice intermediate between inframe and full alignment in terms of performance.
+The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
+
+Additionally, the following bugs are currently known:
+
+- Errors when sequences are 0 or 1bp long

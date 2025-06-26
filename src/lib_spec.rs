@@ -850,14 +850,18 @@ impl Library {
         let query_len = seq.len();
 
         for reg in regions.iter() {
-            let reg_end = cmp::min(query_len, reg.sequence.len());
+            // Hamming distance only defined for equal length - if query is
+            // longer than region discard
+            if query_len > reg.sequence.len() {
+                continue;
+            }
 
             // Use appropriate hamming implemntation (other branch should be
             // pruned at compile time)
             if cfg!(all(target_feature = "avx2", target_feature = "sse4.1")) {
-                dist = distance::simd::hamming(seq, &reg.sequence[0..reg_end]);
+                dist = distance::simd::hamming(seq, &reg.sequence[0..query_len]);
             } else {
-                dist = distance::hamming(seq, &reg.sequence[0..reg_end]);
+                dist = distance::hamming(seq, &reg.sequence[0..query_len]);
             }
 
             // Ignore too distant seqs - could make custom dist functions that short
@@ -891,6 +895,12 @@ impl Library {
         for reg in regions.iter() {
             let end = reg.sequence.len();
             let start = end.saturating_sub(query_len);
+
+            // Hamming distance only defined for equal length - if query is
+            // different length than region discard
+            if end - start != seq.len() {
+                continue
+            }
 
             // Use appropriate hamming implemntation (other branch should be
             // pruned at compile time)
