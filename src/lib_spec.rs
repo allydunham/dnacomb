@@ -102,6 +102,15 @@ impl Region {
     }
 }
 
+/// Sequence of flanking regions around a sequence of interest
+#[derive(Debug)]
+pub enum FlankingSequences {
+    Unflanked,
+    OpenStart(Sequence),
+    Internal(Sequence, Sequence),
+    OpenEnd(Sequence)
+}
+
 /// LibSpec definition
 ///
 /// Specification for serde json to parse LibSpec JSON files
@@ -374,7 +383,7 @@ impl LibrarySpec {
         &self,
         region: &str,
         len: usize,
-    ) -> Result<(Option<Sequence>, Option<Sequence>), LibSpecError> {
+    ) -> Result<FlankingSequences, LibSpecError> {
         let reg_ind = self
             .regions
             .iter()
@@ -433,14 +442,12 @@ impl LibrarySpec {
             }
         }
 
-        Ok((
-            if !before.is_empty() {
-                Some(before)
-            } else {
-                None
-            },
-            if !after.is_empty() { Some(after) } else { None },
-        ))
+        Ok(match (before.is_empty(), after.is_empty()) {
+            (true, true) => FlankingSequences::Unflanked,
+            (true, false) => FlankingSequences::OpenStart(after),
+            (false, true) => FlankingSequences::OpenEnd(before),
+            (false, false) => FlankingSequences::Internal(before, after),
+        })
     }
 
     /// Determine number of variable length region

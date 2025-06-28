@@ -6,6 +6,7 @@
 //! from the input sequence: alignment, pattern matching, inframe
 //! position matching and full read counting.
 use anyhow::{self};
+use bio::alignment::distance::hamming;
 use bio::alignment::AlignmentOperation;
 use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
 use bio::alphabets::dna::revcomp;
@@ -14,7 +15,7 @@ use clap::ValueEnum;
 use itertools::{Itertools, izip};
 use log::{debug, info};
 use std::collections::HashMap;
-use std::iter::zip;
+use std::iter::{repeat_with, zip};
 use std::sync::Once;
 
 use crate::containers::{
@@ -23,7 +24,7 @@ use crate::containers::{
 };
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, mean_quality};
-use crate::lib_spec::LibrarySpec;
+use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadKey, ReadPair, ReadPairParser};
 
@@ -31,6 +32,12 @@ use crate::parsing::{ReadKey, ReadPair, ReadPairParser};
 ///
 /// Has the format (start, stop, RegionCompleteness status)
 pub type AlignmentPosition = (usize, usize, RegionCompleteness);
+
+/// Region sequence identified while searching an input sequence, containing
+/// the found sequence, quality and whether it is complete. Convenience type
+/// for counting functions that is quickly processed into region keys and the
+/// proper combination structs.
+type RegionMatch = (Sequence, Vec<u8>, RegionCompleteness);
 
 static WARN_MERGE: Once = Once::new();
 
@@ -259,8 +266,8 @@ fn regions_from_alignment_path(
 /// more complete if there is variable overlap (plus should really warn to use a read
 /// merger at that point).
 fn merge_seqs(
-    fwd: Option<(Sequence, Vec<u8>, RegionCompleteness)>,
-    rev: Option<(Sequence, Vec<u8>, RegionCompleteness)>,
+    fwd: Option<RegionMatch>,
+    rev: Option<RegionMatch>,
     len: usize,
 ) -> Result<Option<(Sequence, RegionCompleteness)>, anyhow::Error> {
     // Deal with simple cases first
@@ -412,6 +419,60 @@ fn merge_seqs(
             }
         }
     }
+}
+
+/// Find region matches by pattern
+///
+/// Search an input sequence for regions flanked by the input patterns, in the order
+/// they occur. Not all regions need to be identified, but those found will be a
+/// continuous subsequence. For instance, it may return hits for regions 2-4 but
+/// be missing regions 1 and 5. Where the first/last flank sequence is None it is
+/// considered to start/end at the sequence start/end. A mismatch tolerance allows
+/// close flank matches to be considered hits to correct for errors, but this requires
+/// care where multiple flank sequences have similar sequences.
+///
+/// Returns a vector of hits, one per input region with None if the region is missing or
+/// Some((Sequence, Phred Quality, RegionCompleteness)) tuple
+fn match_flank_patterns(
+    seq: &Sequence,
+    qual: &[u8],
+    flanks: &[FlankingSequences],
+    tolerance: usize
+) -> Result<Vec<Option<RegionMatch>>, ReadCountError> {
+    let mut out: Vec<Option<RegionMatch>> = repeat_with(|| None).take(flanks.len()).collect();
+
+    // If no flanking regions then find nothing
+    if flanks.is_empty() {
+        return Ok(out);
+    }
+
+    let mut reg: usize = 0;
+    let mut pos: usize = 0;
+
+    // Find opening region
+    // TODO Validate a series of flanking regions, either here or in lib spec (length, disernable, only ends open)
+    match flanks[0] {
+        FlankingSequences::Unflanked => {
+            return Err(ReadCountError::Error {
+                desc: "Unflanked region at start of pattern based region extraction".to_string()
+            });
+        },
+        FlankingSequences::OpenStart(items) => todo!(),
+        FlankingSequences::Internal(items, items1) => todo!(),
+        FlankingSequences::OpenEnd(items) => todo!(),
+    };
+
+    // Walk the remaining sequence and region list in parallel, adding each newly found region to output.
+    // Before finding the first region must consider all options at each point
+    while reg < flanks.len() && pos < seq.len() {
+        if !open {
+            // Search for opening
+        } else {
+            //
+        }
+    }
+
+    Ok(out)
 }
 
 /// HashMap cache of observed reads and which combination they map to
@@ -1184,7 +1245,7 @@ fn count_paired_pattern(
                 Some(x) => f_read.windows(x.len()).position(|window| window == x), // End pos doesn't need offsetting due to slice being exclusive
             };
 
-            let fwd: Option<(Sequence, Vec<u8>, RegionCompleteness)> = match (start_pos, end_pos) {
+            let fwd: Option<RegionMatch> = match (start_pos, end_pos) {
                 // Region not found
                 (None, _) | (_, None) => None,
 
@@ -1229,7 +1290,7 @@ fn count_paired_pattern(
                 Some(x) => r_read.windows(x.len()).position(|window| window == x), // End pos doesn't need offsetting due to slice being exclusive
             };
 
-            let rev: Option<(Sequence, Vec<u8>, RegionCompleteness)> = match (start_pos, end_pos) {
+            let rev: Option<RegionMatch> = match (start_pos, end_pos) {
                 // Region not found
                 (None, _) | (_, None) => None,
 
@@ -1482,8 +1543,8 @@ fn count_paired_inframe(
             &f_region_positions,
             &r_region_positions
         ) {
-            let mut fwd: Option<(Sequence, Vec<u8>, RegionCompleteness)> = None;
-            let mut rev: Option<(Sequence, Vec<u8>, RegionCompleteness)> = None;
+            let mut fwd: Option<RegionMatch> = None;
+            let mut rev: Option<RegionMatch> = None;
 
             // Extract f_seq
             if (f_pos.0 < f_len) && (f_pos.1 < f_len) {
