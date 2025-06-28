@@ -107,7 +107,7 @@ p_library_scatter <- filter(test_counts, split == "library") %>%
   theme(legend.position = "bottom")
 ggsave("plots/test_library_scatter.png", p_library_scatter, units = "cm", height = 50, width = 50)
 
-p_summary_scatter <- filter(test_counts, split == "summary") %>%
+p_summary_bars <- filter(test_counts, split == "summary") %>%
   filter(!id == "uncompared") %>%
   pivot_longer(c(count, true_count), names_to = "group", values_to = "count") %>%
   mutate(group = c(count = "Observed", true_count = "Expected")[group],
@@ -117,8 +117,9 @@ p_summary_scatter <- filter(test_counts, split == "summary") %>%
   geom_col(position = position_stack(), width = 0.7) +
   scale_fill_manual(name = "", values = category_colours) +
   labs(x = "", y = "Count") +
-  theme(legend.position = "bottom")
-ggsave("plots/test_summary_scatter.png", p_summary_scatter, units = "cm", height = 30, width = 30)
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+ggsave("plots/test_summary_bars.png", p_summary_bars, units = "cm", height = 40, width = 40)
 
 count_cors <- filter(test_counts, split == "all_regions") %>%
   group_by(mode, distance, library, end) %>%
