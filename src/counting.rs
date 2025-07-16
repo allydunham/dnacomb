@@ -5,7 +5,6 @@
 //! Supports multiple approaches for extracting regions of interest
 //! from the input sequence: alignment, pattern matching, inframe
 //! position matching and full read counting.
-use anyhow::{self};
 use bio::alignment::distance::hamming;
 use bio::alignment::AlignmentOperation;
 use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
@@ -24,7 +23,7 @@ use crate::containers::{
 };
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, mean_quality};
-use crate::lib_spec::{FlankingSequences, LibrarySpec};
+use crate::lib_spec::{self, FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadKey, ReadPair, ReadPairParser};
 
@@ -437,7 +436,7 @@ fn match_flank_patterns(
     seq: &Sequence,
     qual: &[u8],
     flanks: &[FlankingSequences],
-    tolerance: usize
+    tolerance: u64
 ) -> Result<Vec<Option<RegionMatch>>, ReadCountError> {
     let mut out: Vec<Option<RegionMatch>> = repeat_with(|| None).take(flanks.len()).collect();
 
@@ -446,29 +445,149 @@ fn match_flank_patterns(
         return Ok(out);
     }
 
-    let mut reg: usize = 0;
-    let mut pos: usize = 0;
-
-    // Find opening region
-    // TODO Validate a series of flanking regions, either here or in lib spec (length, disernable, only ends open)
-    match flanks[0] {
-        FlankingSequences::Unflanked => {
+    // Check flank sequence is valid
+    match LibrarySpec::validate_flank_seqs(flanks) {
+        Ok(_) => {},
+        Err(e) => {
             return Err(ReadCountError::Error {
-                desc: "Unflanked region at start of pattern based region extraction".to_string()
+                desc: format!("Invalid flanking sequences: {}", e)
             });
         },
-        FlankingSequences::OpenStart(items) => todo!(),
-        FlankingSequences::Internal(items, items1) => todo!(),
-        FlankingSequences::OpenEnd(items) => todo!(),
     };
+
+    // Initialise seach space
+    let mut pos: usize = 0;       // Position in sequence to search for match
+    let mut end: usize;           // end of current flank seq to match
+    let mut reg: usize = 0;       // region being matched
+    let mut reg_start: usize = 0; // Start point of region seq
+    let mut flank_seq: &Sequence; // Sequence being searched for
+    let mut open: bool = false;   // whether the region start is found
+    let mut dist: u64;            // Distance to region
+
+    // Find opening region to assign start point
+    let start_regs: Vec<Sequence> = flanks.iter().map(|r| {
+        match r {
+            FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
+            FlankingSequences::OpenStart(end) => Ok(end.clone()),
+            FlankingSequences::Internal(start, ..) => Ok(start.clone()),
+            FlankingSequences::OpenEnd(start) => Ok(start.clone()),
+        }
+    }).collect::<Result<Vec<Sequence>, ReadCountError>>()?;
+
+    while pos < seq.len() {
+        for (i, r) in start_regs.iter().enumerate() {
+            end = pos + r.len();
+            if end > seq.len() {
+                continue;
+            }
+
+            dist = hamming(r, &seq[pos..end]);
+
+            if dist <= tolerance {
+                match flanks[i] {
+                    FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
+                    FlankingSequences::OpenStart(..) => {
+                        out[i] = Some((
+                            seq[0..pos].to_vec(),
+                            qual[0..pos].to_vec(),
+                            RegionCompleteness::Partial5Prime
+                        ));
+
+                        reg = i + 1;
+                        open = false;
+                    },
+                    FlankingSequences::Internal(..) => {
+                        reg = i;
+                        open = true;
+                        reg_start = end;
+                    },
+                    FlankingSequences::OpenEnd(..) => {
+                        out[i] = Some((
+                            seq[end..seq.len()].to_vec(),
+                            qual[end..seq.len()].to_vec(),
+                            RegionCompleteness::Partial3Prime
+                        ));
+
+                        // An open end region must be at the end (checked in validation)
+                        // so directly return
+                        return Ok(out);
+                    },
+                }
+                pos = end + 1;
+            }
+        }
+        pos += 1;
+    }
 
     // Walk the remaining sequence and region list in parallel, adding each newly found region to output.
     // Before finding the first region must consider all options at each point
-    while reg < flanks.len() && pos < seq.len() {
-        if !open {
-            // Search for opening
-        } else {
-            //
+    'outer: while reg < flanks.len() && pos < seq.len() {
+        // Get region sequence
+        flank_seq = match (open, &flanks[reg]) {
+            (_, FlankingSequences::Unflanked) => unreachable!("Unflanked already checked"),
+            (_, FlankingSequences::OpenStart(..)) => unreachable!("Open start can only be first and already processed"),
+            (_, FlankingSequences::OpenEnd(start)) => start,
+            (false, FlankingSequences::Internal(start, _)) => start,
+            (true, FlankingSequences::Internal(_, end)) => end,
+        };
+
+        end = pos + flank_seq.len();
+
+        // Loop forward to find then process
+        'inner: while pos < seq.len() {
+            // If seq runs off end without finding we've exhausted
+            if end > seq.len() {
+                break 'outer
+            }
+
+            dist = hamming(&flank_seq, &seq[pos..end]);
+
+            // If not found, continue (do this way to save indent below)
+            if dist > tolerance {
+                pos += 1;
+                end += 1;
+                continue;
+            }
+
+            match (open, &flanks[reg]) {
+                (_, FlankingSequences::Unflanked) => unreachable!("Unflanked already checked"),
+                (_, FlankingSequences::OpenStart(..)) => unreachable!(
+                    "Open start can only be first and already processed"
+                ),
+                (true, FlankingSequences::OpenEnd(..)) => unreachable!(
+                    "Open end only has a start and is then processed below"
+                ),
+                (false, FlankingSequences::OpenEnd(..)) => {
+                    out[reg] = Some((
+                        seq[end..seq.len()].to_vec(),
+                        qual[end..seq.len()].to_vec(),
+                        RegionCompleteness::Partial3Prime
+                    ));
+
+                    // Open end must finish the seq so break outer
+                    break 'outer
+                },
+                (true, FlankingSequences::Internal(..)) => {
+                    // Found end - set out[reg] and move to next region
+                    out[reg] = Some((
+                        seq[reg_start..pos].to_vec(),
+                        qual[reg_start..pos].to_vec(),
+                        RegionCompleteness::Partial3Prime
+                    ));
+
+                    pos = pos + end;
+                    open = false;
+                    reg += 1;
+                    break 'inner
+                },
+                (false, FlankingSequences::Internal(..)) => {
+                    // Found start - set open and search for end
+                    pos = pos + end;
+                    open = true;
+                    reg_start = end;
+                    break 'inner
+                },
+            }
         }
     }
 
@@ -995,14 +1114,7 @@ fn count_single_pattern(
 
     let regions = lib_spec.variable_regions();
 
-    let flank_regions: Vec<(Option<Sequence>, Option<Sequence>)> = match regions
-        .iter()
-        .map(|x| lib_spec.flanking_regions(x, 10))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(x) => x,
-        Err(e) => return Err(e.into()),
-    };
+    let flank_regions = lib_spec.get_all_flanking_regions(10)?;
 
     info!(
         "Extracting regions using flank seqs: {:?}",

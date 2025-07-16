@@ -375,6 +375,49 @@ impl LibrarySpec {
             .collect()
     }
 
+    /// Get flanking sequences for all variable regions
+    pub fn get_all_flanking_regions(&self, len: usize) -> Result<Vec<FlankingSequences>, LibSpecError>{
+        let regions = self.variable_regions();
+        let flanks = regions
+            .iter()
+            .map(|x| self.flanking_regions(x, len))
+            .collect::<Result<Vec<FlankingSequences>, LibSpecError>>()?;
+
+        Self::validate_flank_seqs(&flanks)?;
+
+        return Ok(flanks)
+    }
+
+    /// Validate flanking regions
+    ///
+    /// Currently check that they form a valid and findable sequence of region types
+    pub fn validate_flank_seqs(flanks: &[FlankingSequences]) -> Result<(), LibSpecError>{
+        for (i, r) in flanks.iter().enumerate() {
+            match r {
+                FlankingSequences::Unflanked => {
+                    return Err(LibSpecError::LibSpec {
+                        desc: "Unflanked region after all flank patterns found".to_string()
+                    });
+                },
+                FlankingSequences::OpenStart( .. ) => {
+                    if i == 0 {continue;}
+                    return Err(LibSpecError::LibSpec {
+                        desc: "Region with an open start found after first region in flanking patterns".to_string()
+                    });
+                },
+                FlankingSequences::Internal( .. ) => continue,
+                FlankingSequences::OpenEnd( .. ) => {
+                    if i == flanks.len() - 1 {continue;}
+                    return Err(LibSpecError::LibSpec {
+                        desc: "Region with an open end found before final region in flanking patterns".to_string()
+                    });
+                },
+            }
+        }
+
+        return Ok(());
+    }
+
     /// Identify the sequences flanking a region of interest
     ///
     /// If the region is first/last the corresponding flanking region is None, otherwise
