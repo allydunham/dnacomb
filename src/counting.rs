@@ -11,7 +11,7 @@ use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
 use bio::alphabets::dna::revcomp;
 use bio::bio_types::sequence::Sequence;
 use clap::ValueEnum;
-use itertools::{Itertools, izip};
+use itertools::izip;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::iter::{repeat_with, zip};
@@ -21,9 +21,9 @@ use crate::containers::{
     CombinationKey, ObservedCombination, ObservedCombinations, ObservedRegion, RegionCompleteness,
     RegionKey,
 };
-use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError, seq_to_string_or_log};
+use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, mean_quality};
-use crate::lib_spec::{self, FlankingSequences, LibrarySpec};
+use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadKey, ReadPair, ReadPairParser};
 
@@ -433,7 +433,7 @@ fn merge_seqs(
 /// Returns a vector of hits, one per input region with None if the region is missing or
 /// Some((Sequence, Phred Quality, RegionCompleteness)) tuple
 fn match_flank_patterns(
-    seq: &Sequence,
+    seq: &[u8],
     qual: &[u8],
     flanks: &[FlankingSequences],
     tolerance: u64
@@ -474,7 +474,7 @@ fn match_flank_patterns(
         }
     }).collect::<Result<Vec<Sequence>, ReadCountError>>()?;
 
-    while pos < seq.len() {
+    'outer: while pos < seq.len() {
         for (i, r) in start_regs.iter().enumerate() {
             end = pos + r.len();
             if end > seq.len() {
@@ -513,7 +513,7 @@ fn match_flank_patterns(
                         return Ok(out);
                     },
                 }
-                pos = end + 1;
+                break 'outer
             }
         }
         pos += 1;
@@ -535,6 +535,7 @@ fn match_flank_patterns(
 
         // Loop forward to find then process
         'inner: while pos < seq.len() {
+
             // If seq runs off end without finding we've exhausted
             if end > seq.len() {
                 break 'outer
@@ -572,17 +573,17 @@ fn match_flank_patterns(
                     out[reg] = Some((
                         seq[reg_start..pos].to_vec(),
                         qual[reg_start..pos].to_vec(),
-                        RegionCompleteness::Partial3Prime
+                        RegionCompleteness::Complete
                     ));
 
-                    pos = pos + end;
+                    pos = end;
                     open = false;
                     reg += 1;
                     break 'inner
                 },
                 (false, FlankingSequences::Internal(..)) => {
                     // Found start - set open and search for end
-                    pos = pos + end;
+                    pos = end;
                     open = true;
                     reg_start = end;
                     break 'inner
@@ -624,6 +625,8 @@ pub fn count_reads(
     mode: CountMode,
     filter_config: FilterConfig,
     alignment_scorer: Option<AlignmentScorer>,
+    pattern_length: Option<usize>,
+    pattern_tolerance: Option<u64>,
     cache: bool,
     progress_style: Option<&ProgressStyle>,
 ) -> Result<ObservedCombinations, anyhow::Error> {
@@ -631,35 +634,38 @@ pub fn count_reads(
     let progress = progress_style.unwrap_or(&default_progress);
 
     // Determine type of matching desired and despatch as appropriate
-    match (reads.has_reverse(), lib_spec, mode, alignment_scorer) {
-        (_, _, CountMode::Align, None) => Err(ReadCountError::Error {
+    match (reads.has_reverse(), lib_spec, mode, alignment_scorer, pattern_length, pattern_tolerance) {
+        (_, _, CountMode::Align, None, _, _) => Err(ReadCountError::Error {
             desc: "Mode is 'align' but no AlignmentScorer passed".to_string(),
-        }
-        .into()),
-        (false, Some(lib_spec), CountMode::Align, Some(a)) => {
+        }.into()),
+        (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
             count_single_align(reads, lib_spec, filter_config, a, cache, progress)
         }
-        (true, Some(lib_spec), CountMode::Align, Some(a)) => {
+        (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
             count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
         }
-        (false, Some(lib_spec), CountMode::Pattern, _) => {
-            count_single_pattern(reads, lib_spec, filter_config, progress)
+
+        (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => Err(ReadCountError::Error {
+            desc: "Mode is 'pattern' but pattern length and/or tolerance is missing".to_string(),
+        }.into()),
+        (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+            count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
         }
-        (true, Some(lib_spec), CountMode::Pattern, _) => {
-            count_paired_pattern(reads, lib_spec, filter_config, progress)
+        (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+            count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
         }
-        (false, Some(lib_spec), CountMode::Inframe, _) => {
+
+        (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
             count_single_inframe(reads, lib_spec, filter_config, progress)
         }
-        (true, Some(lib_spec), CountMode::Inframe, _) => {
+        (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
             count_paired_inframe(reads, lib_spec, filter_config, progress)
         }
-        (false, Some(_), CountMode::FullRead, _) => {
-            count_single_raw(reads, filter_config, progress)
-        }
-        (true, Some(_), CountMode::FullRead, _) => count_paired_raw(reads, filter_config, progress),
-        (false, None, _, _) => count_single_raw(reads, filter_config, progress),
-        (true, None, _, _) => count_paired_raw(reads, filter_config, progress),
+
+        (false, Some(_), CountMode::FullRead, _, _, _) => count_single_raw(reads, filter_config, progress),
+        (true, Some(_), CountMode::FullRead, _, _, _) => count_paired_raw(reads, filter_config, progress),
+        (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
+        (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
     }
 }
 
@@ -1100,6 +1106,8 @@ fn count_single_pattern(
     reads: ReadPairParser,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
+    pattern_length: usize,
+    pattern_tolerance: u64,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", PATTERN_START_SINGLE_MSG);
@@ -1114,44 +1122,15 @@ fn count_single_pattern(
 
     let regions = lib_spec.variable_regions();
 
-    let flank_regions = lib_spec.get_all_flanking_regions(10)?;
+    let flank_regions = lib_spec.get_all_flanking_regions(pattern_length)?;
 
     info!(
         "Extracting regions using flank seqs: {:?}",
         flank_regions
             .iter()
-            .map(|(x, y)| match (x, y) {
-                (None, None) => ("None".to_string(), "None".to_string()),
-                (None, Some(e)) => ("None".to_string(), seq_to_string_or_log(e)),
-                (Some(s), None) => (seq_to_string_or_log(s), "None".to_string()),
-                (Some(s), Some(e)) => (seq_to_string_or_log(s), seq_to_string_or_log(e)),
-            })
-            .collect::<Vec<(String, String)>>()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>()
     );
-
-    // Check no flanking regions are duplicates, in which case can't use pattern matching and
-    // alignment is required
-    if !flank_regions
-        .iter()
-        .filter_map(|x| x.0.clone())
-        .all_unique()
-    {
-        return Err(ReadCountError::Error {
-            desc: "Duplicate leading flanking sequences - alignment required".to_string(),
-        }
-        .into());
-    }
-
-    if !flank_regions
-        .iter()
-        .filter_map(|x| x.1.clone())
-        .all_unique()
-    {
-        return Err(ReadCountError::Error {
-            desc: "Duplicate trailing flanking sequences - alignment required".to_string(),
-        }
-        .into());
-    }
 
     // Count reads
     let mut counts = ObservedCombinations::new(regions.clone(), filter_config);
@@ -1164,51 +1143,19 @@ fn count_single_pattern(
             continue;
         }
 
-        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(regions.len());
-        let seq = record.forward.seq();
-        let seq_len = seq.len();
+        let region_matches = match_flank_patterns(
+            record.forward.seq(),
+            record.forward.qual(),
+            &flank_regions,
+            pattern_tolerance
+        )?;
 
-        // Not most efficient - iterate once for each region, could improve
-        for (id, flanks) in zip(&regions, &flank_regions) {
-            let mut complete = RegionCompleteness::Complete;
-
-            let start_pos = match &flanks.0 {
-                None => {
-                    complete = RegionCompleteness::Partial5Prime;
-                    Some(0)
-                }
-                Some(x) => seq
-                    .windows(x.len())
-                    .position(|window| window == x)
-                    .map(|i| i + x.len()),
-            };
-
-            let end_pos = match &flanks.1 {
-                None => {
-                    complete = RegionCompleteness::Partial3Prime;
-                    Some(seq_len - 1)
-                }
-                Some(x) => seq.windows(x.len()).position(|window| window == x), // End pos doesn't need offsetting due to slice being exclusive
-            };
-
-            let reg_seq: Sequence = match (start_pos, end_pos) {
-                // Region not found
-                (None, _) | (_, None) => continue,
-
-                // Region found
-                (Some(start), Some(end)) => {
-                    if start > end {
-                        // Flank seqs overlap - no region contained within
-                        continue;
-                    }
-                    seq.get(start..end)
-                        .expect("Seq should contain region as extracted from within it")
-                        .to_vec()
-                }
-            };
-
-            comb_key_vec.push(ObservedRegion::key(id.clone(), &reg_seq, complete));
-        }
+        let comb_key_vec: Vec<RegionKey> = zip(&regions, region_matches)
+            .filter_map(|(id, reg)| match reg {
+                Some(r) => Some((id.clone(), r.0, r.2)),
+                None => None,
+            })
+            .collect();
 
         let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
 
@@ -1225,6 +1172,8 @@ fn count_paired_pattern(
     reads: ReadPairParser,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
+    pattern_length: usize,
+    pattern_tolerance: u64,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", PATTERN_START_PAIRED_MSG);
@@ -1238,6 +1187,7 @@ fn count_paired_pattern(
     );
 
     let regions = lib_spec.variable_regions();
+    let n_regions = regions.len();
 
     let region_lengths: Vec<usize> = regions
         .iter()
@@ -1249,51 +1199,15 @@ fn count_paired_pattern(
         })
         .collect();
 
-    let flank_regions: Vec<(Option<Sequence>, Option<Sequence>)> = match regions
-        .iter()
-        .map(|x| lib_spec.flanking_regions(x, 10))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(x) => x,
-        Err(e) => return Err(e.into()),
-    };
+    let flank_regions = lib_spec.get_all_flanking_regions(pattern_length)?;
 
     info!(
         "Extracting regions using flank seqs: {:?}",
         flank_regions
             .iter()
-            .map(|(x, y)| match (x, y) {
-                (None, None) => ("None".to_string(), "None".to_string()),
-                (None, Some(e)) => ("None".to_string(), seq_to_string_or_log(e)),
-                (Some(s), None) => (seq_to_string_or_log(s), "None".to_string()),
-                (Some(s), Some(e)) => (seq_to_string_or_log(s), seq_to_string_or_log(e)),
-            })
-            .collect::<Vec<(String, String)>>()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>()
     );
-
-    // Check no flanking regions are duplicates, in which case can't use pattern matching and
-    // alignment is required
-    if !flank_regions
-        .iter()
-        .filter_map(|x| x.0.clone())
-        .all_unique()
-    {
-        return Err(ReadCountError::Error {
-            desc: "Duplicate leading flanking sequences - alignment required".to_string(),
-        }
-        .into());
-    }
-
-    if !flank_regions
-        .iter()
-        .filter_map(|x| x.1.clone())
-        .all_unique()
-    {
-        return Err(ReadCountError::Error {
-            desc: "Duplicate trailing flanking sequences - alignment required".to_string(),
-        }
-        .into());
-    }
 
     // Count reads
     let mut counts = ObservedCombinations::new(regions.clone(), filter_config);
@@ -1306,10 +1220,8 @@ fn count_paired_pattern(
             continue;
         }
 
-        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(regions.len());
-
-        let f_read = record.forward.seq();
-        let r_read = match &record.reverse {
+        let f_seq = record.forward.seq();
+        let r_seq = match &record.reverse {
             Some(x) => revcomp(x.seq()),
             None => {
                 return Err(ReadCountError::Error {
@@ -1330,107 +1242,25 @@ fn count_paired_pattern(
             }
         };
 
-        let f_len = f_read.len();
-        let r_len = r_read.len();
+        let f_matches = match_flank_patterns(
+            f_seq,
+            f_qual,
+            &flank_regions,
+            pattern_tolerance
+        )?;
 
-        // Not most efficient - iterate once for each region, could improve
-        for (id, len, flanks) in izip!(&regions, &region_lengths, &flank_regions) {
-            let mut complete = RegionCompleteness::Complete;
+        let r_matches = match_flank_patterns(
+            &r_seq,
+            &r_qual,
+            &flank_regions,
+            pattern_tolerance
+        )?;
 
-            // Match in fwd read
-            let start_pos = match &flanks.0 {
-                None => {
-                    complete = RegionCompleteness::Partial5Prime;
-                    Some(0)
-                }
-                Some(x) => f_read
-                    .windows(x.len())
-                    .position(|window| window == x)
-                    .map(|i| i + x.len()),
-            };
+        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(n_regions);
 
-            let end_pos = match &flanks.1 {
-                None => {
-                    complete = RegionCompleteness::Partial3Prime;
-                    Some(f_len - 1)
-                }
-                Some(x) => f_read.windows(x.len()).position(|window| window == x), // End pos doesn't need offsetting due to slice being exclusive
-            };
-
-            let fwd: Option<RegionMatch> = match (start_pos, end_pos) {
-                // Region not found
-                (None, _) | (_, None) => None,
-
-                // Region found
-                (Some(start), Some(end)) => {
-                    if start > end {
-                        // Flank seqs overlap - no region contained within
-                        None
-                    } else {
-                        Some((
-                            f_read
-                                .get(start..end)
-                                .expect("Seq should contain region as extracted from within it")
-                                .to_vec(),
-                            f_qual
-                                .get(start..end)
-                                .expect("Qual should contain region as extracted from within it")
-                                .to_vec(),
-                            complete,
-                        ))
-                    }
-                }
-            };
-
-            // Match in rev read
-            let start_pos = match &flanks.0 {
-                None => {
-                    complete = RegionCompleteness::Partial5Prime;
-                    Some(0)
-                }
-                Some(x) => r_read
-                    .windows(x.len())
-                    .position(|window| window == x)
-                    .map(|i| i + x.len()),
-            };
-
-            let end_pos = match &flanks.1 {
-                None => {
-                    complete = RegionCompleteness::Partial3Prime;
-                    Some(r_len - 1)
-                }
-                Some(x) => r_read.windows(x.len()).position(|window| window == x), // End pos doesn't need offsetting due to slice being exclusive
-            };
-
-            let rev: Option<RegionMatch> = match (start_pos, end_pos) {
-                // Region not found
-                (None, _) | (_, None) => None,
-
-                // Region found
-                (Some(start), Some(end)) => {
-                    if start > end {
-                        // Flank seqs overlap - no region contained within
-                        None
-                    } else {
-                        Some((
-                            r_read
-                                .get(start..end)
-                                .expect("Seq should contain region as extracted from within it")
-                                .to_vec(),
-                            r_qual
-                                .get(start..end)
-                                .expect("Qual should contain region as extracted from within it")
-                                .to_vec(),
-                            complete,
-                        ))
-                    }
-                }
-            };
-
-            // Determine which read to use
-            match merge_seqs(fwd, rev, *len)? {
-                Some((seq, comp)) => comb_key_vec.push(ObservedRegion::key(id.clone(), &seq, comp)),
-                None => continue,
+        for (id, len, fwd, rev) in izip!(&regions, &region_lengths, f_matches, r_matches) {
+            if let Some(merged) = merge_seqs(fwd, rev, *len)? {
+                comb_key_vec.push(ObservedRegion::key(id.clone(), &merged.0, merged.1));
             }
         }
 
@@ -1822,6 +1652,35 @@ fn count_paired_raw(
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+    use crate::lib_spec::FlankingSequences;
+    use crate::containers::RegionCompleteness;
 
+    #[test]
+    fn test_perfect_flank_matching() {
+        let _ = env_logger::try_init();
+
+        let seq  = b"CCCCAATTGGGCCGGAAAAGGCCGGTATAGGGGATATGGGCGCGTTTT";
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()),
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()),
+        ];
+        let tolerance: u64 = 0;
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            Some((b"CCCC".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
+            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            Some((b"TTTT".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial3Prime)),
+        ];
+
+        if let Ok(obs) = match_flank_patterns(seq, qual, &flanks, tolerance) {
+            assert_eq!(obs, exp, "Observed regions don't match expected");
+        } else {
+            assert!(false, "match_flank_patterns returned Err(...)")
+        }
+    }
 }

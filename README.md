@@ -4,7 +4,7 @@ CLI tool for counting structured single and paired end sequencing reads and comp
 It compares each read to a canonical form defined in a library specification using one of four approaches:
 
 * Alignment - Align reads to the template via semi-global alignment. Most thorough but slowest, allows variable region lengths
-* Pattern matching - Use flanking regions to identify regions. Faster than alignment while allowing variable region length but less robust against variation.
+* Pattern matching - Use flanking regions to identify regions. Faster than alignment while allowing variable region length but less robust against variation. All regions are considered until one is identified and then subsequent regions must be found in turn, with missing regions leading to all subsequent ones ignored too. In future we may make a more flexible pattern matching option but for now if use alignment for comprehensive matching.
 * Inframe - Assume regions occur at the correct position in reads (for instance after using cutadapt). Fastest structured read counting but can't handle variation.
 * Raw - Count full length sequences, fastest but unstructured
 

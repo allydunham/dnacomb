@@ -136,6 +136,14 @@ struct Cli {
     #[arg(short = 'r', long, help_heading = "Filtering")]
     alignment_tolerance: Option<f32>,
 
+    /// Length of flanking pattern to use (where possible)
+    #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
+    pattern_length: usize,
+
+    /// Number of mismatches to accept while matching flanking patterns
+    #[arg(long, default_value_t = 1, help_heading = "Pattern Matching")]
+    pattern_tolerance: u64,
+
     /// Match score for alignment
     #[arg(long, default_value_t = 6, help_heading = "Alignment")]
     match_score: i32,
@@ -336,6 +344,8 @@ fn run(args: Cli) -> Result<(), Error> {
         args.mode,
         filter_config,
         Some(alignment_scorer),
+        Some(args.pattern_length),
+        Some(args.pattern_tolerance),
         !args.no_cache,
         Some(&progress_style),
     )?;

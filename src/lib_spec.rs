@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::errors::{LibSpecError, LibraryError};
+use crate::errors::{LibSpecError, LibraryError, seq_to_string_or_log};
 
 /// LibSpec region types
 ///
@@ -109,6 +109,19 @@ pub enum FlankingSequences {
     OpenStart(Sequence),
     Internal(Sequence, Sequence),
     OpenEnd(Sequence)
+}
+
+impl ToString for FlankingSequences {
+    fn to_string(&self) -> String {
+        match self {
+            FlankingSequences::Unflanked => "Unflanked".to_string(),
+            FlankingSequences::OpenStart(end) => format!("(Open, {})", seq_to_string_or_log(end)),
+            FlankingSequences::Internal(start, end) => format!(
+                "({}, {})", seq_to_string_or_log(start), seq_to_string_or_log(end)
+            ),
+            FlankingSequences::OpenEnd(start) => format!("({}, Open)", seq_to_string_or_log(start))
+        }
+    }
 }
 
 /// LibSpec definition
