@@ -85,7 +85,7 @@ category_colours <- c(
 
 p_all_scatter <- filter(test_counts, split == "all_regions") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE) +
+  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE, solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
   coord_fixed() +
@@ -98,7 +98,7 @@ ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height 
 
 p_library_scatter <- filter(test_counts, split == "library") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE) +
+  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE, solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
   coord_fixed() +
@@ -115,7 +115,7 @@ p_summary_bars <- filter(test_counts, split == "summary") %>%
   mutate(group = c(count = "Observed", true_count = "Expected")[group],
          id = factor(id, levels = names(category_colours))) %>%
   ggplot(aes(x = group, y = count, fill = id)) +
-  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
+  facet_nested(rows = vars(library), cols = vars(mode, distance, end), solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_col(position = position_stack(), width = 0.7) +
   scale_fill_manual(name = "", values = category_colours) +
   labs(x = "", y = "Count") +
@@ -128,14 +128,15 @@ count_cors <- filter(test_counts, split == "all_regions") %>%
   group_modify(~broom::tidy(cor.test(.$count, .$true_count))) %>%
   ungroup()
 
-p_test_cors <- ggplot(count_cors, aes(y = str_c(mode, ", ", distance, ", ", library, ", ", end),
-                                      x = estimate, xmin = conf.low, xmax = conf.high)) +
+p_test_cors <- ggplot(count_cors, aes(y = distance, x = estimate, xmin = conf.low, xmax = conf.high)) +
+  facet_nested(rows = vars(library, mode), cols = vars(end), switch = "y", solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_col(fill = "#377eb8", width = 0.6) +
   geom_errorbarh(height = 0.3) +
   labs(x = "Pearson's r", y = "") +
   theme(panel.grid.major.x = element_line(colour = "grey", linetype = "dotted"),
         panel.grid.major.y = element_blank(),
-        axis.ticks.y = element_blank())
+        axis.ticks.y = element_blank(),
+        strip.placement = "outside")
 ggsave("plots/test_observed_expected_correlation.png", p_test_cors, units = "cm", height = 30, width = 16)
   
 # Benchmarks
