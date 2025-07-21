@@ -85,9 +85,10 @@ category_colours <- c(
 
 p_all_scatter <- filter(test_counts, split == "all_regions") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
+  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
+  coord_fixed() +
   scale_x_continuous(transform = "pseudo_log") +
   scale_y_continuous(transform = "pseudo_log") +
   scale_colour_manual(values = category_colours) +
@@ -97,9 +98,10 @@ ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height 
 
 p_library_scatter <- filter(test_counts, split == "library") %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
-  facet_nested(rows = vars(library), cols = vars(mode, distance, end)) +
+  facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
   geom_point(shape = 20) +
+  coord_fixed() +
   scale_x_continuous(transform = "pseudo_log") +
   scale_y_continuous(transform = "pseudo_log") +
   scale_colour_manual(values = category_colours) +
