@@ -221,12 +221,17 @@ We test this with an integration test on simulated data (see the `scripts/` and 
 
 ![summary counts](plots/test_summary_bars.png)
 
-For unmutated sequences all methods give perfect counts as expected and alignment is generally robust across simulated mutations.
-The inframe matching approach is generally ok as long as region lengths don't vary and there aren't too many indels.
-Flanking pattern matching and full alignment are both broadly robust under normal mutation profiles but pattern matching is a bit less tolerant to indels around target regions and cannot cope with as wide a range of region structures as full alignment.
+The different methods have the follow profiles:
+
+* For unmutated sequences all methods give perfect counts as expected and alignment is generally robust across simulated mutations.
+* The inframe matching approach is generally ok as long as region lengths don't vary and there aren't too many indels.
+* Flanking pattern matching is robust under normal mutation profiles but breaks down under more extreme variants like indels in the flanking patterns. It also cannot cope with as wide a range of regions structures as full alignment.
+* Full alignment is the most robust across error modes and region structures.
 
 The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
+Both flanking patterns and alignment can deal with variable length regions, including across the read junction in paired end matching but regions that cross reads are not always combined correctly.
+If a variable regions spans both reads it's recommended to merge reads first where practical.
 
 Additionally, the following bugs are currently known:
 
-- Errors when sequences are 0 or 1bp long
+* Errors when sequences are 0 or 1bp long

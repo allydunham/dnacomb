@@ -495,11 +495,13 @@ fn match_flank_patterns(
 
                         reg = i + 1;
                         open = false;
+                        pos = end;
                     },
                     FlankingSequences::Internal(..) => {
                         reg = i;
                         open = true;
                         reg_start = end;
+                        pos = end;
                     },
                     FlankingSequences::OpenEnd(..) => {
                         out[i] = Some((
@@ -595,8 +597,8 @@ fn match_flank_patterns(
     // If an Internal region is still open, close it as partial 3'
     if open && matches!(&flanks[reg], FlankingSequences::Internal(..)) {
         out[reg] = Some((
-            seq[reg_start..(pos - 1)].to_vec(),
-            qual[reg_start..(pos - 1)].to_vec(),
+            seq[reg_start..seq.len()].to_vec(),
+            qual[reg_start..seq.len()].to_vec(),
             RegionCompleteness::Partial3Prime
         ));
     }
@@ -1691,5 +1693,87 @@ mod tests {
         } else {
             assert!(false, "match_flank_patterns returned Err(...)")
         }
+    }
+
+    #[test]
+    fn test_flank_matching_with_mismatches() {
+        let _ = env_logger::try_init();
+
+        let seq  = b"CCCCAATCGGGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()),                   // 1 mismatch: AATC
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),  // 1 mismatch: GCGG
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()),                     // 2 mismatches: CGTT
+        ];
+        let tolerance: u64 = 1;
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            Some((b"CCCC".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
+            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            None,
+        ];
+
+        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        assert_eq!(obs, exp, "Observed regions don't match expected with mismatch tolerance");
+    }
+
+    #[test]
+    fn test_flank_matching_partial_path() {
+        let seq  = b"GGGCCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFF";
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()), // missing
+        ];
+        let tolerance: u64 = 0;
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            None,
+            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial3Prime)),
+            None,
+        ];
+
+        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        assert_eq!(obs, exp);
+    }
+
+    #[test]
+    fn test_flank_matching_with_gap_stops_scan() {
+        let seq  = b"GGGGAATTGGGGGGGGCGCG"; // Region 2 is missing
+        let qual = b"FFFFFFFFFFFFFFFFFFFF";
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()),
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()), // missing
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()), // would match if not skipped
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()),
+        ];
+        let tolerance: u64 = 0;
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
+            None,
+            None,
+            None,
+        ];
+
+        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        assert_eq!(obs, exp);
+    }
+
+    #[test]
+    fn test_empty_flank_list() {
+        let seq = b"ACGTACGT";
+        let qual = b"FFFFFFFF";
+        let flanks: Vec<FlankingSequences> = vec![];
+        let tolerance = 0;
+
+        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        assert!(obs.is_empty());
     }
 }
