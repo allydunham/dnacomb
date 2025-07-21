@@ -223,8 +223,8 @@ We test this with an integration test on simulated data (see the `scripts/` and 
 
 For unmutated sequences all methods give perfect counts as expected and alignment is generally robust across simulated mutations.
 The inframe matching approach is generally ok as long as region lengths don't vary and there aren't too many indels.
-On the other hand, pattern matching approaches are very sensitive to mutations in the flanking sequences, with many unassigned reads in tests that are likely assignable.
-We are working on making the pattern matching approach more robust as it gives a nice intermediate between inframe and full alignment in terms of performance.
+Flanking pattern matching and full alignment are both broadly robust under normal mutation profiles but pattern matching is a bit less tolerant to indels around target regions and cannot cope with as wide a range of region structures as full alignment.
+
 The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
 
 Additionally, the following bugs are currently known:

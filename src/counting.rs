@@ -592,6 +592,15 @@ fn match_flank_patterns(
         }
     }
 
+    // If an Internal region is still open, close it as partial 3'
+    if open && matches!(&flanks[reg], FlankingSequences::Internal(..)) {
+        out[reg] = Some((
+            seq[reg_start..(pos - 1)].to_vec(),
+            qual[reg_start..(pos - 1)].to_vec(),
+            RegionCompleteness::Partial3Prime
+        ));
+    }
+
     Ok(out)
 }
 
