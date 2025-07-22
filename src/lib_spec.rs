@@ -13,7 +13,7 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::str::FromStr;
 
 use crate::errors::{LibSpecError, LibraryError, seq_to_string_or_log};
@@ -21,7 +21,7 @@ use crate::errors::{LibSpecError, LibraryError, seq_to_string_or_log};
 /// LibSpec region types
 ///
 /// Specification for serde json to parse LibSpec regions
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "seq_type")]
 pub enum Region {
     /// A variable region with a list of possible values/combinations in a library. For
@@ -127,7 +127,7 @@ impl ToString for FlankingSequences {
 /// LibSpec definition
 ///
 /// Specification for serde json to parse LibSpec JSON files
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LibrarySpec {
     /// The name of the library/sequence type
     pub id: String,
@@ -549,15 +549,15 @@ impl FromStr for LibrarySpec {
 pub struct Library {
     /// Full sequences for each member of the library, divided into region vectors. The full nth
     /// sequence contains the nth sequence from each region vector
-    pub library: HashMap<String, Vec<Rc<LibraryRegion>>>,
+    pub library: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
     /// Unique sequences for each region, mapping back to which full combinations they are part
     /// of by index
-    pub regions: HashMap<String, Vec<Rc<LibraryRegion>>>,
+    pub regions: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
-    exact_matches: HashMap<String, HashMap<Sequence, Rc<LibraryRegion>>>,
+    exact_matches: HashMap<String, HashMap<Sequence, Arc<LibraryRegion>>>,
 
     /// Max distance to consider for each region
     region_max_distance: HashMap<String, u64>,
@@ -590,7 +590,7 @@ impl Hash for LibraryRegion {
 /// Match with a LibraryRegion at a given distance
 #[derive(Debug)]
 pub struct LibraryMatch {
-    pub matches: Vec<Rc<LibraryRegion>>,
+    pub matches: Vec<Arc<LibraryRegion>>,
     pub distance: u64,
 }
 
@@ -601,7 +601,7 @@ pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option
     match (x, y) {
         (None, _) | (_, None) => None,
         (Some(x), Some(y)) => {
-            let matches: Vec<Rc<LibraryRegion>> = x
+            let matches: Vec<Arc<LibraryRegion>> = x
                 .matches
                 .iter()
                 .filter(|m| y.matches.contains(m))
@@ -670,7 +670,7 @@ impl Library {
                 .insert(
                     key.clone(),
                     Vec::from_iter(reg_map.into_iter().map(|x| {
-                        Rc::new(LibraryRegion {
+                        Arc::new(LibraryRegion {
                             sequence: x.0,
                             inds: x.1,
                         })
@@ -703,7 +703,7 @@ impl Library {
         let mut library_compiled = HashMap::new();
 
         for (key, seqs) in library {
-            let mut rc_vec: Vec<Option<Rc<LibraryRegion>>> = vec![None; seqs.len()];
+            let mut rc_vec: Vec<Option<Arc<LibraryRegion>>> = vec![None; seqs.len()];
 
             for reg in regions
                 .get(&key)
@@ -717,7 +717,7 @@ impl Library {
             library_compiled.insert(
                 key.clone(),
                 rc_vec.into_iter().map(
-                    |x| x.expect("All library members should have been assigned Some(Rc<LibraryRegion>) by construction")).collect()
+                    |x| x.expect("All library members should have been assigned Some(Arc<LibraryRegion>) by construction")).collect()
             );
         }
 
@@ -786,7 +786,7 @@ impl Library {
         }
 
         // Else try lookup
-        let regions: &Vec<Rc<LibraryRegion>> = match self.regions.get(region) {
+        let regions: &Vec<Arc<LibraryRegion>> = match self.regions.get(region) {
             Some(x) => x,
             None => {
                 return Err(LibraryError::MissingRegion {
@@ -858,12 +858,12 @@ impl Library {
     /// Compare an observed sequence to the library via Hamming distance
     fn lookup_hamming(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             // Hamming distance only applicaple for matching length, ignore
@@ -904,12 +904,12 @@ impl Library {
     /// 5 prime end
     fn lookup_hamming_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -947,12 +947,12 @@ impl Library {
     /// 3 prime end
     fn lookup_hamming_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -992,12 +992,12 @@ impl Library {
     /// Compare an observed sequence to the library via Levenshtein distance
     fn lookup_levenshtein(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             // Use appropriate levenshtein implemntation (other branch should be
@@ -1032,12 +1032,12 @@ impl Library {
     /// sequences 5 prime end
     fn lookup_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1071,12 +1071,12 @@ impl Library {
     /// sequences 3 prime end
     fn lookup_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1110,12 +1110,12 @@ impl Library {
     /// Compare an observed sequence to the library via Bounded Levenshtein distance
     fn lookup_bounded_levenshtein(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             dist = distance::simd::bounded_levenshtein(
@@ -1148,12 +1148,12 @@ impl Library {
     /// sequences 5 prime end
     fn lookup_bounded_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1185,12 +1185,12 @@ impl Library {
     /// sequences 3 prime end
     fn lookup_bounded_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {

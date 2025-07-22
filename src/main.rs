@@ -13,7 +13,7 @@ use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
 use dnacomb::lib_spec::{DistanceMetric, Library, LibrarySpec};
 use dnacomb::logging::ProgressStyle;
-use dnacomb::parsing::{Compression, ReadPairParser, SeqFormat, SeqPath};
+use dnacomb::parsing::{Compression, ReadPairParser, SeqFormat, SeqPath, ReadPairProducer};
 
 /// Fast general purpose read counter supporting complex structured reads
 ///
@@ -175,9 +175,10 @@ struct Cli {
     /// Phred value to assume for Fasta files. Only matters when comparing to Fastq.
     #[arg(long, default_value_t = b'I', help_heading = "Technical")]
     default_phred: u8,
-    // /// Number of threads to use
-    // #[arg(short, long, default_value_t = 1, help_heading = "Technical")]
-    // threads: u32,
+
+    /// Number of threads to use
+    #[arg(short = 'T', long, default_value_t = 1, help_heading = "Technical")]
+    threads: usize,
 
     // /// Chunksize for parallel processing
     // #[arg(short, long, help_heading = "Technical")]
@@ -347,6 +348,7 @@ fn run(args: Cli) -> Result<(), Error> {
         Some(args.pattern_length),
         Some(args.pattern_tolerance),
         !args.no_cache,
+        args.threads,
         Some(&progress_style),
     )?;
 

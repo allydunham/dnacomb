@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::str;
+use crossbeam::channel::Receiver;
 
 use crate::errors::{FastaError, ReadPairError};
 
@@ -121,6 +122,21 @@ fn fasta_to_fastq(fasta_record: fasta::Record, default_quality: u8) -> fastq::Re
     fastq::Record::with_attrs(&id, desc.as_deref(), &seq, &qual)
 }
 
+/// Group status of a read
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum ReadGroup {
+    Ungrouped,
+    Unmatched,
+    Match(String),
+}
+
+pub trait ReadPairProducer: Iterator<Item = Result<ReadPair, ReadPairError>> {
+    fn has_reverse(&self) -> bool;
+    fn group(&self) -> &Option<Regex>;
+    fn max_reads(&self) -> u64;
+    fn read_count(&self) -> u64;
+}
+
 /// Parser outputing ReadPair objects
 ///
 /// Internally uses boxed forward and reverse parsers that may yield Fasta or Fastq
@@ -134,27 +150,19 @@ pub struct ReadPairParser {
 
     /// Regex to process forward read names with to identify groups, for instance cells
     /// in single cell assays
-    pub group: Option<Regex>,
+    group: Option<Regex>,
 
     /// Maximum number of reads to process
-    pub max_reads: u64,
+    max_reads: u64,
 
     /// Number of reads processed
-    pub read_count: u64,
+    read_count: u64,
 
     /// Implementation detail for repeated Regex search for read groups
     /// Instead of concating id/desc into a new string each time, reuse this
     /// buffer. id/desc are generally the same length so should quickly converge on
     /// a good capacity.
     group_haystack: String,
-}
-
-/// Group status of a read
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReadGroup {
-    Ungrouped,
-    Unmatched,
-    Match(String),
 }
 
 impl ReadPairParser {
@@ -191,11 +199,6 @@ impl ReadPairParser {
         Ok(ReadPairParser::new(f_records, r_records, group, max_reads))
     }
 
-    /// Whether the parser includes reverse reads
-    pub fn has_reverse(&self) -> bool {
-        self.reverse.is_some()
-    }
-
     /// Extract read group from a record
     fn read_group(&mut self, f_record: &fastq::Record) -> ReadGroup {
         let re = match &self.group {
@@ -220,6 +223,24 @@ impl ReadPairParser {
                 Some(x) => ReadGroup::Match(x.as_str().to_string()),
             },
         }
+    }
+}
+
+impl ReadPairProducer for ReadPairParser {
+    fn has_reverse(&self) -> bool {
+        self.reverse.is_some()
+    }
+
+    fn group(&self) -> &Option<Regex> {
+        &self.group
+    }
+
+    fn max_reads(&self) -> u64 {
+        self.max_reads
+    }
+
+    fn read_count(&self) -> u64 {
+        self.read_count
     }
 }
 
@@ -290,6 +311,69 @@ impl Iterator for ReadPairParser {
                 })),
             }
         }
+    }
+}
+
+/// Multithreading wrapper for ReadPairParser
+///
+/// Recieves reads from a ReadPairParser on another thread to process them in parallel
+pub struct ThreadedReadPairParser {
+    // Channel receiving new reads
+    rx: Receiver<Result<ReadPair, ReadPairError>>,
+
+    // Whether the incoming read pairs have reverse reads
+    rev_reads: bool,
+
+    // Regex used to parse grouping structure
+    group: Option<Regex>,
+
+    /// Maximum number of reads potentially coming from the channel
+    max_reads: u64,
+
+    /// Number of reads received on this channel
+    read_count: u64,
+}
+
+impl ThreadedReadPairParser {
+    pub fn new(
+        rx: Receiver<Result<ReadPair, ReadPairError>>, rev_reads: bool,
+        group: Option<Regex>, max_reads: u64
+    ) -> Self {
+        ThreadedReadPairParser {
+            rx: rx,
+            rev_reads: rev_reads,
+            group: group,
+            max_reads: max_reads,
+            read_count: 0
+        }
+    }
+}
+
+impl ReadPairProducer for ThreadedReadPairParser {
+    fn has_reverse(&self) -> bool {
+        self.rev_reads
+    }
+
+    fn group(&self) -> &Option<Regex> {
+        &self.group
+    }
+
+    fn max_reads(&self) -> u64 {
+        self.max_reads
+    }
+
+    fn read_count(&self) -> u64 {
+        self.read_count
+    }
+}
+
+impl Iterator for ThreadedReadPairParser {
+    type Item = Result<ReadPair, ReadPairError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.rx.recv().ok();
+        self.read_count += 1;
+        next
     }
 }
 

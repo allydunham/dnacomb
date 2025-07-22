@@ -133,6 +133,13 @@ def main():
                  lib_spec=spec,
                  expected_code=expected_code)
 
+    for threads in [1, 2, 4]:
+        run_test(f"{threads} Threads", f_file=f"{root}/mutant_pegrna.fq",
+                 output=f"{root}/single_threaded",
+                 mode="align", metric="bounded-levenshtein", verbose=True, sort=True,
+                 lib_spec="config/pegrna.json",
+                 expected_code=0, additional_args=["--threads", str(threads)])
+
     print(f"\nTesting complete {sum(results)}/{len(results)} passed")
     if all(results):
         print(f"All tests passed")

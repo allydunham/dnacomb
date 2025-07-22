@@ -41,6 +41,7 @@ regex = "1.11.1"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_info"] }
 env_logger = "0.11.6"
 itertools = "0.14.0"
+crossbeam = "0.8.4"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

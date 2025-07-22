@@ -207,6 +207,7 @@ impl<'a> LogProgress<'a> {
 }
 
 /// Manager for multiple progress trackers with shared settings.
+#[derive(Clone)]
 pub struct ProgressStyle {
     log_fn: Option<Arc<LogFn>>,
 }

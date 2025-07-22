@@ -10,11 +10,10 @@
 //! in a Library object.
 use anyhow::{self};
 use bio::bio_types::{alignment::Alignment, sequence::Sequence};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::errors::{LibraryError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, FilteredReads};
@@ -40,7 +39,7 @@ pub type LibraryKey = Vec<(String, RegionMatch)>;
 #[derive(Debug)]
 pub struct ObservedCombinations {
     region_ids: Vec<String>,
-    regions: HashMap<RegionKey, Rc<RefCell<ObservedRegion>>>,
+    regions: HashMap<RegionKey, Arc<Mutex<ObservedRegion>>>,
     combinations: HashMap<CombinationKey, ObservedCombination>,
     library: Option<Library>,
     library_combinations: Option<HashMap<LibraryKey, LibraryCombination>>,
@@ -57,6 +56,15 @@ impl ObservedCombinations {
             library_combinations: None,
             filtered_reads: FilteredReads::new(filter_config),
         }
+    }
+
+    /// Merge counts from another ObservedCombinations object into this one
+    ///
+    /// New counts and regions are added to this container with an empty return on
+    /// successful operation and an error returned if the two ObservedCombinations objects
+    /// are incompatible.
+    pub fn merge(&mut self, new_counts: ObservedCombinations) -> Result<(), ReadCountError> {
+        todo!()
     }
 
     /// Number of distinct observed combination types
@@ -90,7 +98,7 @@ impl ObservedCombinations {
 
                     match self.regions.get(reg_key) {
                         None => {
-                            let new_reg = Rc::new(RefCell::new(ObservedRegion::new(
+                            let new_reg = Arc::new(Mutex::new(ObservedRegion::new(
                                 reg_key.0.clone(),
                                 &reg_key.1,
                                 reg_key.2,
@@ -99,7 +107,7 @@ impl ObservedCombinations {
                             reg_map.insert(reg_key.0.clone(), new_reg.clone());
                         }
                         Some(r) => {
-                            reg_map.insert(r.borrow().id.clone(), r.clone());
+                            reg_map.insert(reg_key.0.clone(), r.clone());
                         }
                     }
                 }
@@ -168,11 +176,10 @@ impl ObservedCombinations {
             },
         );
 
-        for value in self.regions.values() {
-            let val = value
-                .borrow()
-                .compare_to_library(&library, distance_metric, max_matches);
-            value.borrow_mut().nearest_matches = val;
+        for r in self.regions.values() {
+            let mut reg = r.lock().unwrap();
+            let val = reg.compare_to_library(&library, distance_metric, max_matches);
+            reg.nearest_matches = val;
             reg_progress.inc(1);
         }
         reg_progress.finish();
@@ -213,30 +220,33 @@ impl ObservedCombinations {
                 // region seqs to capture e.g. barcodes.
                 match comb.regions.get(reg) {
                     None => key.push((reg.to_string(), RegionMatch::Unmatched)),
-                    Some(x) => key.push((
-                        reg.to_string(),
-                        match &x.borrow().nearest_matches {
-                            RegionMatch::Unmatched => RegionMatch::Unmatched,
-                            RegionMatch::Overmatched { .. } => RegionMatch::Overmatched {
-                                distance: 0,
-                                matches: 0,
-                            },
-                            RegionMatch::NoLibrary { .. } => RegionMatch::NoLibrary {
-                                seq: Some(x.borrow().seq.clone()),
-                            },
-                            RegionMatch::Uncompared => RegionMatch::Uncompared,
-                            RegionMatch::Match { seq_match, .. } => RegionMatch::Match {
-                                seq_match: seq_match.clone(),
-                                distance: 0,
-                            },
-                            RegionMatch::MultiMatch { seq_matches, .. } => {
-                                RegionMatch::MultiMatch {
-                                    seq_matches: seq_matches.to_vec(),
+                    Some(x) => {
+                        let or = x.lock().unwrap();
+                        key.push((
+                            reg.to_string(),
+                            match &or.nearest_matches {
+                                RegionMatch::Unmatched => RegionMatch::Unmatched,
+                                RegionMatch::Overmatched { .. } => RegionMatch::Overmatched {
                                     distance: 0,
+                                    matches: 0,
+                                },
+                                RegionMatch::NoLibrary { .. } => RegionMatch::NoLibrary {
+                                    seq: Some(or.seq.clone()),
+                                },
+                                RegionMatch::Uncompared => RegionMatch::Uncompared,
+                                RegionMatch::Match { seq_match, .. } => RegionMatch::Match {
+                                    seq_match: seq_match.clone(),
+                                    distance: 0,
+                                },
+                                RegionMatch::MultiMatch { seq_matches, .. } => {
+                                    RegionMatch::MultiMatch {
+                                        seq_matches: seq_matches.to_vec(),
+                                        distance: 0,
+                                    }
                                 }
-                            }
-                        },
-                    )),
+                            },
+                        ))
+                    }
                 }
             }
 
@@ -422,7 +432,7 @@ pub struct ObservedCombination {
 
     /// ObservedRegions defining the sequence form. References to ObservedRegion which
     /// should be stored in the parent ObservedCombinations object.
-    regions: HashMap<String, Rc<RefCell<ObservedRegion>>>,
+    regions: HashMap<String, Arc<Mutex<ObservedRegion>>>,
 
     /// Status and result of comparison with the expected library of sequences
     library_matches: CombinationMatch,
@@ -503,7 +513,7 @@ impl CombinationMatch {
 }
 
 impl ObservedCombination {
-    fn new(regions: HashMap<String, Rc<RefCell<ObservedRegion>>>) -> Self {
+    fn new(regions: HashMap<String, Arc<Mutex<ObservedRegion>>>) -> Self {
         Self {
             counts: HashMap::new(),
             regions,
@@ -551,17 +561,16 @@ impl ObservedCombination {
                 None => return CombinationMatch::Nonmatch,
                 Some(x) => {
                     // Should never need this with the implementation in ObservedCombinations, but here as a back-up as otherwise could panic later. Do all regions first as slightly more efficient and easier to follow in log
-                    if !x.borrow().is_compared_to_library() {
-                        let val =
-                            x.borrow()
-                                .compare_to_library(library, distance_metric, max_matches);
-                        x.borrow_mut().nearest_matches = val;
+                    let mut reg = x.lock().unwrap();
+                    if !reg.is_compared_to_library() {
+                        let val =reg.compare_to_library(library, distance_metric, max_matches);
+                        reg.nearest_matches = val;
                     }
-                    x
+                    reg
                 }
             };
 
-            match &reg.borrow().nearest_matches {
+            match &reg.nearest_matches {
                 RegionMatch::Uncompared => panic!("Region uncompared despite just comparing"),
                 RegionMatch::Unmatched | RegionMatch::Overmatched { .. } => {
                     // An unmatched region or an indeterminate one means the
@@ -647,7 +656,7 @@ impl ObservedCombination {
                 match region {
                     None => output.push_str("\t\t\t\t"), // Missing regions 4 blanks
                     Some(r) => {
-                        output.push_str(&r.borrow().to_tsv_chunk());
+                        output.push_str(&r.lock().unwrap().to_tsv_chunk());
                         output.push('\t');
                     }
                 }
@@ -694,13 +703,13 @@ pub enum RegionMatch {
 
     /// A single match (`Vec<u8>` sequence and library indeces) and associated distance
     Match {
-        seq_match: Rc<LibraryRegion>,
+        seq_match: Arc<LibraryRegion>,
         distance: u64,
     },
 
     /// Multiple equidistant matches and the distance
     MultiMatch {
-        seq_matches: Vec<Rc<LibraryRegion>>,
+        seq_matches: Vec<Arc<LibraryRegion>>,
         distance: u64,
     },
 

@@ -25,7 +25,7 @@ use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, mean_quality};
 use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
-use crate::parsing::{ReadKey, ReadPair, ReadPairParser};
+use crate::parsing::{ReadKey, ReadPair, ReadPairProducer, ThreadedReadPairParser};
 
 /// Position in an alignment where a region is found
 ///
@@ -606,6 +606,39 @@ fn match_flank_patterns(
     Ok(out)
 }
 
+/// Extract ObservedCombinations from a worker thread JoinHandle
+///
+/// Returns the appropriate result or an error that can be raised via ?
+fn join_observed_combinations(
+    handle: Option<std::thread::JoinHandle<Result<ObservedCombinations, anyhow::Error>>>
+) -> Result<ObservedCombinations, anyhow::Error> {
+    match handle {
+        Some(j) => {
+            match j.join() {
+                Ok(r) => r,
+                Err(e) => {
+                    if let Some(msg) = e.downcast_ref::<&str>() {
+                        Err(ReadCountError::Error {
+                            desc: format!("Counting thread paniced: {msg}"),
+                        }.into())
+                    } else if let Some(msg) = e.downcast_ref::<String>() {
+                        Err(ReadCountError::Error {
+                            desc: format!("Counting thread paniced: {msg}"),
+                        }.into())
+                    } else {
+                        Err(ReadCountError::Error {
+                            desc: format!("Counting thread paniced with an unknown payload"),
+                        }.into())
+                    }
+                },
+            }
+        },
+        None => Err(ReadCountError::Error {
+            desc: format!("No counting threads returned objects"),
+        }.into()),
+    }
+}
+
 /// HashMap cache of observed reads and which combination they map to
 pub type ObservedReads = HashMap<ReadKey, CacheHit>;
 
@@ -630,8 +663,8 @@ pub enum CountMode {
 /// Count the occurance of query regions in sequencing reads
 ///
 /// Dispatches counting to the appropriate implementation based on CountMode
-pub fn count_reads(
-    reads: ReadPairParser,
+pub fn count_reads<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &Option<LibrarySpec>,
     mode: CountMode,
     filter_config: FilterConfig,
@@ -639,50 +672,99 @@ pub fn count_reads(
     pattern_length: Option<usize>,
     pattern_tolerance: Option<u64>,
     cache: bool,
+    threads: usize,
     progress_style: Option<&ProgressStyle>,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     let default_progress = ProgressStyle::new(None);
     let progress = progress_style.unwrap_or(&default_progress);
 
-    // Determine type of matching desired and despatch as appropriate
-    match (reads.has_reverse(), lib_spec, mode, alignment_scorer, pattern_length, pattern_tolerance) {
-        (_, _, CountMode::Align, None, _, _) => Err(ReadCountError::Error {
-            desc: "Mode is 'align' but no AlignmentScorer passed".to_string(),
-        }.into()),
-        (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-            count_single_align(reads, lib_spec, filter_config, a, cache, progress)
+    if threads == 1 {
+        // Determine type of matching desired and despatch as appropriate
+        match (reads.has_reverse(), lib_spec, mode, alignment_scorer, pattern_length, pattern_tolerance) {
+            (_, _, CountMode::Align, None, _, _) => Err(ReadCountError::Error {
+                desc: "Mode is 'align' but no AlignmentScorer passed".to_string(),
+            }.into()),
+            (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
+                count_single_align(reads, lib_spec, filter_config, a, cache, progress)
+            }
+            (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
+                count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
+            }
+
+            (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => Err(ReadCountError::Error {
+                desc: "Mode is 'pattern' but pattern length and/or tolerance is missing".to_string(),
+            }.into()),
+            (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+                count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
+            }
+            (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+                count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
+            }
+
+            (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
+                count_single_inframe(reads, lib_spec, filter_config, progress)
+            }
+            (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
+                count_paired_inframe(reads, lib_spec, filter_config, progress)
+            }
+
+            (false, Some(_), CountMode::FullRead, _, _, _) => count_single_raw(reads, filter_config, progress),
+            (true, Some(_), CountMode::FullRead, _, _, _) => count_paired_raw(reads, filter_config, progress),
+            (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
+            (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
         }
-        (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-            count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
+    } else if threads > 1 {
+        // Set up communication channel
+        let (read_tx, read_rx) = crossbeam::channel::bounded(10 * threads);
+        let mut handles = Vec::new();
+
+        // Spin up worker threads ready to receive data
+        for _ in 0..threads {
+            // each thread gets its own Read Receiver and Count Sender clone
+            let rx = read_rx.clone();
+            let rev_reads = reads.has_reverse();
+            let group = reads.group().clone();
+            let max_reads = reads.max_reads();
+            let lspec = lib_spec.as_ref().cloned();
+            let fconf = filter_config.clone();
+            let pstyle = progress_style.cloned();
+
+            handles.push(std::thread::spawn(move || {
+                let local_reads = ThreadedReadPairParser::new(
+                    rx, rev_reads, group, max_reads
+                );
+                count_reads(
+                    local_reads, &lspec, mode, fconf, alignment_scorer,
+                    pattern_length, pattern_tolerance, cache, 1, pstyle.as_ref()
+                )
+            }));
         }
 
-        (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => Err(ReadCountError::Error {
-            desc: "Mode is 'pattern' but pattern length and/or tolerance is missing".to_string(),
-        }.into()),
-        (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-            count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
+        // Produce reads on main thread - as they are sent they will be processed on worker threads
+        for read in reads {
+            read_tx.send(read).expect("worker threads hung up");
         }
-        (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-            count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
+        drop(read_tx);
+        drop(read_rx);
+
+        // Unpack initial count object
+        let mut final_counts: ObservedCombinations = join_observed_combinations(handles.pop())?;
+
+        // Merge rest of the results
+        for handle in handles {
+            let new_counts = join_observed_combinations(Some(handle))?;
+            final_counts.merge(new_counts)?
         }
 
-        (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-            count_single_inframe(reads, lib_spec, filter_config, progress)
-        }
-        (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-            count_paired_inframe(reads, lib_spec, filter_config, progress)
-        }
-
-        (false, Some(_), CountMode::FullRead, _, _, _) => count_single_raw(reads, filter_config, progress),
-        (true, Some(_), CountMode::FullRead, _, _, _) => count_paired_raw(reads, filter_config, progress),
-        (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
-        (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
+        Ok(final_counts)
+    } else {
+        Err(ReadCountError::Error {desc: "Threads must be >0".to_string()}.into())
     }
 }
 
 /// Count single end reads by aligning to the library template
-fn count_single_align(
-    reads: ReadPairParser,
+fn count_single_align<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     alignment_scorer: AlignmentScorer,
@@ -824,8 +906,8 @@ fn count_single_align(
 }
 
 /// Count paired end reads by aligning to the library template
-fn count_paired_align(
-    reads: ReadPairParser,
+fn count_paired_align<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     alignment_scorer: AlignmentScorer,
@@ -1113,8 +1195,8 @@ fn count_paired_align(
 }
 
 /// Count single end reads using surrounding patterns from the library template
-fn count_single_pattern(
-    reads: ReadPairParser,
+fn count_single_pattern<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     pattern_length: usize,
@@ -1179,8 +1261,8 @@ fn count_single_pattern(
 }
 
 /// Count paired end reads using surrounding patterns from the library template
-fn count_paired_pattern(
-    reads: ReadPairParser,
+fn count_paired_pattern<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     pattern_length: usize,
@@ -1286,8 +1368,8 @@ fn count_paired_pattern(
 }
 
 /// Count single end reads based on their in-frame position in the template
-fn count_single_inframe(
-    reads: ReadPairParser,
+fn count_single_inframe<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     progress_style: &ProgressStyle,
@@ -1381,8 +1463,8 @@ fn count_single_inframe(
 }
 
 /// Count paired end reads based on their in-frame position in the template
-fn count_paired_inframe(
-    reads: ReadPairParser,
+fn count_paired_inframe<T: ReadPairProducer>(
+    reads: T,
     lib_spec: &LibrarySpec,
     filter_config: FilterConfig,
     progress_style: &ProgressStyle,
@@ -1575,8 +1657,8 @@ fn count_paired_inframe(
 }
 
 /// Count entire single end reads
-fn count_single_raw(
-    reads: ReadPairParser,
+fn count_single_raw<T: ReadPairProducer>(
+    reads: T,
     filter_config: FilterConfig,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
@@ -1611,8 +1693,8 @@ fn count_single_raw(
 }
 
 /// Count entire paired end reads
-fn count_paired_raw(
-    reads: ReadPairParser,
+fn count_paired_raw<T: ReadPairProducer>(
+    reads: T,
     filter_config: FilterConfig,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
