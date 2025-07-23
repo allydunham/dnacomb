@@ -5,6 +5,7 @@
 //! standard ReadPair object.
 use bio::io::{fasta, fastq};
 use clap::ValueEnum;
+use crossbeam::channel::Receiver;
 use flate2::read::MultiGzDecoder;
 use log::debug;
 use regex::Regex;
@@ -12,7 +13,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::str;
-use crossbeam::channel::Receiver;
 
 use crate::errors::{FastaError, ReadPairError};
 
@@ -336,15 +336,17 @@ pub struct ThreadedReadPairParser {
 
 impl ThreadedReadPairParser {
     pub fn new(
-        rx: Receiver<Result<ReadPair, ReadPairError>>, rev_reads: bool,
-        group: Option<Regex>, max_reads: u64
+        rx: Receiver<Result<ReadPair, ReadPairError>>,
+        rev_reads: bool,
+        group: Option<Regex>,
+        max_reads: u64,
     ) -> Self {
         ThreadedReadPairParser {
-            rx: rx,
-            rev_reads: rev_reads,
-            group: group,
-            max_reads: max_reads,
-            read_count: 0
+            rx,
+            rev_reads,
+            group,
+            max_reads,
+            read_count: 0,
         }
     }
 }
@@ -530,14 +532,38 @@ mod tests {
 
     #[test]
     fn test_seq_detection() {
-        assert_eq!(detect_seq_format("path/file.fa.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
-        assert_eq!(detect_seq_format("path/file.fasta.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
-        assert_eq!(detect_seq_format("path/file.fa").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
-        assert_eq!(detect_seq_format("path/file.fasta").unwrap_or(SeqFormat::Auto), SeqFormat::Fasta);
-        assert_eq!(detect_seq_format("path/file.fq.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
-        assert_eq!(detect_seq_format("path/file.fastq.gz").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
-        assert_eq!(detect_seq_format("path/file.fq").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
-        assert_eq!(detect_seq_format("path/file.fastq").unwrap_or(SeqFormat::Auto), SeqFormat::Fastq);
+        assert_eq!(
+            detect_seq_format("path/file.fa.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fasta.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fa").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fasta").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fq.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fastq.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fq").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fastq").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
         assert!(detect_seq_format("path/file.not_fasta_ext").is_err());
     }
 }

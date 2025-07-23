@@ -122,20 +122,20 @@ def main():
         spec = f"config/{lib_specs[lib]}.json"
 
         run_test(f"{mode} {dist} {lib} single end", f_file=f"{root}/{lib}.fq",
-                 output=f"{root}/{mode}:{dist}:{lib}:single",
+                 output=f"{root}/{mode}:{dist}:{lib}:single:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
                  lib_spec=spec,
                  expected_code=expected_code)
 
         run_test(f"{mode} {dist} {lib} paired end", f_file=f"{root}/{lib}_forward.fq",
-                 r_file=f"{root}/{lib}_reverse.fq", output=f"{root}/{mode}:{dist}:{lib}:paired",
+                 r_file=f"{root}/{lib}_reverse.fq", output=f"{root}/{mode}:{dist}:{lib}:paired:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
                  lib_spec=spec,
                  expected_code=expected_code)
 
-    for threads in [1, 2, 4]:
+    for threads in [2, 4, 6]:
         run_test(f"{threads} Threads", f_file=f"{root}/mutant_pegrna.fq",
-                 output=f"{root}/single_threaded",
+                 output=f"{root}/align:bounded-levenshtein:mutant_pegrna:single:{threads}",
                  mode="align", metric="bounded-levenshtein", verbose=True, sort=True,
                  lib_spec="config/pegrna.json",
                  expected_code=0, additional_args=["--threads", str(threads)])

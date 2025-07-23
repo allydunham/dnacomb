@@ -329,4 +329,3 @@ mod tests {
         assert_eq!(seq_to_string_or_log(&seq), string)
     }
 }
-

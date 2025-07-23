@@ -5,8 +5,8 @@
 //! Supports multiple approaches for extracting regions of interest
 //! from the input sequence: alignment, pattern matching, inframe
 //! position matching and full read counting.
-use bio::alignment::distance::hamming;
 use bio::alignment::AlignmentOperation;
+use bio::alignment::distance::hamming;
 use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
 use bio::alphabets::dna::revcomp;
 use bio::bio_types::sequence::Sequence;
@@ -436,7 +436,7 @@ fn match_flank_patterns(
     seq: &[u8],
     qual: &[u8],
     flanks: &[FlankingSequences],
-    tolerance: u64
+    tolerance: u64,
 ) -> Result<Vec<Option<RegionMatch>>, ReadCountError> {
     let mut out: Vec<Option<RegionMatch>> = repeat_with(|| None).take(flanks.len()).collect();
 
@@ -447,32 +447,33 @@ fn match_flank_patterns(
 
     // Check flank sequence is valid
     match LibrarySpec::validate_flank_seqs(flanks) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => {
             return Err(ReadCountError::Error {
-                desc: format!("Invalid flanking sequences: {}", e)
+                desc: format!("Invalid flanking sequences: {}", e),
             });
-        },
+        }
     };
 
     // Initialise seach space
-    let mut pos: usize = 0;       // Position in sequence to search for match
-    let mut end: usize;           // end of current flank seq to match
-    let mut reg: usize = 0;       // region being matched
+    let mut pos: usize = 0; // Position in sequence to search for match
+    let mut end: usize; // end of current flank seq to match
+    let mut reg: usize = 0; // region being matched
     let mut reg_start: usize = 0; // Start point of region seq
     let mut flank_seq: &Sequence; // Sequence being searched for
-    let mut open: bool = false;   // whether the region start is found
-    let mut dist: u64;            // Distance to region
+    let mut open: bool = false; // whether the region start is found
+    let mut dist: u64; // Distance to region
 
     // Find opening region to assign start point
-    let start_regs: Vec<Sequence> = flanks.iter().map(|r| {
-        match r {
+    let start_regs: Vec<Sequence> = flanks
+        .iter()
+        .map(|r| match r {
             FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
             FlankingSequences::OpenStart(end) => Ok(end.clone()),
             FlankingSequences::Internal(start, ..) => Ok(start.clone()),
             FlankingSequences::OpenEnd(start) => Ok(start.clone()),
-        }
-    }).collect::<Result<Vec<Sequence>, ReadCountError>>()?;
+        })
+        .collect::<Result<Vec<Sequence>, ReadCountError>>()?;
 
     'outer: while pos < seq.len() {
         for (i, r) in start_regs.iter().enumerate() {
@@ -490,32 +491,32 @@ fn match_flank_patterns(
                         out[i] = Some((
                             seq[0..pos].to_vec(),
                             qual[0..pos].to_vec(),
-                            RegionCompleteness::Partial5Prime
+                            RegionCompleteness::Partial5Prime,
                         ));
 
                         reg = i + 1;
                         open = false;
                         pos = end;
-                    },
+                    }
                     FlankingSequences::Internal(..) => {
                         reg = i;
                         open = true;
                         reg_start = end;
                         pos = end;
-                    },
+                    }
                     FlankingSequences::OpenEnd(..) => {
                         out[i] = Some((
                             seq[end..seq.len()].to_vec(),
                             qual[end..seq.len()].to_vec(),
-                            RegionCompleteness::Partial3Prime
+                            RegionCompleteness::Partial3Prime,
                         ));
 
                         // An open end region must be at the end (checked in validation)
                         // so directly return
                         return Ok(out);
-                    },
+                    }
                 }
-                break 'outer
+                break 'outer;
             }
         }
         pos += 1;
@@ -527,7 +528,9 @@ fn match_flank_patterns(
         // Get region sequence
         flank_seq = match (open, &flanks[reg]) {
             (_, FlankingSequences::Unflanked) => unreachable!("Unflanked already checked"),
-            (_, FlankingSequences::OpenStart(..)) => unreachable!("Open start can only be first and already processed"),
+            (_, FlankingSequences::OpenStart(..)) => {
+                unreachable!("Open start can only be first and already processed")
+            }
             (_, FlankingSequences::OpenEnd(start)) => start,
             (false, FlankingSequences::Internal(start, _)) => start,
             (true, FlankingSequences::Internal(_, end)) => end,
@@ -537,13 +540,12 @@ fn match_flank_patterns(
 
         // Loop forward to find then process
         'inner: while pos < seq.len() {
-
             // If seq runs off end without finding we've exhausted
             if end > seq.len() {
-                break 'outer
+                break 'outer;
             }
 
-            dist = hamming(&flank_seq, &seq[pos..end]);
+            dist = hamming(flank_seq, &seq[pos..end]);
 
             // If not found, continue (do this way to save indent below)
             if dist > tolerance {
@@ -554,42 +556,42 @@ fn match_flank_patterns(
 
             match (open, &flanks[reg]) {
                 (_, FlankingSequences::Unflanked) => unreachable!("Unflanked already checked"),
-                (_, FlankingSequences::OpenStart(..)) => unreachable!(
-                    "Open start can only be first and already processed"
-                ),
-                (true, FlankingSequences::OpenEnd(..)) => unreachable!(
-                    "Open end only has a start and is then processed below"
-                ),
+                (_, FlankingSequences::OpenStart(..)) => {
+                    unreachable!("Open start can only be first and already processed")
+                }
+                (true, FlankingSequences::OpenEnd(..)) => {
+                    unreachable!("Open end only has a start and is then processed below")
+                }
                 (false, FlankingSequences::OpenEnd(..)) => {
                     out[reg] = Some((
                         seq[end..seq.len()].to_vec(),
                         qual[end..seq.len()].to_vec(),
-                        RegionCompleteness::Partial3Prime
+                        RegionCompleteness::Partial3Prime,
                     ));
 
                     // Open end must finish the seq so break outer
-                    break 'outer
-                },
+                    break 'outer;
+                }
                 (true, FlankingSequences::Internal(..)) => {
                     // Found end - set out[reg] and move to next region
                     out[reg] = Some((
                         seq[reg_start..pos].to_vec(),
                         qual[reg_start..pos].to_vec(),
-                        RegionCompleteness::Complete
+                        RegionCompleteness::Complete,
                     ));
 
                     pos = end;
                     open = false;
                     reg += 1;
-                    break 'inner
-                },
+                    break 'inner;
+                }
                 (false, FlankingSequences::Internal(..)) => {
                     // Found start - set open and search for end
                     pos = end;
                     open = true;
                     reg_start = end;
-                    break 'inner
-                },
+                    break 'inner;
+                }
             }
         }
     }
@@ -599,7 +601,7 @@ fn match_flank_patterns(
         out[reg] = Some((
             seq[reg_start..seq.len()].to_vec(),
             qual[reg_start..seq.len()].to_vec(),
-            RegionCompleteness::Partial3Prime
+            RegionCompleteness::Partial3Prime,
         ));
     }
 
@@ -610,32 +612,34 @@ fn match_flank_patterns(
 ///
 /// Returns the appropriate result or an error that can be raised via ?
 fn join_observed_combinations(
-    handle: Option<std::thread::JoinHandle<Result<ObservedCombinations, anyhow::Error>>>
+    handle: Option<std::thread::JoinHandle<Result<ObservedCombinations, anyhow::Error>>>,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     match handle {
-        Some(j) => {
-            match j.join() {
-                Ok(r) => r,
-                Err(e) => {
-                    if let Some(msg) = e.downcast_ref::<&str>() {
-                        Err(ReadCountError::Error {
-                            desc: format!("Counting thread paniced: {msg}"),
-                        }.into())
-                    } else if let Some(msg) = e.downcast_ref::<String>() {
-                        Err(ReadCountError::Error {
-                            desc: format!("Counting thread paniced: {msg}"),
-                        }.into())
-                    } else {
-                        Err(ReadCountError::Error {
-                            desc: format!("Counting thread paniced with an unknown payload"),
-                        }.into())
+        Some(j) => match j.join() {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(msg) = e.downcast_ref::<&str>() {
+                    Err(ReadCountError::Error {
+                        desc: format!("Counting thread paniced: {msg}"),
                     }
-                },
+                    .into())
+                } else if let Some(msg) = e.downcast_ref::<String>() {
+                    Err(ReadCountError::Error {
+                        desc: format!("Counting thread paniced: {msg}"),
+                    }
+                    .into())
+                } else {
+                    Err(ReadCountError::Error {
+                        desc: "Counting thread paniced with an unknown payload".to_string(),
+                    }
+                    .into())
+                }
             }
         },
         None => Err(ReadCountError::Error {
-            desc: format!("No counting threads returned objects"),
-        }.into()),
+            desc: "No counting threads returned objects".to_string(),
+        }
+        .into()),
     }
 }
 
@@ -678,87 +682,114 @@ pub fn count_reads<T: ReadPairProducer>(
     let default_progress = ProgressStyle::new(None);
     let progress = progress_style.unwrap_or(&default_progress);
 
-    if threads == 1 {
-        // Determine type of matching desired and despatch as appropriate
-        match (reads.has_reverse(), lib_spec, mode, alignment_scorer, pattern_length, pattern_tolerance) {
-            (_, _, CountMode::Align, None, _, _) => Err(ReadCountError::Error {
-                desc: "Mode is 'align' but no AlignmentScorer passed".to_string(),
-            }.into()),
-            (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-                count_single_align(reads, lib_spec, filter_config, a, cache, progress)
-            }
-            (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-                count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
-            }
-
-            (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => Err(ReadCountError::Error {
-                desc: "Mode is 'pattern' but pattern length and/or tolerance is missing".to_string(),
-            }.into()),
-            (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-                count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
-            }
-            (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-                count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
-            }
-
-            (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-                count_single_inframe(reads, lib_spec, filter_config, progress)
-            }
-            (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-                count_paired_inframe(reads, lib_spec, filter_config, progress)
-            }
-
-            (false, Some(_), CountMode::FullRead, _, _, _) => count_single_raw(reads, filter_config, progress),
-            (true, Some(_), CountMode::FullRead, _, _, _) => count_paired_raw(reads, filter_config, progress),
-            (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
-            (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
+    match threads.cmp(&1) {
+        std::cmp::Ordering::Less => Err(ReadCountError::Error {
+            desc: "Threads must be >0".to_string(),
         }
-    } else if threads > 1 {
-        // Set up communication channel
-        let (read_tx, read_rx) = crossbeam::channel::bounded(10 * threads);
-        let mut handles = Vec::new();
+        .into()),
+        std::cmp::Ordering::Equal => {
+            // Determine type of matching desired and despatch as appropriate
+            match (
+                reads.has_reverse(),
+                lib_spec,
+                mode,
+                alignment_scorer,
+                pattern_length,
+                pattern_tolerance,
+            ) {
+                (_, _, CountMode::Align, None, _, _) => Err(ReadCountError::Error {
+                    desc: "Mode is 'align' but no AlignmentScorer passed".to_string(),
+                }
+                .into()),
+                (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
+                    count_single_align(reads, lib_spec, filter_config, a, cache, progress)
+                }
+                (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
+                    count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
+                }
 
-        // Spin up worker threads ready to receive data
-        for _ in 0..threads {
-            // each thread gets its own Read Receiver and Count Sender clone
-            let rx = read_rx.clone();
-            let rev_reads = reads.has_reverse();
-            let group = reads.group().clone();
-            let max_reads = reads.max_reads();
-            let lspec = lib_spec.as_ref().cloned();
-            let fconf = filter_config.clone();
-            let pstyle = progress_style.cloned();
+                (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => {
+                    Err(ReadCountError::Error {
+                        desc: "Mode is 'pattern' but pattern length and/or tolerance is missing"
+                            .to_string(),
+                    }
+                    .into())
+                }
+                (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+                    count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
+                }
+                (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
+                    count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
+                }
 
-            handles.push(std::thread::spawn(move || {
-                let local_reads = ThreadedReadPairParser::new(
-                    rx, rev_reads, group, max_reads
-                );
-                count_reads(
-                    local_reads, &lspec, mode, fconf, alignment_scorer,
-                    pattern_length, pattern_tolerance, cache, 1, pstyle.as_ref()
-                )
-            }));
+                (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
+                    count_single_inframe(reads, lib_spec, filter_config, progress)
+                }
+                (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
+                    count_paired_inframe(reads, lib_spec, filter_config, progress)
+                }
+
+                (false, Some(_), CountMode::FullRead, _, _, _) => {
+                    count_single_raw(reads, filter_config, progress)
+                }
+                (true, Some(_), CountMode::FullRead, _, _, _) => {
+                    count_paired_raw(reads, filter_config, progress)
+                }
+                (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
+                (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
+            }
         }
+        std::cmp::Ordering::Greater => {
+            // Set up communication channel
+            let (read_tx, read_rx) = crossbeam::channel::bounded(10 * threads);
+            let mut handles = Vec::new();
 
-        // Produce reads on main thread - as they are sent they will be processed on worker threads
-        for read in reads {
-            read_tx.send(read).expect("worker threads hung up");
+            // Spin up worker threads ready to receive data
+            for _ in 0..threads {
+                // each thread gets its own Read Receiver and Count Sender clone
+                let rx = read_rx.clone();
+                let rev_reads = reads.has_reverse();
+                let group = reads.group().clone();
+                let max_reads = reads.max_reads();
+                let lspec = lib_spec.as_ref().cloned();
+                let fconf = filter_config.clone();
+                let pstyle = progress_style.cloned();
+
+                handles.push(std::thread::spawn(move || {
+                    let local_reads = ThreadedReadPairParser::new(rx, rev_reads, group, max_reads);
+                    count_reads(
+                        local_reads,
+                        &lspec,
+                        mode,
+                        fconf,
+                        alignment_scorer,
+                        pattern_length,
+                        pattern_tolerance,
+                        cache,
+                        1,
+                        pstyle.as_ref(),
+                    )
+                }));
+            }
+
+            // Produce reads on main thread - as they are sent they will be processed on worker threads
+            for read in reads {
+                read_tx.send(read).expect("worker threads hung up");
+            }
+            drop(read_tx);
+            drop(read_rx);
+
+            // Unpack initial count object
+            let mut final_counts: ObservedCombinations = join_observed_combinations(handles.pop())?;
+
+            // Merge rest of the results
+            for handle in handles {
+                let new_counts = join_observed_combinations(Some(handle))?;
+                final_counts.merge(new_counts)?
+            }
+
+            Ok(final_counts)
         }
-        drop(read_tx);
-        drop(read_rx);
-
-        // Unpack initial count object
-        let mut final_counts: ObservedCombinations = join_observed_combinations(handles.pop())?;
-
-        // Merge rest of the results
-        for handle in handles {
-            let new_counts = join_observed_combinations(Some(handle))?;
-            final_counts.merge(new_counts)?
-        }
-
-        Ok(final_counts)
-    } else {
-        Err(ReadCountError::Error {desc: "Threads must be >0".to_string()}.into())
     }
 }
 
@@ -1240,7 +1271,7 @@ fn count_single_pattern<T: ReadPairProducer>(
             record.forward.seq(),
             record.forward.qual(),
             &flank_regions,
-            pattern_tolerance
+            pattern_tolerance,
         )?;
 
         let comb_key_vec: Vec<RegionKey> = zip(&regions, region_matches)
@@ -1335,19 +1366,9 @@ fn count_paired_pattern<T: ReadPairProducer>(
             }
         };
 
-        let f_matches = match_flank_patterns(
-            f_seq,
-            f_qual,
-            &flank_regions,
-            pattern_tolerance
-        )?;
+        let f_matches = match_flank_patterns(f_seq, f_qual, &flank_regions, pattern_tolerance)?;
 
-        let r_matches = match_flank_patterns(
-            &r_seq,
-            &r_qual,
-            &flank_regions,
-            pattern_tolerance
-        )?;
+        let r_matches = match_flank_patterns(&r_seq, &r_qual, &flank_regions, pattern_tolerance)?;
 
         let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(n_regions);
 
@@ -1746,14 +1767,14 @@ fn count_paired_raw<T: ReadPairProducer>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lib_spec::FlankingSequences;
     use crate::containers::RegionCompleteness;
+    use crate::lib_spec::FlankingSequences;
 
     #[test]
     fn test_perfect_flank_matching() {
         let _ = env_logger::try_init();
 
-        let seq  = b"CCCCAATTGGGCCGGAAAAGGCCGGTATAGGGGATATGGGCGCGTTTT";
+        let seq = b"CCCCAATTGGGCCGGAAAAGGCCGGTATAGGGGATATGGGCGCGTTTT";
         let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()),
@@ -1764,10 +1785,26 @@ mod tests {
         let tolerance: u64 = 0;
 
         let exp: Vec<Option<RegionMatch>> = vec![
-            Some((b"CCCC".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
-            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
-            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
-            Some((b"TTTT".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial3Prime)),
+            Some((
+                b"CCCC".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial5Prime,
+            )),
+            Some((
+                b"AAAA".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"TTTT".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial3Prime,
+            )),
         ];
 
         if let Ok(obs) = match_flank_patterns(seq, qual, &flanks, tolerance) {
@@ -1781,30 +1818,46 @@ mod tests {
     fn test_flank_matching_with_mismatches() {
         let _ = env_logger::try_init();
 
-        let seq  = b"CCCCAATCGGGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
+        let seq = b"CCCCAATCGGGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
         let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
-            FlankingSequences::OpenStart(b"AATT".to_vec()),                   // 1 mismatch: AATC
-            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),  // 1 mismatch: GCGG
+            FlankingSequences::OpenStart(b"AATT".to_vec()), // 1 mismatch: AATC
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()), // 1 mismatch: GCGG
             FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
-            FlankingSequences::OpenEnd(b"CGCG".to_vec()),                     // 2 mismatches: CGTT
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()), // 2 mismatches: CGTT
         ];
         let tolerance: u64 = 1;
 
         let exp: Vec<Option<RegionMatch>> = vec![
-            Some((b"CCCC".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
-            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
-            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
+            Some((
+                b"CCCC".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial5Prime,
+            )),
+            Some((
+                b"AAAA".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
             None,
         ];
 
-        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
-        assert_eq!(obs, exp, "Observed regions don't match expected with mismatch tolerance");
+        let obs =
+            match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        assert_eq!(
+            obs, exp,
+            "Observed regions don't match expected with mismatch tolerance"
+        );
     }
 
     #[test]
     fn test_flank_matching_partial_path() {
-        let seq  = b"GGGCCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
+        let seq = b"GGGCCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
         let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
@@ -1816,18 +1869,27 @@ mod tests {
 
         let exp: Vec<Option<RegionMatch>> = vec![
             None,
-            Some((b"AAAA".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Complete)),
-            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial3Prime)),
+            Some((
+                b"AAAA".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial3Prime,
+            )),
             None,
         ];
 
-        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        let obs =
+            match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
         assert_eq!(obs, exp);
     }
 
     #[test]
     fn test_flank_matching_with_gap_stops_scan() {
-        let seq  = b"GGGGAATTGGGGGGGGCGCG"; // Region 2 is missing
+        let seq = b"GGGGAATTGGGGGGGGCGCG"; // Region 2 is missing
         let qual = b"FFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()),
@@ -1838,13 +1900,18 @@ mod tests {
         let tolerance: u64 = 0;
 
         let exp: Vec<Option<RegionMatch>> = vec![
-            Some((b"GGGG".to_vec(), b"FFFF".to_vec(), RegionCompleteness::Partial5Prime)),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial5Prime,
+            )),
             None,
             None,
             None,
         ];
 
-        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        let obs =
+            match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
         assert_eq!(obs, exp);
     }
 
@@ -1855,7 +1922,8 @@ mod tests {
         let flanks: Vec<FlankingSequences> = vec![];
         let tolerance = 0;
 
-        let obs = match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
+        let obs =
+            match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
         assert!(obs.is_empty());
     }
 }

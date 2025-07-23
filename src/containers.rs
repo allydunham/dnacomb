@@ -63,8 +63,68 @@ impl ObservedCombinations {
     /// New counts and regions are added to this container with an empty return on
     /// successful operation and an error returned if the two ObservedCombinations objects
     /// are incompatible.
+    ///
+    /// Reasons for incompatibility:
+    /// - Library comparison has occured
+    /// - Region ids are not the same
     pub fn merge(&mut self, new_counts: ObservedCombinations) -> Result<(), ReadCountError> {
-        todo!()
+        if self.is_compared_to_library() || new_counts.is_compared_to_library() {
+            return Err(ReadCountError::Error {
+                desc: "Can't merge ObservedCombinations once library comparison has been run"
+                    .to_string(),
+            });
+        }
+
+        if self.region_ids != new_counts.region_ids {
+            return Err(ReadCountError::Error {
+                desc: "Can't merge ObservedCombinations with different region_ids".to_string(),
+            });
+        }
+
+        self.filtered_reads.merge(new_counts.filtered_reads)?;
+
+        for (k, v) in new_counts.regions.iter() {
+            if !self.regions.contains_key(k) {
+                self.regions.insert(k.clone(), v.to_owned());
+            }
+        }
+
+        for (comb_key, mut new_comb) in new_counts.combinations.into_iter() {
+            match self.combinations.get_mut(&comb_key) {
+                Some(old_comb) => {
+                    for (group, new_count) in &new_comb.counts {
+                        match old_comb.counts.get_mut(group) {
+                            Some(old_count) => *old_count += new_count,
+                            None => {
+                                old_comb.counts.insert(group.clone(), *new_count);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // If combination isn't in the map we need to update it's Arc<Mutex<ObservedRegion>>
+                    // references to point to the internal regions
+
+                    // Clear old regions - the information is in the key and the region objects are merged already
+                    new_comb.regions.clear();
+
+                    for reg_key in &comb_key {
+                        let arc = match self.regions.get(reg_key) {
+                            Some(x) => x,
+                            None => return Err(ReadCountError::Error {
+                                desc: "Region key missing during combination merge after merging regions".to_string(),
+                            }),
+                        };
+
+                        new_comb.regions.insert(reg_key.0.clone(), arc.clone());
+                    }
+
+                    self.combinations.insert(comb_key, new_comb);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Number of distinct observed combination types
@@ -425,7 +485,7 @@ impl ObservedCombinations {
 /// A set of observed regions determining the "type" of read, as defined in the LibSpec.
 /// Also includes a count, the read grouping (for instance for different cells in single
 /// cell studies) and whether it matches an expected library member.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObservedCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
     counts: HashMap<ReadGroup, u32>,
@@ -563,7 +623,7 @@ impl ObservedCombination {
                     // Should never need this with the implementation in ObservedCombinations, but here as a back-up as otherwise could panic later. Do all regions first as slightly more efficient and easier to follow in log
                     let mut reg = x.lock().unwrap();
                     if !reg.is_compared_to_library() {
-                        let val =reg.compare_to_library(library, distance_metric, max_matches);
+                        let val = reg.compare_to_library(library, distance_metric, max_matches);
                         reg.nearest_matches = val;
                     }
                     reg
@@ -746,15 +806,14 @@ impl RegionMatch {
             RegionMatch::MultiMatch {
                 seq_matches,
                 distance,
-            } => (
-                seq_matches
+            } => {
+                let mut seqs = seq_matches
                     .iter()
                     .map(|x| seq_to_string_or_log(&x.sequence))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                distance.to_string(),
-                seq_matches.len().to_string(),
-            ),
+                    .collect::<Vec<_>>();
+                seqs.sort();
+                (seqs.join(","), distance.to_string(), seqs.len().to_string())
+            }
         }
     }
 
@@ -1212,6 +1271,4 @@ impl ReadSummary {
 #[cfg(test)]
 mod tests {
     // use super::*;
-
-
 }

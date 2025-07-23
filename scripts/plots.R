@@ -15,7 +15,7 @@ theme_set(theme_pubclean() + theme(legend.position = 'right',
 test_pairs <- tibble(
   observed = str_remove(dir("data/tests/", pattern = "*\\.counts.tsv"), ".counts.tsv")
 ) %>%
-  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "expected", "end"), cols_remove = FALSE)
+  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "expected", "end", "threads"), cols_remove = FALSE)
 
 test_pair <- function(observed, expected) {
   true_counts <- read_tsv(str_c("data/tests/", expected, ".true_counts.tsv"))
@@ -70,11 +70,13 @@ test_pair <- function(observed, expected) {
 }
 quiet_test <- purrr::quietly(test_pair)
 
-test_counts <- map2(test_pairs$observed, test_pairs$expected, ~quiet_test(.x, .y)$result, .progress = TRUE) %>%
+test_counts <- filter(test_pairs, threads == 1) %>%
+  {map2(.$observed, .$expected, ~quiet_test(.x, .y)$result, .progress = TRUE)} %>%
   bind_rows() %>%
   replace_na(replace = list(count = 0, true_count = 0)) %>%
   select(-expected) %>%
-  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "library", "end"), cols_remove = TRUE)
+  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "library", "end", "threads"), cols_remove = TRUE) %>%
+  mutate(threads = as.integer(threads))
 
 category_colours <- c(
   "match" = "green", "exact_match" = "green", "nearest_match" = "darkgreen",
@@ -83,7 +85,7 @@ category_colours <- c(
   "low_mean_quality" = "brown", "bad_alignment" = "grey", "multimatch" = "purple"
 )
 
-p_all_scatter <- filter(test_counts, split == "all_regions") %>%
+p_all_scatter <- filter(test_counts, split == "all_regions", threads == 1) %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
   facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE, solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
@@ -96,7 +98,7 @@ p_all_scatter <- filter(test_counts, split == "all_regions") %>%
   theme(legend.position = "bottom")
 ggsave("plots/test_all_counts_scatter.png", p_all_scatter, units = "cm", height = 50, width = 50)
 
-p_library_scatter <- filter(test_counts, split == "library") %>%
+p_library_scatter <- filter(test_counts, split == "library", threads == 1) %>%
   ggplot(., aes(x = true_count, y = count, colour = combination_status)) +
   facet_nested(rows = vars(mode, distance), cols = vars(library, end), render_empty = FALSE, solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
@@ -109,7 +111,7 @@ p_library_scatter <- filter(test_counts, split == "library") %>%
   theme(legend.position = "bottom")
 ggsave("plots/test_library_scatter.png", p_library_scatter, units = "cm", height = 50, width = 50)
 
-p_summary_bars <- filter(test_counts, split == "summary") %>%
+p_summary_bars <- filter(test_counts, split == "summary", threads == 1) %>%
   filter(!id == "uncompared") %>%
   pivot_longer(c(count, true_count), names_to = "group", values_to = "count") %>%
   mutate(group = c(count = "Observed", true_count = "Expected")[group],
@@ -123,7 +125,7 @@ p_summary_bars <- filter(test_counts, split == "summary") %>%
         axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 ggsave("plots/test_summary_bars.png", p_summary_bars, units = "cm", height = 40, width = 40)
 
-count_cors <- filter(test_counts, split == "all_regions") %>%
+count_cors <- filter(test_counts, split == "all_regions", threads == 1) %>%
   group_by(mode, distance, library, end) %>%
   group_modify(~broom::tidy(cor.test(.$count, .$true_count))) %>%
   ungroup()
@@ -138,7 +140,31 @@ p_test_cors <- ggplot(count_cors, aes(y = distance, x = estimate, xmin = conf.lo
         axis.ticks.y = element_blank(),
         strip.placement = "outside")
 ggsave("plots/test_observed_expected_correlation.png", p_test_cors, units = "cm", height = 30, width = 16)
-  
+
+# Look at count correlation across thread counts
+threaded_counts <- filter(test_pairs, mode == "align", distance == "bounded-levenshtein", expected == "mutant_pegrna", end == "single") %>%
+  mutate(path = str_c("data/tests/", observed, ".counts.tsv")) %>%
+  select(threads, path) %>%
+  mutate(counts = map(path, read_tsv)) %>%
+  unnest(counts) %>%
+  select(-path) %>%
+  pivot_wider(names_from = threads, names_prefix = "threads", values_from = count, values_fill = 0) %>%
+  mutate(counts_equal = apply(across(starts_with("threads")), 1, n_distinct) == 1)
+
+p_thread_cor <- select(threaded_counts, starts_with("threads")) %>%
+  as.matrix() %>%
+  cor() %>%
+  as_tibble(rownames = "x") %>%
+  pivot_longer(-x, names_to = "y", values_to = "cor") %>%
+  mutate(x = str_remove(x, "threads"),
+         y = str_remove(y, "threads")) %>%
+  ggplot(aes(x = x, y = y, fill = cor, label = signif(cor))) +
+  geom_tile() +
+  geom_text(colour = "white") +
+  labs(x = "Threads", y = "Threads") +
+  scale_fill_distiller(name = "Count\nR", palette = "RdBu", direction = 1, limits = c(-1, 1))
+ggsave("plots/thread_count_correlation.png", p_thread_cor, units = "cm", height = 10, width = 10)
+
 # Benchmarks
 na_or_zero <- function(x) {
   if_else(is.na(x), 0, x)

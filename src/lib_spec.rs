@@ -11,10 +11,11 @@ use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::errors::{LibSpecError, LibraryError, seq_to_string_or_log};
 
@@ -108,18 +109,23 @@ pub enum FlankingSequences {
     Unflanked,
     OpenStart(Sequence),
     Internal(Sequence, Sequence),
-    OpenEnd(Sequence)
+    OpenEnd(Sequence),
 }
 
-impl ToString for FlankingSequences {
-    fn to_string(&self) -> String {
+impl Display for FlankingSequences {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FlankingSequences::Unflanked => "Unflanked".to_string(),
-            FlankingSequences::OpenStart(end) => format!("(Open, {})", seq_to_string_or_log(end)),
-            FlankingSequences::Internal(start, end) => format!(
-                "({}, {})", seq_to_string_or_log(start), seq_to_string_or_log(end)
+            FlankingSequences::Unflanked => write!(f, "Unflanked"),
+            FlankingSequences::OpenStart(end) => write!(f, "(Open, {})", seq_to_string_or_log(end)),
+            FlankingSequences::Internal(start, end) => write!(
+                f,
+                "({}, {})",
+                seq_to_string_or_log(start),
+                seq_to_string_or_log(end)
             ),
-            FlankingSequences::OpenEnd(start) => format!("({}, Open)", seq_to_string_or_log(start))
+            FlankingSequences::OpenEnd(start) => {
+                write!(f, "({}, Open)", seq_to_string_or_log(start))
+            }
         }
     }
 }
@@ -389,7 +395,10 @@ impl LibrarySpec {
     }
 
     /// Get flanking sequences for all variable regions
-    pub fn get_all_flanking_regions(&self, len: usize) -> Result<Vec<FlankingSequences>, LibSpecError>{
+    pub fn get_all_flanking_regions(
+        &self,
+        len: usize,
+    ) -> Result<Vec<FlankingSequences>, LibSpecError> {
         let regions = self.variable_regions();
         let flanks = regions
             .iter()
@@ -398,37 +407,43 @@ impl LibrarySpec {
 
         Self::validate_flank_seqs(&flanks)?;
 
-        return Ok(flanks)
+        Ok(flanks)
     }
 
     /// Validate flanking regions
     ///
     /// Currently check that they form a valid and findable sequence of region types
-    pub fn validate_flank_seqs(flanks: &[FlankingSequences]) -> Result<(), LibSpecError>{
+    pub fn validate_flank_seqs(flanks: &[FlankingSequences]) -> Result<(), LibSpecError> {
         for (i, r) in flanks.iter().enumerate() {
             match r {
                 FlankingSequences::Unflanked => {
                     return Err(LibSpecError::LibSpec {
-                        desc: "Unflanked region after all flank patterns found".to_string()
+                        desc: "Unflanked region after all flank patterns found".to_string(),
                     });
-                },
-                FlankingSequences::OpenStart( .. ) => {
-                    if i == 0 {continue;}
+                }
+                FlankingSequences::OpenStart(..) => {
+                    if i == 0 {
+                        continue;
+                    }
                     return Err(LibSpecError::LibSpec {
                         desc: "Region with an open start found after first region in flanking patterns".to_string()
                     });
-                },
-                FlankingSequences::Internal( .. ) => continue,
-                FlankingSequences::OpenEnd( .. ) => {
-                    if i == flanks.len() - 1 {continue;}
+                }
+                FlankingSequences::Internal(..) => continue,
+                FlankingSequences::OpenEnd(..) => {
+                    if i == flanks.len() - 1 {
+                        continue;
+                    }
                     return Err(LibSpecError::LibSpec {
-                        desc: "Region with an open end found before final region in flanking patterns".to_string()
+                        desc:
+                            "Region with an open end found before final region in flanking patterns"
+                                .to_string(),
                     });
-                },
+                }
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     /// Identify the sequences flanking a region of interest
@@ -962,7 +977,7 @@ impl Library {
             // Hamming distance only defined for equal length - if query is
             // different length than region discard
             if end - start != seq.len() {
-                continue
+                continue;
             }
 
             // Use appropriate hamming implemntation (other branch should be
@@ -1304,5 +1319,4 @@ pub enum PartialMatching {
 #[cfg(test)]
 mod tests {
     // use super::*;
-
 }

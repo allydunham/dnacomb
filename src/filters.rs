@@ -116,6 +116,20 @@ impl FilteredReads {
         self.low_mean_quality + self.bad_alignment
     }
 
+    /// Merge counts from another FilteredReads object
+    pub fn merge(&mut self, new_reads: FilteredReads) -> Result<(), ReadCountError> {
+        if !(self.config == new_reads.config) {
+            return Err(ReadCountError::Error {
+                desc: "Can't merge FilteredReads with different FilterConfigs".to_string(),
+            });
+        }
+
+        self.low_mean_quality += new_reads.low_mean_quality;
+        self.bad_alignment += new_reads.bad_alignment;
+
+        Ok(())
+    }
+
     /// Generate a string of TSV lines representing the filter counts
     ///
     /// Creates a TSV string with columns for filter reason, count and
@@ -153,7 +167,7 @@ impl FilteredReads {
 /// Configuration for filtering
 ///
 /// Instructions for how to filter reads
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FilterConfig {
     mean_quality_threshold: Option<f32>,
     alignment_tolerance: Option<AlignmentTolerance>,
@@ -171,7 +185,7 @@ impl FilterConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub struct AlignmentTolerance {
     tolerance: f32,
@@ -214,4 +228,3 @@ mod tests {
         assert_eq!(mean_quality(&qual), mean)
     }
 }
-

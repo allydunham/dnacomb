@@ -13,7 +13,7 @@ use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
 use dnacomb::lib_spec::{DistanceMetric, Library, LibrarySpec};
 use dnacomb::logging::ProgressStyle;
-use dnacomb::parsing::{Compression, ReadPairParser, SeqFormat, SeqPath, ReadPairProducer};
+use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat, SeqPath};
 
 /// Fast general purpose read counter supporting complex structured reads
 ///
@@ -179,7 +179,6 @@ struct Cli {
     /// Number of threads to use
     #[arg(short = 'T', long, default_value_t = 1, help_heading = "Technical")]
     threads: usize,
-
     // /// Chunksize for parallel processing
     // #[arg(short, long, help_heading = "Technical")]
     // chunksize: Option<u32>,
