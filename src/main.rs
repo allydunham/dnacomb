@@ -373,6 +373,7 @@ fn run(args: Cli) -> Result<(), Error> {
                 Some(&progress_style),
                 args.distance_metric,
                 args.max_matches,
+                args.threads,
             )?;
         }
     }

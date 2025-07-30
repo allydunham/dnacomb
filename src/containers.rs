@@ -10,10 +10,12 @@
 //! in a Library object.
 use anyhow::{self};
 use bio::bio_types::{alignment::Alignment, sequence::Sequence};
+use crossbeam::channel::{Receiver, unbounded};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
+use std::thread::scope;
 
 use crate::errors::{LibraryError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, FilteredReads};
@@ -219,6 +221,7 @@ impl ObservedCombinations {
         progress_style: Option<&ProgressStyle>,
         distance_metric: DistanceMetric,
         max_matches: usize,
+        threads: usize,
     ) -> Result<(), LibraryError> {
         let n_regs = self.regions.len() as u64;
         let n_combs = self.combinations.len() as u64;
@@ -236,13 +239,63 @@ impl ObservedCombinations {
             },
         );
 
-        for r in self.regions.values() {
-            let mut reg = r.lock().unwrap();
-            let val = reg.compare_to_library(&library, distance_metric, max_matches);
-            reg.nearest_matches = val;
-            reg_progress.inc(1);
+        match threads.cmp(&1) {
+            std::cmp::Ordering::Less => {
+                return Err(LibraryError::Library {
+                    desc: "Threads must be >0".to_string(),
+                });
+            }
+            std::cmp::Ordering::Equal => {
+                for r in self.regions.values() {
+                    let mut reg = r.lock().unwrap();
+                    let val = reg.compare_to_library(&library, distance_metric, max_matches);
+                    reg.nearest_matches = val;
+                    reg_progress.inc(1);
+                }
+                reg_progress.finish();
+            }
+            std::cmp::Ordering::Greater => {
+                let (reg_tx, reg_rx) = unbounded();
+                let (done_tx, done_rx) = unbounded();
+                let lib_arc = Arc::new(&library);
+
+                scope(|scope| {
+                    // Spin up threads to do work
+                    for _ in 0..threads {
+                        let rx: Receiver<Arc<Mutex<ObservedRegion>>> = reg_rx.clone();
+                        let tx = done_tx.clone();
+                        let lib = lib_arc.clone();
+
+                        scope.spawn(move || {
+                            while let Ok(region) = rx.recv() {
+                                let mut reg = region.lock().unwrap();
+                                let val =
+                                    reg.compare_to_library(&lib, distance_metric, max_matches);
+                                reg.nearest_matches = val;
+                                tx.send(()).expect("Main thread comparison reciever failed");
+                            }
+                        });
+                    }
+
+                    // Send regions to workers
+                    for region in self.regions.values() {
+                        reg_tx
+                            .send(region.clone())
+                            .expect("Library comparison thread send failed");
+                    }
+                    drop(reg_tx);
+                    drop(reg_rx);
+                    drop(done_tx);
+
+                    // Collect results to check all regions processed
+                    for _ in done_rx.iter() {
+                        reg_progress.inc(1);
+                    }
+                    drop(done_rx);
+                });
+                reg_progress.finish();
+            }
         }
-        reg_progress.finish();
 
         // Compare the combinations to the libary
         let mut comb_progress: Progress = Progress::from_style(

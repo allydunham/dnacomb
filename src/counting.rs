@@ -774,7 +774,9 @@ pub fn count_reads<T: ReadPairProducer>(
 
             // Produce reads on main thread - as they are sent they will be processed on worker threads
             for read in reads {
-                read_tx.send(read).expect("worker threads hung up");
+                read_tx
+                    .send(read)
+                    .expect("Region extraction thread send failed");
             }
             drop(read_tx);
             drop(read_rx);
