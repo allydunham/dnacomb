@@ -136,6 +136,11 @@ struct Cli {
     #[arg(short = 'r', long, help_heading = "Filtering")]
     alignment_tolerance: Option<f32>,
 
+    /// Filter reads shorter than this length. Both F and R must meet the threshold.
+    /// For technical reasons reads were either F or R is empty are always filtered.
+    #[arg(short = 'L', long, help_heading = "Filtering")]
+    minimum_read_length: Option<usize>,
+
     /// Length of flanking pattern to use (where possible)
     #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
     pattern_length: usize,
@@ -178,10 +183,7 @@ struct Cli {
 
     /// Number of threads to use
     #[arg(short = 'T', long, default_value_t = 1, help_heading = "Technical")]
-    threads: usize,
-    // /// Chunksize for parallel processing
-    // #[arg(short, long, help_heading = "Technical")]
-    // chunksize: Option<u32>,
+    threads: usize
 }
 
 /// Main function
@@ -333,7 +335,12 @@ fn run(args: Cli) -> Result<(), Error> {
         (Some(l), Some(t)) => calculate_alignment_tolerance(l, &alignment_scorer, &reader, t)?,
     };
 
-    let filter_config = FilterConfig::new(args.mean_quality_threshold, alignment_tolerance);
+    let filter_config = FilterConfig::new(
+        args.mean_quality_threshold,
+        alignment_tolerance,
+        args.minimum_read_length,
+        false
+    );
 
     info!("Filtering reads with config: {:?}", filter_config);
 

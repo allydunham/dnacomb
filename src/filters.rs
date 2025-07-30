@@ -22,12 +22,17 @@ pub struct FilteredReads {
     config: FilterConfig,
     low_mean_quality: u64,
     bad_alignment: u64,
+    short_read: u64,
+    empty_read: u64,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum FilterReason {
     None,
     LowMeanQuality,
     BadAlignment,
+    ShortRead,
+    EmptyRead,
 }
 
 impl FilteredReads {
@@ -36,6 +41,8 @@ impl FilteredReads {
             config,
             low_mean_quality: 0,
             bad_alignment: 0,
+            short_read: 0,
+            empty_read: 0,
         }
     }
 
@@ -48,6 +55,8 @@ impl FilteredReads {
             FilterReason::None => {}
             FilterReason::LowMeanQuality => self.low_mean_quality += 1,
             FilterReason::BadAlignment => self.bad_alignment += 1,
+            FilterReason::ShortRead => self.short_read += 1,
+            FilterReason::EmptyRead => self.empty_read += 1,
         };
     }
 
@@ -61,6 +70,41 @@ impl FilteredReads {
             Some(r) => Some(r),
             None => None,
         };
+
+        // Check if reads are empty
+        match (self.config.filter_empty, r_read) {
+            (false, _) => {},
+            (true, None) => {
+                if f_read.seq().is_empty() {
+                    self.empty_read += 1;
+                    return FilterReason::EmptyRead;
+                }
+            },
+            (true, Some(r)) => {
+                if f_read.seq().is_empty() || r.seq().is_empty() {
+                    self.empty_read += 1;
+                    return FilterReason::EmptyRead;
+                }
+            },
+        }
+
+        // Check if reads reach the minimum length
+        // Check if reads are empty
+        match (self.config.minimum_length, r_read) {
+            (None, _) => {},
+            (Some(len), None) => {
+                if f_read.seq().len() < len {
+                    self.short_read += 1;
+                    return FilterReason::ShortRead;
+                }
+            },
+            (Some(len), Some(r)) => {
+                if f_read.seq().len() < len || r.seq().len() < len {
+                    self.short_read += 1;
+                    return FilterReason::ShortRead;
+                }
+            },
+        }
 
         // Check mean quality is high enough
         match (self.config.mean_quality_threshold, r_read) {
@@ -113,7 +157,7 @@ impl FilteredReads {
 
     /// Total count of filtered reads
     pub fn total(&self) -> u64 {
-        self.low_mean_quality + self.bad_alignment
+        self.low_mean_quality + self.bad_alignment + self.empty_read + self.short_read
     }
 
     /// Merge counts from another FilteredReads object
@@ -126,6 +170,8 @@ impl FilteredReads {
 
         self.low_mean_quality += new_reads.low_mean_quality;
         self.bad_alignment += new_reads.bad_alignment;
+        self.empty_read += new_reads.empty_read;
+        self.short_read += new_reads.short_read;
 
         Ok(())
     }
@@ -160,6 +206,20 @@ impl FilteredReads {
             self.bad_alignment as f32 / filtered_total as f32,
         ));
 
+        out.push_str(&format!(
+            "filtered\tempty_read\t{}\t{:.4}\t{:.4}\n",
+            self.empty_read,
+            self.empty_read as f32 / total as f32,
+            self.empty_read as f32 / filtered_total as f32,
+        ));
+
+        out.push_str(&format!(
+            "filtered\tshort_read\t{}\t{:.4}\t{:.4}\n",
+            self.short_read,
+            self.short_read as f32 / total as f32,
+            self.short_read as f32 / filtered_total as f32,
+        ));
+
         out
     }
 }
@@ -171,16 +231,22 @@ impl FilteredReads {
 pub struct FilterConfig {
     mean_quality_threshold: Option<f32>,
     alignment_tolerance: Option<AlignmentTolerance>,
+    minimum_length: Option<usize>,
+    filter_empty: bool,
 }
 
 impl FilterConfig {
     pub fn new(
         mean_quality_threshold: Option<f32>,
         alignment_tolerance: Option<AlignmentTolerance>,
+        minimum_length: Option<usize>,
+        allow_empty: bool,
     ) -> Self {
         Self {
             mean_quality_threshold,
             alignment_tolerance,
+            minimum_length,
+            filter_empty: allow_empty,
         }
     }
 }
@@ -220,11 +286,321 @@ impl AlignmentTolerance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parsing::{ReadPair, ReadGroup};
 
     #[test]
     fn test_mean_quality() {
         let qual = vec![b'F', b'F', b'H', b'H'];
         let mean: f32 = 38.0;
-        assert_eq!(mean_quality(&qual), mean)
+        assert_eq!(mean_quality(&qual), mean, "Mean quality incorrect")
+    }
+
+    // Test empty read filter
+    #[test]
+    fn test_empty_filter_single_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"",
+                b"",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, true)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::EmptyRead, "Empty read not filtered");
+        assert_eq!(f.empty_read, 1, "Inccorect filtered read count for empty read denied filter");
+    }
+
+    #[test]
+    fn test_empty_filter_single_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"",
+                b"",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Empty read not allowed");
+        assert_eq!(f.empty_read, 0, "Inccorect filtered read count for empty read allowed filter");
+    }
+
+    #[test]
+    fn test_empty_filter_paired_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACGT",
+                b"FFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"",
+                b"",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, true)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::EmptyRead, "Empty paired read not filtered");
+        assert_eq!(f.empty_read, 1, "Inccorect filtered read count for empty paired read denied filter");
+    }
+
+    #[test]
+    fn test_empty_filter_paired_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACGT",
+                b"FFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"",
+                b"",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Empty paired read not allowed");
+        assert_eq!(f.empty_read, 0, "Inccorect filtered read count for empty paired read allowed filter");
+    }
+
+    // Test short read filter
+    #[test]
+    fn test_short_filter_single_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"FFFF",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, Some(10), false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::ShortRead, "Short read not filtered");
+        assert_eq!(f.short_read, 1, "Inccorect filtered read count for short read denied filter");
+    }
+
+    #[test]
+    fn test_short_filter_single_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"FFFF",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Short read not allowed");
+        assert_eq!(f.short_read, 0, "Inccorect filtered read count for short read allowed filter");
+    }
+
+    #[test]
+    fn test_short_filter_paired_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"AAACCCGGGTTT",
+                b"FFFFFFFFFFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"FFFF",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, Some(10), false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::ShortRead, "Short paired read not filtered");
+        assert_eq!(f.short_read, 1, "Inccorect filtered read count for short paired read denied filter");
+    }
+
+    #[test]
+    fn test_short_filter_paired_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"AAACCCGGGTTT",
+                b"FFFFFFFFFFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"FFFF",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Short paired read not allowed");
+        assert_eq!(f.short_read, 0, "Inccorect filtered read count for short paired read allowed filter");
+    }
+
+    // Test low quality
+    #[test]
+    fn test_quality_filter_single_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"AAAA",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(Some(40.0), None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::LowMeanQuality, "Low quality read not filtered");
+        assert_eq!(f.low_mean_quality, 1, "Inccorect filtered read count for low quality denied filter");
+    }
+
+    #[test]
+    fn test_quality_filter_single_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"AAAA",
+            ),
+            reverse: None,
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Low quality read not allowed");
+        assert_eq!(f.short_read, 0, "Inccorect filtered read count for low quality read allowed filter");
+    }
+
+    #[test]
+    fn test_quality_filter_paired_end_denies() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACGT",
+                b"KKKK",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"AAAA",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(Some(40.0), None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::LowMeanQuality, "Low quality paired read not filtered");
+        assert_eq!(f.low_mean_quality, 1, "Inccorect filtered read count for low quality paired read denied filter");
+    }
+
+    #[test]
+    fn test_quality_filter_paired_end_allows() {
+        let readpair = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACGT",
+                b"KKKK",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTG",
+                b"AAAA",
+            )),
+            group: ReadGroup::Ungrouped,
+        };
+
+        let mut f = FilteredReads::new(
+            FilterConfig::new(None, None, None, false)
+        );
+
+        let out = f.filter_readpair(&readpair);
+
+        assert_eq!(out, FilterReason::None, "Low quality paired read not allowed");
+        assert_eq!(f.short_read, 0, "Inccorect filtered read count for low quality paired read allowed filter");
     }
 }
