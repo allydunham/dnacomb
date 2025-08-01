@@ -1,8 +1,12 @@
+pub mod containers;
+pub mod counting;
+pub mod errors;
+pub mod filters;
 pub mod lib_spec;
-pub mod read_counts;
-pub mod read_parsing;
-pub mod log_progress;
+pub mod logging;
+pub mod parsing;
 
 // Re-Exports
-pub use lib_spec::{LibrarySpec, Library};
-pub use read_counts::{ObservedCombinations, CountMode};
+pub use containers::ObservedCombinations;
+pub use counting::{CountMode, count_reads};
+pub use lib_spec::{Library, LibrarySpec};

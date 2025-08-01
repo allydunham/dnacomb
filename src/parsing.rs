@@ -5,6 +5,7 @@
 //! standard ReadPair object.
 use bio::io::{fasta, fastq};
 use clap::ValueEnum;
+use crossbeam::channel::Receiver;
 use flate2::read::MultiGzDecoder;
 use log::debug;
 use regex::Regex;
@@ -12,6 +13,8 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::str;
+
+use crate::errors::{FastaError, ReadPairError};
 
 pub type ReadKey = (Vec<u8>, Option<Vec<u8>>);
 
@@ -34,90 +37,6 @@ impl ReadPair {
         } else {
             (self.forward.seq().to_vec(), None)
         }
-    }
-}
-
-/// Error type for sequences
-#[derive(Debug)]
-pub enum FastaError {
-    Fasta(io::Error),
-    Fastq(fastq::Error),
-}
-
-impl fmt::Display for FastaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FastaError::Fasta(e) => write!(f, "{}", e),
-            FastaError::Fastq(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for FastaError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for FastaError {
-    fn from(err: io::Error) -> FastaError {
-        FastaError::Fasta(err)
-    }
-}
-
-impl From<fastq::Error> for FastaError {
-    fn from(err: fastq::Error) -> FastaError {
-        FastaError::Fastq(err)
-    }
-}
-
-/// Error type for read pairs
-#[derive(Debug)]
-pub enum Error {
-    ReadPair {
-        forward: Option<FastaError>,
-        reverse: Option<FastaError>,
-    },
-    Format {
-        desc: String,
-    },
-    EarlyExhastion {
-        read: String,
-    },
-    IO(io::Error),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::ReadPair { forward, reverse } => match (forward, reverse) {
-                (Some(forward), Some(reverse)) => write!(
-                    f,
-                    "Error in both reads.\nForward: {}\nReverse: {}",
-                    forward, reverse
-                ),
-                (Some(forward), None) => write!(f, "Error in forward read: {}", forward),
-                (None, Some(reverse)) => write!(f, "Error in reverse read: {}", reverse),
-                (None, None) => write!(f, "Unknown read parsing error"),
-            },
-            Error::Format { desc } => write!(f, "{}", desc),
-            Error::EarlyExhastion { read } => {
-                write!(f, "Paired reads out of sync: {} exhausted first", read)
-            }
-            Error::IO(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::IO(err)
     }
 }
 
@@ -203,6 +122,21 @@ fn fasta_to_fastq(fasta_record: fasta::Record, default_quality: u8) -> fastq::Re
     fastq::Record::with_attrs(&id, desc.as_deref(), &seq, &qual)
 }
 
+/// Group status of a read
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum ReadGroup {
+    Ungrouped,
+    Unmatched,
+    Match(String),
+}
+
+pub trait ReadPairProducer: Iterator<Item = Result<ReadPair, ReadPairError>> {
+    fn has_reverse(&self) -> bool;
+    fn group(&self) -> &Option<Regex>;
+    fn max_reads(&self) -> u64;
+    fn read_count(&self) -> u64;
+}
+
 /// Parser outputing ReadPair objects
 ///
 /// Internally uses boxed forward and reverse parsers that may yield Fasta or Fastq
@@ -216,27 +150,19 @@ pub struct ReadPairParser {
 
     /// Regex to process forward read names with to identify groups, for instance cells
     /// in single cell assays
-    pub group: Option<Regex>,
+    group: Option<Regex>,
 
     /// Maximum number of reads to process
-    pub max_reads: u64,
+    max_reads: u64,
 
     /// Number of reads processed
-    pub read_count: u64,
+    read_count: u64,
 
     /// Implementation detail for repeated Regex search for read groups
     /// Instead of concating id/desc into a new string each time, reuse this
     /// buffer. id/desc are generally the same length so should quickly converge on
     /// a good capacity.
     group_haystack: String,
-}
-
-/// Group status of a read
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReadGroup {
-    Ungrouped,
-    Unmatched,
-    Match(String),
 }
 
 impl ReadPairParser {
@@ -263,7 +189,7 @@ impl ReadPairParser {
         group: Option<Regex>,
         max_reads: u64,
         default_quality: u8,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ReadPairError> {
         let f_records = forward.get_records(default_quality)?;
         let r_records = match reverse {
             Some(x) => Some(x.get_records(default_quality)?),
@@ -271,11 +197,6 @@ impl ReadPairParser {
         };
 
         Ok(ReadPairParser::new(f_records, r_records, group, max_reads))
-    }
-
-    /// Whether the parser includes reverse reads
-    pub fn has_reverse(&self) -> bool {
-        self.reverse.is_some()
     }
 
     /// Extract read group from a record
@@ -305,8 +226,26 @@ impl ReadPairParser {
     }
 }
 
+impl ReadPairProducer for ReadPairParser {
+    fn has_reverse(&self) -> bool {
+        self.reverse.is_some()
+    }
+
+    fn group(&self) -> &Option<Regex> {
+        &self.group
+    }
+
+    fn max_reads(&self) -> u64 {
+        self.max_reads
+    }
+
+    fn read_count(&self) -> u64 {
+        self.read_count
+    }
+}
+
 impl Iterator for ReadPairParser {
-    type Item = Result<ReadPair, Error>;
+    type Item = Result<ReadPair, ReadPairError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if (self.max_reads > 0) && (self.read_count == self.max_reads) {
@@ -326,7 +265,7 @@ impl Iterator for ReadPairParser {
                     forward: f,
                     reverse: None,
                 })),
-                Some(Err(e)) => Some(Err(Error::ReadPair {
+                Some(Err(e)) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(e),
                     reverse: None,
                 })),
@@ -352,26 +291,91 @@ impl Iterator for ReadPairParser {
                 (None, None) => None,
 
                 // Error combinations
-                (Some(Ok(_)), Some(Err(r))) => Some(Err(Error::ReadPair {
+                (Some(Ok(_)), Some(Err(r))) => Some(Err(ReadPairError::ReadPair {
                     forward: None,
                     reverse: Some(r),
                 })),
-                (Some(Err(f)), Some(Ok(_))) => Some(Err(Error::ReadPair {
+                (Some(Err(f)), Some(Ok(_))) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(f),
                     reverse: None,
                 })),
-                (Some(Err(f)), Some(Err(r))) => Some(Err(Error::ReadPair {
+                (Some(Err(f)), Some(Err(r))) => Some(Err(ReadPairError::ReadPair {
                     forward: Some(f),
                     reverse: Some(r),
                 })),
-                (Some(_), None) => Some(Err(Error::EarlyExhastion {
+                (Some(_), None) => Some(Err(ReadPairError::EarlyExhastion {
                     read: "Reverse".to_string(),
                 })),
-                (None, Some(_)) => Some(Err(Error::EarlyExhastion {
+                (None, Some(_)) => Some(Err(ReadPairError::EarlyExhastion {
                     read: "Forward".to_string(),
                 })),
             }
         }
+    }
+}
+
+/// Multithreading wrapper for ReadPairParser
+///
+/// Recieves reads from a ReadPairParser on another thread to process them in parallel
+pub struct ThreadedReadPairParser {
+    // Channel receiving new reads
+    rx: Receiver<Result<ReadPair, ReadPairError>>,
+
+    // Whether the incoming read pairs have reverse reads
+    rev_reads: bool,
+
+    // Regex used to parse grouping structure
+    group: Option<Regex>,
+
+    /// Maximum number of reads potentially coming from the channel
+    max_reads: u64,
+
+    /// Number of reads received on this channel
+    read_count: u64,
+}
+
+impl ThreadedReadPairParser {
+    pub fn new(
+        rx: Receiver<Result<ReadPair, ReadPairError>>,
+        rev_reads: bool,
+        group: Option<Regex>,
+        max_reads: u64,
+    ) -> Self {
+        ThreadedReadPairParser {
+            rx,
+            rev_reads,
+            group,
+            max_reads,
+            read_count: 0,
+        }
+    }
+}
+
+impl ReadPairProducer for ThreadedReadPairParser {
+    fn has_reverse(&self) -> bool {
+        self.rev_reads
+    }
+
+    fn group(&self) -> &Option<Regex> {
+        &self.group
+    }
+
+    fn max_reads(&self) -> u64 {
+        self.max_reads
+    }
+
+    fn read_count(&self) -> u64 {
+        self.read_count
+    }
+}
+
+impl Iterator for ThreadedReadPairParser {
+    type Item = Result<ReadPair, ReadPairError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.rx.recv().ok();
+        self.read_count += 1;
+        next
     }
 }
 
@@ -395,7 +399,7 @@ impl SeqPath {
     fn get_records(
         &self,
         default_quality: u8,
-    ) -> Result<Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>, Error> {
+    ) -> Result<Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>, ReadPairError> {
         let fmt = match self.format {
             SeqFormat::Auto => detect_seq_format(&self.path)?,
             SeqFormat::Fasta | SeqFormat::Fastq => self.format,
@@ -405,12 +409,15 @@ impl SeqPath {
             Compression::Auto => detect_gzip(&self.path),
             Compression::Gzip | Compression::None => self.gzip,
         };
-        debug!("Using format {} and compression {} for {}", fmt, gzip, self.path);
+        debug!(
+            "Using format {} and compression {} for {}",
+            fmt, gzip, self.path
+        );
 
         let reader: BufReader<File> = BufReader::new(File::open(&self.path)?);
 
         match (gzip, fmt) {
-            (Compression::Auto, _) | (_, SeqFormat::Auto) => Err(Error::Format {
+            (Compression::Auto, _) | (_, SeqFormat::Auto) => Err(ReadPairError::Format {
                 desc: "Gzip::Auto or SeqFormat::Auto remained after parsing".to_string(),
             }),
             (Compression::None, SeqFormat::Fasta) => {
@@ -451,7 +458,7 @@ impl fmt::Display for SeqPath {
 }
 
 /// Sequence file format
-#[derive(Clone, ValueEnum, Debug, Copy)]
+#[derive(Clone, ValueEnum, Debug, Copy, PartialEq)]
 pub enum SeqFormat {
     Auto,
     Fasta,
@@ -469,7 +476,7 @@ impl fmt::Display for SeqFormat {
 }
 
 /// Detect file format from a string path
-fn detect_seq_format(path: &str) -> Result<SeqFormat, Error> {
+fn detect_seq_format(path: &str) -> Result<SeqFormat, ReadPairError> {
     if str::ends_with(path, ".fa")
         || str::ends_with(path, ".fa.gz")
         || str::ends_with(path, ".fasta")
@@ -483,7 +490,7 @@ fn detect_seq_format(path: &str) -> Result<SeqFormat, Error> {
     {
         Ok(SeqFormat::Fastq)
     } else {
-        Err(Error::Format {
+        Err(ReadPairError::Format {
             desc: format!(
                 "Can't auto-detect format of {path} (assumes .fa/.fasta \
              or .fq/fastq ending with optional .gz)"
@@ -516,5 +523,47 @@ fn detect_gzip(path: &str) -> Compression {
         Compression::Gzip
     } else {
         Compression::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_seq_detection() {
+        assert_eq!(
+            detect_seq_format("path/file.fa.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fasta.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fa").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fasta").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fasta
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fq.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fastq.gz").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fq").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert_eq!(
+            detect_seq_format("path/file.fastq").unwrap_or(SeqFormat::Auto),
+            SeqFormat::Fastq
+        );
+        assert!(detect_seq_format("path/file.not_fasta_ext").is_err());
     }
 }

@@ -4,7 +4,7 @@ CLI tool for counting structured single and paired end sequencing reads and comp
 It compares each read to a canonical form defined in a library specification using one of four approaches:
 
 * Alignment - Align reads to the template via semi-global alignment. Most thorough but slowest, allows variable region lengths
-* Pattern matching - Use flanking regions to identify regions. Faster than alignment while allowing variable region length but less robust against variation.
+* Pattern matching - Use flanking regions to identify regions. Faster than alignment while allowing variable region length but less robust against variation. All regions are considered until one is identified and then subsequent regions must be found in turn, with missing regions leading to all subsequent ones ignored too. In future we may make a more flexible pattern matching option but for now if use alignment for comprehensive matching.
 * Inframe - Assume regions occur at the correct position in reads (for instance after using cutadapt). Fastest structured read counting but can't handle variation.
 * Raw - Count full length sequences, fastest but unstructured
 
@@ -216,13 +216,22 @@ If you expect observed indels are likely real mutation rather than sequencing er
 
 ### Current limitations
 
-The current release is generally robust but tests show a few situations where observed counts differ from simulated expectations:
+The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
+We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
 
-* Pattern matching is not robust to mutations in flank sequences, leading to a level of undercounting and lots of non-matches that should be assignable.
-* Paired reads sometimes lead to missed library assignment when the read partially overlaps a region. The regions are still counted just not assigned to the library fully. This can generally be mitigated by pairing reads ahead of processing, which is more robust in any case.
+![summary counts](plots/test_summary_bars.png)
 
-Both cases can be seen in the plots from the integration tests, for instance in the summary counts:
+The different methods have the follow profiles:
 
-![summary counts](plots/test_summary_scatter.png)
+* For unmutated sequences all methods give perfect counts as expected and alignment is generally robust across simulated mutations.
+* The inframe matching approach is generally ok as long as region lengths don't vary and there aren't too many indels.
+* Flanking pattern matching is robust under normal mutation profiles but breaks down under more extreme variants like indels in the flanking patterns. It also cannot cope with as wide a range of regions structures as full alignment.
+* Full alignment is the most robust across error modes and region structures.
 
-We are working on improving these features in upcoming patches.
+The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
+Both flanking patterns and alignment can deal with variable length regions, including across the read junction in paired end matching but regions that cross reads are not always combined correctly.
+If a variable regions spans both reads it's recommended to merge reads first where practical.
+
+Additionally, the following bugs are currently known:
+
+* Errors when sequences are 0 or 1bp long

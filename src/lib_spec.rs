@@ -11,98 +11,18 @@ use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
-use std::fmt;
+use std::fmt::Display;
 use std::fs::read_to_string;
 use std::hash::{Hash, Hasher};
-use std::io;
-use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::Arc;
 
-/// Error type for LibSpec
-///
-/// Includes a range of possible errors and wraps downstream errors from other
-/// modules.
-#[derive(Debug)]
-pub enum LibSpecError {
-    /// Generic LibSpec error
-    LibSpec { desc: String },
-
-    /// One or more errors invalidating a library, returned from .validate()
-    InvalidLibSpec { errs: Vec<String> },
-
-    /// A region has min length greater than max length
-    MinGreaterThanMax { id: String, min: usize, max: usize },
-
-    /// Duplicate regions in library
-    DuplicateRegion { id: String },
-
-    /// Required region missing
-    MissingRegion { id: String },
-
-    /// Required region missing
-    NeighbouringVariable { id: String },
-
-    /// IO errors
-    IOError(io::Error),
-
-    /// JSON Error
-    ParsingError(serde_json::Error),
-}
-
-impl fmt::Display for LibSpecError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LibSpecError::InvalidLibSpec { errs } => {
-                writeln!(f, "Multiple LibSpec errors detected:")?;
-                for err in errs {
-                    writeln!(f, "{}", err)?;
-                }
-                Ok(())
-            }
-            LibSpecError::MinGreaterThanMax { id, min, max } => {
-                write!(
-                    f,
-                    "Region {}: min_length ({}) cannot be greater than max_length ({})",
-                    id, min, max
-                )
-            }
-            LibSpecError::DuplicateRegion { id } => {
-                write!(f, "Duplciated region id {} in LibSpec", id)
-            }
-            LibSpecError::MissingRegion { id } => {
-                write!(f, "{} not found in LibSpec Region list", id)
-            }
-            LibSpecError::LibSpec { desc } => write!(f, "{}", desc),
-            LibSpecError::NeighbouringVariable { id } => {
-                write!(f, "Variable region {} follows another variable region", id)
-            }
-            LibSpecError::IOError(e) => write!(f, "Error reading LibSpec JSON file: {}", e),
-            LibSpecError::ParsingError(e) => write!(f, "Error parsing LibSpec JSON: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for LibSpecError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<io::Error> for LibSpecError {
-    fn from(err: io::Error) -> LibSpecError {
-        LibSpecError::IOError(err)
-    }
-}
-
-impl From<serde_json::Error> for LibSpecError {
-    fn from(err: serde_json::Error) -> LibSpecError {
-        LibSpecError::ParsingError(err)
-    }
-}
+use crate::errors::{LibSpecError, LibraryError, seq_to_string_or_log};
 
 /// LibSpec region types
 ///
 /// Specification for serde json to parse LibSpec regions
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "seq_type")]
 pub enum Region {
     /// A variable region with a list of possible values/combinations in a library. For
@@ -149,6 +69,11 @@ impl Region {
         }
     }
 
+    // Is the region "empty" (i.e. of 0 length)
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// If the region is variable (i.e. to be extracted during counting)
     pub fn is_variable(&self) -> bool {
         matches!(self, Region::Library { .. })
@@ -178,10 +103,37 @@ impl Region {
     }
 }
 
+/// Sequence of flanking regions around a sequence of interest
+#[derive(Debug)]
+pub enum FlankingSequences {
+    Unflanked,
+    OpenStart(Sequence),
+    Internal(Sequence, Sequence),
+    OpenEnd(Sequence),
+}
+
+impl Display for FlankingSequences {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlankingSequences::Unflanked => write!(f, "Unflanked"),
+            FlankingSequences::OpenStart(end) => write!(f, "(Open, {})", seq_to_string_or_log(end)),
+            FlankingSequences::Internal(start, end) => write!(
+                f,
+                "({}, {})",
+                seq_to_string_or_log(start),
+                seq_to_string_or_log(end)
+            ),
+            FlankingSequences::OpenEnd(start) => {
+                write!(f, "({}, Open)", seq_to_string_or_log(start))
+            }
+        }
+    }
+}
+
 /// LibSpec definition
 ///
 /// Specification for serde json to parse LibSpec JSON files
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LibrarySpec {
     /// The name of the library/sequence type
     pub id: String,
@@ -215,13 +167,6 @@ impl LibrarySpec {
     pub fn from_file(path: &str) -> Result<LibrarySpec, LibSpecError> {
         let json_str: String = read_to_string(path)?;
         let lib_spec: LibrarySpec = LibrarySpec::from_str(&json_str)?;
-        Ok(lib_spec)
-    }
-
-    /// Parse a LibrarySpec from a JSON string
-    pub fn from_str(spec: &str) -> Result<LibrarySpec, LibSpecError> {
-        let lib_spec: LibrarySpec = serde_json::from_str::<LibrarySpec>(spec)?;
-        lib_spec.validate()?;
         Ok(lib_spec)
     }
 
@@ -449,6 +394,58 @@ impl LibrarySpec {
             .collect()
     }
 
+    /// Get flanking sequences for all variable regions
+    pub fn get_all_flanking_regions(
+        &self,
+        len: usize,
+    ) -> Result<Vec<FlankingSequences>, LibSpecError> {
+        let regions = self.variable_regions();
+        let flanks = regions
+            .iter()
+            .map(|x| self.flanking_regions(x, len))
+            .collect::<Result<Vec<FlankingSequences>, LibSpecError>>()?;
+
+        Self::validate_flank_seqs(&flanks)?;
+
+        Ok(flanks)
+    }
+
+    /// Validate flanking regions
+    ///
+    /// Currently check that they form a valid and findable sequence of region types
+    pub fn validate_flank_seqs(flanks: &[FlankingSequences]) -> Result<(), LibSpecError> {
+        for (i, r) in flanks.iter().enumerate() {
+            match r {
+                FlankingSequences::Unflanked => {
+                    return Err(LibSpecError::LibSpec {
+                        desc: "Unflanked region after all flank patterns found".to_string(),
+                    });
+                }
+                FlankingSequences::OpenStart(..) => {
+                    if i == 0 {
+                        continue;
+                    }
+                    return Err(LibSpecError::LibSpec {
+                        desc: "Region with an open start found after first region in flanking patterns".to_string()
+                    });
+                }
+                FlankingSequences::Internal(..) => continue,
+                FlankingSequences::OpenEnd(..) => {
+                    if i == flanks.len() - 1 {
+                        continue;
+                    }
+                    return Err(LibSpecError::LibSpec {
+                        desc:
+                            "Region with an open end found before final region in flanking patterns"
+                                .to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Identify the sequences flanking a region of interest
     ///
     /// If the region is first/last the corresponding flanking region is None, otherwise
@@ -457,7 +454,7 @@ impl LibrarySpec {
         &self,
         region: &str,
         len: usize,
-    ) -> Result<(Option<Sequence>, Option<Sequence>), LibSpecError> {
+    ) -> Result<FlankingSequences, LibSpecError> {
         let reg_ind = self
             .regions
             .iter()
@@ -516,14 +513,12 @@ impl LibrarySpec {
             }
         }
 
-        Ok((
-            if !before.is_empty() {
-                Some(before)
-            } else {
-                None
-            },
-            if !after.is_empty() { Some(after) } else { None },
-        ))
+        Ok(match (before.is_empty(), after.is_empty()) {
+            (true, true) => FlankingSequences::Unflanked,
+            (true, false) => FlankingSequences::OpenStart(after),
+            (false, true) => FlankingSequences::OpenEnd(before),
+            (false, false) => FlankingSequences::Internal(before, after),
+        })
     }
 
     /// Determine number of variable length region
@@ -534,11 +529,15 @@ impl LibrarySpec {
 
         for region in &self.regions {
             match region {
-                Region::Library { min_length, max_length, .. } => {
+                Region::Library {
+                    min_length,
+                    max_length,
+                    ..
+                } => {
                     if min_length != max_length {
                         count += 1
                     }
-                },
+                }
                 Region::Fixed { .. } => continue,
             }
         }
@@ -547,46 +546,14 @@ impl LibrarySpec {
     }
 }
 
-/// Error type for library
-#[derive(Debug)]
-pub enum LibraryError {
-    /// Generic Library error
-    Library { desc: String },
+impl FromStr for LibrarySpec {
+    type Err = LibSpecError;
 
-    /// Duplicate regions in library
-    DuplicateRegion { id: String },
-
-    /// Required region missing
-    MissingRegion { id: String },
-
-    /// IO errors
-    IOError(csv::Error),
-}
-
-impl fmt::Display for LibraryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LibraryError::DuplicateRegion { id } => {
-                write!(f, "Duplicated region id {} in Library", id)
-            }
-            LibraryError::MissingRegion { id } => {
-                write!(f, "{} not found in Library Region list", id)
-            }
-            LibraryError::Library { desc } => write!(f, "{}", desc),
-            LibraryError::IOError(e) => write!(f, "Error reading Library TSV file: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for LibraryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None // No underlying error
-    }
-}
-
-impl From<csv::Error> for LibraryError {
-    fn from(err: csv::Error) -> LibraryError {
-        LibraryError::IOError(err)
+    /// Parse a LibrarySpec from a JSON string
+    fn from_str(spec: &str) -> Result<Self, Self::Err> {
+        let lib_spec: LibrarySpec = serde_json::from_str::<LibrarySpec>(spec)?;
+        lib_spec.validate()?;
+        Ok(lib_spec)
     }
 }
 
@@ -597,15 +564,15 @@ impl From<csv::Error> for LibraryError {
 pub struct Library {
     /// Full sequences for each member of the library, divided into region vectors. The full nth
     /// sequence contains the nth sequence from each region vector
-    pub library: HashMap<String, Vec<Rc<LibraryRegion>>>,
+    pub library: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
     /// Unique sequences for each region, mapping back to which full combinations they are part
     /// of by index
-    pub regions: HashMap<String, Vec<Rc<LibraryRegion>>>,
+    pub regions: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
-    exact_matches: HashMap<String, HashMap<Sequence, Rc<LibraryRegion>>>,
+    exact_matches: HashMap<String, HashMap<Sequence, Arc<LibraryRegion>>>,
 
     /// Max distance to consider for each region
     region_max_distance: HashMap<String, u64>,
@@ -638,7 +605,7 @@ impl Hash for LibraryRegion {
 /// Match with a LibraryRegion at a given distance
 #[derive(Debug)]
 pub struct LibraryMatch {
-    pub matches: Vec<Rc<LibraryRegion>>,
+    pub matches: Vec<Arc<LibraryRegion>>,
     pub distance: u64,
 }
 
@@ -649,7 +616,7 @@ pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option
     match (x, y) {
         (None, _) | (_, None) => None,
         (Some(x), Some(y)) => {
-            let matches: Vec<Rc<LibraryRegion>> = x
+            let matches: Vec<Arc<LibraryRegion>> = x
                 .matches
                 .iter()
                 .filter(|m| y.matches.contains(m))
@@ -718,7 +685,7 @@ impl Library {
                 .insert(
                     key.clone(),
                     Vec::from_iter(reg_map.into_iter().map(|x| {
-                        Rc::new(LibraryRegion {
+                        Arc::new(LibraryRegion {
                             sequence: x.0,
                             inds: x.1,
                         })
@@ -736,10 +703,14 @@ impl Library {
         let mut exact_matches = HashMap::new();
         for key in regions.keys() {
             exact_matches.insert(key.clone(), HashMap::new());
-            for reg in regions.get(key).expect("Key known to be in regions HashMap") {
-                exact_matches.get_mut(key)
-                             .expect("Key just added to exact_matchs")
-                             .insert(reg.sequence.clone(), reg.clone());
+            for reg in regions
+                .get(key)
+                .expect("Key known to be in regions HashMap")
+            {
+                exact_matches
+                    .get_mut(key)
+                    .expect("Key just added to exact_matchs")
+                    .insert(reg.sequence.clone(), reg.clone());
             }
         }
 
@@ -747,7 +718,7 @@ impl Library {
         let mut library_compiled = HashMap::new();
 
         for (key, seqs) in library {
-            let mut rc_vec: Vec<Option<Rc<LibraryRegion>>> = vec![None; seqs.len()];
+            let mut rc_vec: Vec<Option<Arc<LibraryRegion>>> = vec![None; seqs.len()];
 
             for reg in regions
                 .get(&key)
@@ -761,7 +732,7 @@ impl Library {
             library_compiled.insert(
                 key.clone(),
                 rc_vec.into_iter().map(
-                    |x| x.expect("All library members should have been assigned Some(Rc<LibraryRegion>) by construction")).collect()
+                    |x| x.expect("All library members should have been assigned Some(Arc<LibraryRegion>) by construction")).collect()
             );
         }
 
@@ -786,6 +757,12 @@ impl Library {
             .next()
             .expect("Returned previously if library empty")
             .len()
+    }
+
+    #[allow(dead_code)] // not used in count_reads but useful for users
+    /// Check is the library is empty
+    pub fn is_empty(&self) -> bool {
+        self.library.is_empty()
     }
 
     /// Compare an observed sequence to the library
@@ -819,12 +796,12 @@ impl Library {
                 return Ok(Some(LibraryMatch {
                     matches: vec![hit.clone()],
                     distance: 0,
-                }))
+                }));
             }
         }
 
         // Else try lookup
-        let regions: &Vec<Rc<LibraryRegion>> = match self.regions.get(region) {
+        let regions: &Vec<Arc<LibraryRegion>> = match self.regions.get(region) {
             Some(x) => x,
             None => {
                 return Err(LibraryError::MissingRegion {
@@ -896,12 +873,12 @@ impl Library {
     /// Compare an observed sequence to the library via Hamming distance
     fn lookup_hamming(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             // Hamming distance only applicaple for matching length, ignore
@@ -942,29 +919,27 @@ impl Library {
     /// 5 prime end
     fn lookup_hamming_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
-            // Hamming distance only applicaple for matching length, ignore
-            // non-matching lengths
-            if seq.len() != reg.sequence.len() {
+            // Hamming distance only defined for equal length - if query is
+            // longer than region discard
+            if query_len > reg.sequence.len() {
                 continue;
             }
-
-            let reg_end = cmp::min(query_len, reg.sequence.len());
 
             // Use appropriate hamming implemntation (other branch should be
             // pruned at compile time)
             if cfg!(all(target_feature = "avx2", target_feature = "sse4.1")) {
-                dist = distance::simd::hamming(seq, &reg.sequence[0..reg_end]);
+                dist = distance::simd::hamming(seq, &reg.sequence[0..query_len]);
             } else {
-                dist = distance::hamming(seq, &reg.sequence[0..reg_end]);
+                dist = distance::hamming(seq, &reg.sequence[0..query_len]);
             }
 
             // Ignore too distant seqs - could make custom dist functions that short
@@ -987,23 +962,23 @@ impl Library {
     /// 3 prime end
     fn lookup_hamming_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u64,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
         let mut best_dist: u64 = u64::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
-            // Hamming distance only applicaple for matching length, ignore
-            // non-matching lengths
-            if seq.len() != reg.sequence.len() {
-                continue;
-            }
-
             let end = reg.sequence.len();
             let start = end.saturating_sub(query_len);
+
+            // Hamming distance only defined for equal length - if query is
+            // different length than region discard
+            if end - start != seq.len() {
+                continue;
+            }
 
             // Use appropriate hamming implemntation (other branch should be
             // pruned at compile time)
@@ -1032,12 +1007,12 @@ impl Library {
     /// Compare an observed sequence to the library via Levenshtein distance
     fn lookup_levenshtein(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             // Use appropriate levenshtein implemntation (other branch should be
@@ -1072,12 +1047,12 @@ impl Library {
     /// sequences 5 prime end
     fn lookup_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1111,12 +1086,12 @@ impl Library {
     /// sequences 3 prime end
     fn lookup_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1150,12 +1125,12 @@ impl Library {
     /// Compare an observed sequence to the library via Bounded Levenshtein distance
     fn lookup_bounded_levenshtein(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
 
         for reg in regions.iter() {
             dist = distance::simd::bounded_levenshtein(
@@ -1188,12 +1163,12 @@ impl Library {
     /// sequences 5 prime end
     fn lookup_bounded_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1225,12 +1200,12 @@ impl Library {
     /// sequences 3 prime end
     fn lookup_bounded_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Rc<LibraryRegion>],
+        regions: &[Arc<LibraryRegion>],
         max_dist: u32,
-    ) -> (Vec<Rc<LibraryRegion>>, u64) {
+    ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
         let mut best_dist: u32 = u32::MAX;
-        let mut hits: Vec<Rc<LibraryRegion>> = Vec::new();
+        let mut hits: Vec<Arc<LibraryRegion>> = Vec::new();
         let query_len = seq.len();
 
         for reg in regions.iter() {
@@ -1339,4 +1314,9 @@ pub enum PartialMatching {
     Full,
     FivePrimeOnly,
     ThreePrimeOnly,
+}
+
+#[cfg(test)]
+mod tests {
+    // use super::*;
 }

@@ -2,18 +2,18 @@
 use anyhow::Error;
 use bio::alignment::pairwise::Aligner;
 use clap::{ArgAction, Parser};
-use log::{self, debug, error, info, warn, LevelFilter};
+use log::{self, LevelFilter, debug, error, info, warn};
 use regex::Regex;
 use std::fs;
 use std::process::exit;
 use std::str;
 
+use dnacomb::ObservedCombinations;
+use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
+use dnacomb::filters::{AlignmentTolerance, FilterConfig};
 use dnacomb::lib_spec::{DistanceMetric, Library, LibrarySpec};
-use dnacomb::log_progress::ProgressStyle;
-use dnacomb::read_counts::{
-    AlignmentScorer, AlignmentTolerance, CountMode, FilterConfig, ObservedCombinations, count_reads,
-};
-use dnacomb::read_parsing::{Compression, ReadPairParser, SeqFormat, SeqPath};
+use dnacomb::logging::ProgressStyle;
+use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat, SeqPath};
 
 /// Fast general purpose read counter supporting complex structured reads
 ///
@@ -58,7 +58,12 @@ struct Cli {
     compression: Compression,
 
     /// Prefix for output TSV files
-    #[arg(short = 'o', long, default_value = "read_counts", help_heading = "Output")]
+    #[arg(
+        short = 'o',
+        long,
+        default_value = "read_counts",
+        help_heading = "Output"
+    )]
     output: String,
 
     /// Sort output by descending count. Considers the total count across read groups
@@ -105,12 +110,22 @@ struct Cli {
 
     /// Max distance to consider for library comparisons when not specified for that
     /// region in LibSpec
-    #[arg(short = 'x', long, default_value_t = 3, help_heading = "Library Comparison")]
+    #[arg(
+        short = 'x',
+        long,
+        default_value_t = 3,
+        help_heading = "Library Comparison"
+    )]
     max_distance: u64,
 
     /// Max number of matches to consider for library comparisons. More than this many equivalent
     /// matches will be considered indeterminant.
-    #[arg(short = 't', long, default_value_t = 10, help_heading = "Library Comparison")]
+    #[arg(
+        short = 't',
+        long,
+        default_value_t = 10,
+        help_heading = "Library Comparison"
+    )]
     max_matches: usize,
 
     /// Filter reads with mean Phred score below this threshold
@@ -120,6 +135,19 @@ struct Cli {
     /// Minimum proportion of expected alignment score to keep
     #[arg(short = 'r', long, help_heading = "Filtering")]
     alignment_tolerance: Option<f32>,
+
+    /// Filter reads shorter than this length. Both F and R must meet the threshold.
+    /// For technical reasons reads were either F or R is empty are always filtered.
+    #[arg(short = 'L', long, help_heading = "Filtering")]
+    minimum_read_length: Option<usize>,
+
+    /// Length of flanking pattern to use (where possible)
+    #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
+    pattern_length: usize,
+
+    /// Number of mismatches to accept while matching flanking patterns
+    #[arg(long, default_value_t = 1, help_heading = "Pattern Matching")]
+    pattern_tolerance: u64,
 
     /// Match score for alignment
     #[arg(long, default_value_t = 6, help_heading = "Alignment")]
@@ -153,13 +181,9 @@ struct Cli {
     #[arg(long, default_value_t = b'I', help_heading = "Technical")]
     default_phred: u8,
 
-    // /// Number of threads to use
-    // #[arg(short, long, default_value_t = 1, help_heading = "Technical")]
-    // threads: u32,
-
-    // /// Chunksize for parallel processing
-    // #[arg(short, long, help_heading = "Technical")]
-    // chunksize: Option<u32>,
+    /// Number of threads to use
+    #[arg(short = 'T', long, default_value_t = 1, help_heading = "Technical")]
+    threads: usize
 }
 
 /// Main function
@@ -308,12 +332,15 @@ fn run(args: Cli) -> Result<(), Error> {
             );
             None
         }
-        (Some(l), Some(t)) => {
-            calculate_alignment_tolerance(l, &alignment_scorer, &reader, t)?
-        }
+        (Some(l), Some(t)) => calculate_alignment_tolerance(l, &alignment_scorer, &reader, t)?,
     };
 
-    let filter_config = FilterConfig::new(args.mean_quality_threshold, alignment_tolerance);
+    let filter_config = FilterConfig::new(
+        args.mean_quality_threshold,
+        alignment_tolerance,
+        args.minimum_read_length,
+        false
+    );
 
     info!("Filtering reads with config: {:?}", filter_config);
 
@@ -324,11 +351,14 @@ fn run(args: Cli) -> Result<(), Error> {
         args.mode,
         filter_config,
         Some(alignment_scorer),
+        Some(args.pattern_length),
+        Some(args.pattern_tolerance),
         !args.no_cache,
+        args.threads,
         Some(&progress_style),
     )?;
 
-    if counts.len() == 0 {
+    if counts.is_empty() {
         error!("No observed combinations counted (empty fasta?). Exiting");
         debug!("ObservedCombinations:\n{:?}", counts);
         exit(1);
@@ -350,6 +380,7 @@ fn run(args: Cli) -> Result<(), Error> {
                 Some(&progress_style),
                 args.distance_metric,
                 args.max_matches,
+                args.threads,
             )?;
         }
     }
@@ -428,7 +459,11 @@ fn calculate_alignment_tolerance(
         );
     }
 
-    Ok(Some(AlignmentTolerance::new(tolerance, f_alignment.score, r_score)?))
+    Ok(Some(AlignmentTolerance::new(
+        tolerance,
+        f_alignment.score,
+        r_score,
+    )?))
 }
 
 /// Log SIMD feature presence and whether the tool is compiled
@@ -438,15 +473,21 @@ fn calculate_alignment_tolerance(
 /// via AVX2/SSE4.1
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn check_simd_features() {
-    match (cfg!(all(target_feature = "avx2", target_feature = "sse4.1")),
-           std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("sse4.1")) {
+    match (
+        cfg!(all(target_feature = "avx2", target_feature = "sse4.1")),
+        std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("sse4.1"),
+    ) {
         (true, true) => info!("Using SIMD instructions to speed up distance calculations."),
-        (true, false) => info!("Compiled with SIMD instructions but AVX2/SSE4.1 not available so \
-                                falling back to regular distance metrics."),
-        (false, true) => info!("Compiled without SIMD instructions but AVX2 & SSE4.1 are \
+        (true, false) => info!(
+            "Compiled with SIMD instructions but AVX2/SSE4.1 not available so \
+                                falling back to regular distance metrics."
+        ),
+        (false, true) => info!(
+            "Compiled without SIMD instructions but AVX2 & SSE4.1 are \
                                 available, consider re-compiling to benefit from SIMD \
-                                speed increases."),
-        (false, false) => info!("Compiled without SIMD instructions and AVX2/SSE4.1 unavailable.")
+                                speed increases."
+        ),
+        (false, false) => info!("Compiled without SIMD instructions and AVX2/SSE4.1 unavailable."),
     }
 }
 
