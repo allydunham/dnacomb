@@ -183,6 +183,9 @@ def parse_args(arg_list=None):
     parser.add_argument("--threads", "-t", default=1,
                         help="Number of threads to use")
 
+    parser.add_argument("--global", "-g", action="store_true",
+                        help="Use globally installed DNAComb rather than locallay compiled copy")
+
     return parser.parse_args(arg_list)
 
 if __name__ == "__main__":
