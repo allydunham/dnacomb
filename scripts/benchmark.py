@@ -123,7 +123,7 @@ def main():
         if not os.path.exists(f"data/benchmark/{root}_{lib}_{size}.fq"):
             print(f"    {lib} {size} fastq... ", end="", flush=True)
             generate_test_data(lib_spec=f"data/benchmark/{root}_{lib}_{size}.json",
-                               number=1000000, library_size=size,
+                               number=10000000, library_size=size,
                                output=f"data/benchmark/{root}_{lib}_{size}",
                                recombination_rate=0.01, contamination_rate=0.01,
                                mismatch_rate=0.01, truncation_rate=0.001,
@@ -140,20 +140,19 @@ def main():
             ["exact", "hamming", "bounded-levenshtein", "levenshtein"],
             [("grna", 156), ("grna_sensor", 244), ("pegrna", 313)],
             [100, 1000, 10000],
-            [10000, 100000, 1000000],
-            [1, 2, 4, 6, 8],
+            [100000, 1000000, 10000000],
             [True, False],
             [True, False]
         )
 
-        for mode, metric, (lib, read_length), lib_size, n_reads, n_threads, nocache, paired in param_combs:
+        for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired in param_combs:
             if mode == "full-read" and not (metric == "exact" and lib_size == 100):
                 continue
 
             if nocache and not mode == "align":
                 continue
 
-            name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{n_threads}|cache:{not nocache}|paired:{paired}"
+            name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{args.threads}|cache:{not nocache}|paired:{paired}"
 
             if paired:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
@@ -162,14 +161,14 @@ def main():
                               r_file=f"data/benchmark/{root}_{lib}_{lib_size}_reverse.fq",
                               lib_spec=f"data/benchmark/{root}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library_counts=True, no_cache=nocache,
-                              threads=n_threads, additional_args=["--max-reads", str(n_reads)])
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads)])
             else:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
                               outname=f"{root}_{name}", outfile=file,
                               f_file=f"data/benchmark/{root}_{lib}_{lib_size}.fq",
                               lib_spec=f"data/benchmark/{root}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library_counts=True, no_cache=nocache,
-                              threads=n_threads, additional_args=["--max-reads", str(n_reads)])
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads)])
 
 def parse_args(arg_list=None):
     """
@@ -180,6 +179,9 @@ def parse_args(arg_list=None):
 
     parser.add_argument("--output", "-o", default="bench",
                         help="Output name")
+
+    parser.add_argument("--threads", "-t", default=1,
+                        help="Number of threads to use")
 
     return parser.parse_args(arg_list)
 
