@@ -5,6 +5,7 @@ Run benchmark tests on a large seque using a variety of settings.
 Prints a benchmark results table to stdout and logging to stderr.
 """
 import argparse
+import sys
 import os
 import re
 from utils import run_tool
@@ -54,7 +55,7 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
                   threads=1,
                   library_counts=True, additional_args=None,
                   library_size="NA", read_length="NA",
-                  outname="bench"):
+                  outname="bench", path=None):
     """
     Run benchmark suit for a given input
     """
@@ -63,7 +64,8 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
                          output=f"data/benchmark/{outname}", mode=mode, metric=metric,
                          verbose=True, no_cache=no_cache, sort=sort, threads=threads,
                          group=group, overwrite=True, library_counts=library_counts,
-                         additional_args=additional_args, rm_output=True)
+                         additional_args=additional_args, rm_output=True,
+                         path=path)
     if out.returncode != 0:
         print("failed:\n", out.stderr, sep="")
     else:
@@ -102,9 +104,11 @@ def main():
     """Main"""
     args = parse_args()
 
-    root = args.output
-
-    os.makedirs("data/benchmark", exist_ok=True)
+    os.makedirs(args.root, exist_ok=True)
+    
+    inroot = f"{args.root}/{args.input}"
+    outroot = f"{args.root}/{args.output}"
+    outname = args.output
 
     print("\nGenerating data:")
 
@@ -114,25 +118,28 @@ def main():
     )
 
     for lib, size in param_combs:
-        if not os.path.exists(f"data/benchmark/{root}_{lib}_{size}"):
+        if not os.path.exists(f"{inroot}_{lib}_{size}"):
             print(f"    {lib} {size} library... ", end="", flush=True)
             _ = generate_library(lib_spec=f"config/{lib}.json", n=size,
-                                 path=f"data/benchmark/{root}_{lib}_{size}")
+                                 path=f"{inroot}_{lib}_{size}")
             print("done")
 
-        if not os.path.exists(f"data/benchmark/{root}_{lib}_{size}.fq"):
+        if not os.path.exists(f"{inroot}_{lib}_{size}.fq"):
             print(f"    {lib} {size} fastq... ", end="", flush=True)
-            generate_test_data(lib_spec=f"data/benchmark/{root}_{lib}_{size}.json",
+            generate_test_data(lib_spec=f"{inroot}_{lib}_{size}.json",
                                number=10000000, library_size=size,
-                               output=f"data/benchmark/{root}_{lib}_{size}",
+                               output=f"{inroot}_{lib}_{size}",
                                recombination_rate=0.01, contamination_rate=0.01,
                                mismatch_rate=0.01, truncation_rate=0.001,
                                sub_rate=0.001, indel_rate=0.0001)
             print("done")
 
+    if args.gen_only:
+        sys.exit(0)
+
     print("\nRunning Benchmarks:")
 
-    with open(f"data/benchmark/{root}.tsv", "w") as file:
+    with open(f"{outroot}.tsv", "w") as file:
         print(*BENCH_HEADERS, sep="\t", file=file)
 
         param_combs = product(
@@ -148,27 +155,36 @@ def main():
         for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired in param_combs:
             if mode == "full-read" and not (metric == "exact" and lib_size == 100):
                 continue
+            
+            if mode == "inframe" and lib == "pegrna":
+                continue
 
             if nocache and not mode == "align":
+                continue
+
+            # Only do library comparison for the best estimates from align
+            if not metric == "exact" and not mode == "align" and nocache:
                 continue
 
             name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{args.threads}|cache:{not nocache}|paired:{paired}"
 
             if paired:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
-                              outname=f"{root}_{name}", outfile=file,
-                              f_file=f"data/benchmark/{root}_{lib}_{lib_size}_forward.fq",
-                              r_file=f"data/benchmark/{root}_{lib}_{lib_size}_reverse.fq",
-                              lib_spec=f"data/benchmark/{root}_{lib}_{lib_size}.json",
+                              outname=f"{outname}_{name}", outfile=file,
+                              f_file=f"{inroot}_{lib}_{lib_size}_forward.fq",
+                              r_file=f"{inroot}_{lib}_{lib_size}_reverse.fq",
+                              lib_spec=f"{inroot}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library_counts=True, no_cache=nocache,
-                              threads=args.threads, additional_args=["--max-reads", str(n_reads)])
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads)],
+                              path=args.path)
             else:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
-                              outname=f"{root}_{name}", outfile=file,
-                              f_file=f"data/benchmark/{root}_{lib}_{lib_size}.fq",
-                              lib_spec=f"data/benchmark/{root}_{lib}_{lib_size}.json",
+                              outname=f"{outname}_{name}", outfile=file,
+                              f_file=f"{inroot}_{lib}_{lib_size}.fq",
+                              lib_spec=f"{inroot}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library_counts=True, no_cache=nocache,
-                              threads=args.threads, additional_args=["--max-reads", str(n_reads)])
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads)],
+                              path=args.path)
 
 def parse_args(arg_list=None):
     """
@@ -177,14 +193,23 @@ def parse_args(arg_list=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+    parser.add_argument("--input", "-i", default="bench",
+                        help="Root sequence input name. Benchmarks with the same name share input, so take care the sequences are generated first")
+
+    parser.add_argument("--gen_only", "-g", action="store_true",
+                        help="Generate input sequences without running the benchmark, for instance to then run multiple repeats on the input")
+
     parser.add_argument("--output", "-o", default="bench",
                         help="Output name")
 
-    parser.add_argument("--threads", "-t", default=1,
+    parser.add_argument("--root", "-r", default="data/benchmark",
+                        help="Root folder to work in ")
+
+    parser.add_argument("--threads", "-t", default=1, type=int,
                         help="Number of threads to use")
 
-    parser.add_argument("--global", "-g", action="store_true",
-                        help="Use globally installed DNAComb rather than locallay compiled copy")
+    parser.add_argument("--path", "-p",
+                        help="Use DNAComb instance found at path instead of /target/release/dnacomb")
 
     return parser.parse_args(arg_list)
 
