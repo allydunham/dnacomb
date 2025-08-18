@@ -2,6 +2,7 @@
 *.csv
 *.fq*
 *.fa*
+/scripts/__pycache__/
 /target
 /test
 /benchmark
