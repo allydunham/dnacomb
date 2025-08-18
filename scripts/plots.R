@@ -186,10 +186,11 @@ bench_cols <- c(
   "unique_regions", "library_time", "library_rate",
   "summary_size", "summary_time", "summary_rate"
 )
-benchmark <- dir("data/benchmark/", pattern = "bench[0-9]*.tsv", full.names = TRUE) %>%
-  set_names(1:length(.)) %>%
+benchmark <- dir("data/benchmark", pattern = "bench[0-9]*_[0-9]*.tsv", full.names = TRUE) %>%
+  set_names() %>%
   map(read_tsv, col_names = bench_cols, skip = 1) %>%
-  bind_rows(.id = "rep")
+  bind_rows(.id = "rep") %>%
+  extract(rep, c("rep", "threads"), "data/benchmark/bench([0-9]*)_([0-9]*)")
 
 p_format <- filter(benchmark, str_detect(name, "Format")) %>%
   select(rep, name, total_time, region_time) %>%
