@@ -163,7 +163,7 @@ def main():
                 continue
 
             # Only do library comparison for the best estimates from align
-            if not metric == "exact" and not mode == "align" and nocache:
+            if metric != "exact" and not (mode == "align" and not nocache and n_reads < 10000000):
                 continue
 
             name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{args.threads}|cache:{not nocache}|paired:{paired}"
