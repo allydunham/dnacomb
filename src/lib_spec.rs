@@ -570,6 +570,9 @@ pub struct Library {
     /// of by index
     pub regions: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
+    /// Library member IDs
+    ids: Option<Vec<String>>,
+
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
     exact_matches: HashMap<String, HashMap<Sequence, Arc<LibraryRegion>>>,
@@ -638,6 +641,7 @@ pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option
 impl Library {
     pub fn new(
         library: HashMap<String, Vec<Sequence>>,
+        ids: Option<Vec<String>>,
         region_max_distance: HashMap<String, u64>,
         default_max_distance: u64,
     ) -> Result<Library, LibraryError> {
@@ -655,6 +659,15 @@ impl Library {
                     desc: "Library must contain the same number of sequences for each region"
                         .to_string(),
                 });
+            }
+
+            if let Some(i) = &ids {
+                if i.len() != exp_len {
+                    return Err(LibraryError::Library {
+                        desc: "Library must have as many IDs as the number of elements"
+                            .to_string(),
+                    });
+                }
             }
         }
 
@@ -739,6 +752,7 @@ impl Library {
         Ok(Library {
             library: library_compiled,
             regions,
+            ids,
             exact_matches,
             region_max_distance,
             default_max_distance,
@@ -763,6 +777,19 @@ impl Library {
     /// Check is the library is empty
     pub fn is_empty(&self) -> bool {
         self.library.is_empty()
+    }
+
+    /// Get the ID associated with a
+    pub fn get_name(&self, ind: usize) -> Result<String, LibraryError> {
+        match &self.ids {
+            None => Ok(ind.to_string()),
+            Some(v) => match v.get(ind) {
+                Some(x) => Ok(x.clone()),
+                None => Err(LibraryError::Library {
+                    desc: "Ind out of bounds when attempting to fetch library ID".to_string(),
+                }),
+            }
+        }
     }
 
     /// Compare an observed sequence to the library
@@ -1242,6 +1269,12 @@ impl Library {
         let spec_regions = lib_spec.variable_regions();
         let region_max_distance = lib_spec.get_max_distances();
 
+        if lib_spec.variable_regions().contains(&"_id".to_string()) {
+            return Err(LibraryError::Library {
+                desc: "Region named '_id'. This is reserved for element name when doing library comparison".to_string(),
+            });
+        }
+
         let lib: Library = match &lib_spec.library {
             None => return Ok(None),
             Some(x) => Library::from_file(x, region_max_distance, default_max_distance)?,
@@ -1270,29 +1303,39 @@ impl Library {
 
         // Prepare a HashMap to store column name to values
         let names = reader.headers()?.clone();
+        let mut id_vec: Vec<String> = Vec::new();
         let mut regions: HashMap<String, Vec<Sequence>> = HashMap::new();
 
         // Initialize empty Vec<Sequence> for each column
         for name in names.iter() {
-            regions.insert(name.to_string(), Vec::new());
+            if name != "_id" {
+                regions.insert(name.to_string(), Vec::new());
+            }
         }
 
         // Iterate through records, appending values to the respective columns
         for result in reader.records() {
             let record = result?;
-            for (name, seq) in names.iter().zip(record.iter()) {
+            for (name, val) in names.iter().zip(record.iter()) {
+                if name == "_id" {
+                    id_vec.push(val.to_string());
+                    continue;
+                }
+
                 match regions.get_mut(name) {
                     None => {
                         return Err(LibraryError::MissingRegion {
                             id: name.to_string(),
                         });
                     }
-                    Some(v) => v.push(seq.as_bytes().to_vec()),
+                    Some(v) => v.push(val.as_bytes().to_vec()),
                 }
             }
         }
 
-        Library::new(regions, region_max_distance, default_max_distance)
+        let ids = if id_vec.len() > 0 {Some(id_vec)} else {None};
+
+        Library::new(regions, ids, region_max_distance, default_max_distance)
     }
 }
 
