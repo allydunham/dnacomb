@@ -1,5 +1,9 @@
 # DNAComb: parsing, counting and library comparison for structured sequence reads
 
+![Crates.io Version](https://img.shields.io/crates/v/dnacomb)
+![Crates.io License](https://img.shields.io/crates/l/dnacomb)
+![docs.rs](https://img.shields.io/docsrs/dnacomb)
+
 CLI tool for counting structured single and paired end sequencing reads and comparing them to an expected library.
 It compares each read to a canonical form defined in a library specification using one of four approaches:
 
@@ -91,14 +95,14 @@ In general it has the form:
     "reverse_read_length": 150,// Expected read length
     "regions": [ // Array of region objects, with two seq_types currently supported. A variable region must be flanked by fixed regions to allow regions to be extracted
         {
-            "id": "id", // Region name
+            "id": "name1", // Region name
             "seq_type": "Library", // Library type, will be compared to the expected library
             "min_length": X, // Min/max expected lengths
             "max_length": Y,
             "max_distance": 2 // Maximum number of mismatches allowed to still be considered a match
         },
         {
-            "id": "id", // Region name
+            "id": "name2", // Region name
             "seq": "[ACTG]", // Fixed sequence
             "seq_type": "Fixed", // A fixed region, anchors variable regions to allow identification
             "length": 86 // Length, must be the length of seq
@@ -113,6 +117,7 @@ In general it has the form:
 Library TSV files are strictly tab-separated with one column per region you want to run library comparison for.
 This doesn't have to include all variable regions, for instance if you have a barcode with no expectation on association.
 Each row contains an expected sequence combination.
+A special column named `_id` can be used to associate a name with each library member, which will be used in the output table in place of it's numeric index (this means `_id` should be avoided as a region name).
 Examples are again found in `config/` matching the LibSpec JSONs.
 
 ## Outputs

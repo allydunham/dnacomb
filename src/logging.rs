@@ -10,7 +10,7 @@ pub type LogFn = dyn Fn(&str) + Send + Sync;
 /// Progress bar
 ///
 /// Generic container for different progress bar options. Currently just a
-/// loggin progress bar and a NoOp dummy.
+/// logging progress bar and a NoOp dummy.
 pub enum Progress<'a> {
     /// Logging progress bar
     Log(LogProgress<'a>),
@@ -24,6 +24,7 @@ impl<'a> Progress<'a> {
     pub fn log(
         message: &'a str,
         final_message: &'a str,
+        use_thread_id: bool,
         total: Option<u64>,
         log_interval: u64,
         log_fn: Arc<dyn Fn(&str) + Send + Sync>,
@@ -31,6 +32,7 @@ impl<'a> Progress<'a> {
         Self::Log(LogProgress::new(
             message,
             final_message,
+            use_thread_id,
             total,
             log_interval,
             log_fn,
@@ -55,7 +57,14 @@ impl<'a> Progress<'a> {
     ) -> Self {
         match &style.log_fn {
             None => Self::none(),
-            Some(log_fn) => Self::log(message, final_message, total, log_interval, log_fn.clone()),
+            Some(log_fn) => Self::log(
+                message,
+                final_message,
+                style.use_thread_id,
+                total,
+                log_interval,
+                log_fn.clone(),
+            ),
         }
     }
 
@@ -84,6 +93,9 @@ pub struct LogProgress<'a> {
     /// Message to output before final update
     final_message: &'a str,
 
+    /// Message ID associated with the thread being logged
+    thread_id: String,
+
     /// Total number of iterations expected. None means unknown
     total: Option<u64>,
 
@@ -111,16 +123,24 @@ impl<'a> LogProgress<'a> {
     pub fn new(
         message: &'a str,
         final_message: &'a str,
+        use_thread_id: bool,
         total: Option<u64>,
         log_interval: u64,
         log_fn: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
         assert_ne!(log_interval, 0);
 
+        let thread_id = if use_thread_id {
+            format!(" [{:?}]", std::thread::current().id())
+        } else {
+            "".to_string()
+        };
+
         let now = Instant::now();
         Self {
             message,
             final_message,
+            thread_id,
             total,
             current: 0,
             start_time: now,
@@ -149,14 +169,14 @@ impl<'a> LogProgress<'a> {
         match self.total {
             None => {
                 (self.log_fn)(&format!(
-                    "{} {} in {:.2?} | avg. rate: {:.2} items/s",
-                    self.final_message, self.current, elapsed, avg_rate
+                    "{} {} in {:.2?} | avg. rate: {:.2} items/s{}",
+                    self.final_message, self.current, elapsed, avg_rate, self.thread_id
                 ));
             }
             Some(total) => {
                 (self.log_fn)(&format!(
-                    "{} {}/{} 100% in {:.2?} | avg. rate: {:.2} items/s",
-                    self.final_message, self.current, total, elapsed, avg_rate
+                    "{} {}/{} 100% in {:.2?} | avg. rate: {:.2} items/s{}",
+                    self.final_message, self.current, total, elapsed, avg_rate, self.thread_id
                 ));
             }
         }
@@ -182,8 +202,8 @@ impl<'a> LogProgress<'a> {
         match self.total {
             None => {
                 (self.log_fn)(&format!(
-                    "{} {} in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s",
-                    self.message, self.current, elapsed, current_rate, avg_rate
+                    "{} {} in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s{}",
+                    self.message, self.current, elapsed, current_rate, avg_rate, self.thread_id
                 ));
             }
             Some(total) => {
@@ -191,7 +211,7 @@ impl<'a> LogProgress<'a> {
                 let remaining: f64 = ((total - self.current) as f64) / avg_rate;
 
                 (self.log_fn)(&format!(
-                    "{} {}/{:.1} {:.0}% in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s | est {:.0}s remaining",
+                    "{} {}/{:.1} {:.0}% in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s | est {:.0}s remaining{}",
                     self.message,
                     self.current,
                     total,
@@ -199,7 +219,8 @@ impl<'a> LogProgress<'a> {
                     elapsed,
                     current_rate,
                     avg_rate,
-                    remaining
+                    remaining,
+                    self.thread_id
                 ));
             }
         }
@@ -210,17 +231,21 @@ impl<'a> LogProgress<'a> {
 #[derive(Clone)]
 pub struct ProgressStyle {
     log_fn: Option<Arc<LogFn>>,
+    pub use_thread_id: bool,
 }
 
 impl ProgressStyle {
     /// Create a new progress manager.
-    pub fn new(log_fn: Option<Arc<LogFn>>) -> Self {
-        Self { log_fn }
+    pub fn new(log_fn: Option<Arc<LogFn>>, use_thread_id: bool) -> Self {
+        Self {
+            log_fn,
+            use_thread_id,
+        }
     }
 }
 
 impl Default for ProgressStyle {
     fn default() -> Self {
-        ProgressStyle::new(Some(Arc::new(|msg| info!("{}", msg))))
+        ProgressStyle::new(Some(Arc::new(|msg| info!("{}", msg))), false)
     }
 }

@@ -172,7 +172,7 @@ na_or_zero <- function(x) {
 
 time_label <- function(x) {
   out <- str_c(x, "s")
-  out[x >= 60] <- str_c(round(x[x >= 60]/60, 1), "min")
+  out[x >= 60] <- str_c(round(x[x >= 60]/60, 1), "m")
   out[x >= 3600] <- str_c(round(x[x >= 3600]/3600, 1), "h")
   return(out)
 }
@@ -190,7 +190,23 @@ benchmark <- dir("data/benchmark", pattern = "bench[0-9]*_[0-9]*.tsv", full.name
   set_names() %>%
   map(read_tsv, col_names = bench_cols, skip = 1) %>%
   bind_rows(.id = "rep") %>%
-  extract(rep, c("rep", "threads"), "data/benchmark/bench([0-9]*)_([0-9]*)")
+  extract(rep, c("rep", "threads"), "data/benchmark/bench([0-9]*)_([0-9]*)", convert = TRUE)
+
+filter(benchmark, threads == 1) %>%
+  mutate(mode = if_else(mode == "align" & no_cache, "Uncached alignment", mode),
+       target = str_c(str_match(name, "lib:([a-z]*)")[,2], "(", read_length, "bp)"),
+       paired = rev != "None") %>%
+  drop_na(reads) %>%
+  {
+    ggplot(., aes(x = reads, y = region_time, colour = as.character(library_size), linetype = paired, shape = as.character(rep))) +
+      facet_grid2(rows = vars(target), cols = vars(mode)) +
+      geom_point() +
+      geom_line() +
+      scale_colour_brewer(palette = "Set1") +
+      scale_x_log10(breaks = c(1e5, 1e6, 1e7), labels = c("100k", "1M", "10M")) +
+      scale_y_continuous(breaks = c(0, 1, 30, 60, 300, 600, 1800, 3600, 7200, 14400), labels = time_label, transform = "pseudo_log") +
+      labs(x = "Number of Reads", y = "Time")
+  }
 
 p_format <- filter(benchmark, str_detect(name, "Format")) %>%
   select(rep, name, total_time, region_time) %>%

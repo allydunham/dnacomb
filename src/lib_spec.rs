@@ -664,8 +664,7 @@ impl Library {
             if let Some(i) = &ids {
                 if i.len() != exp_len {
                     return Err(LibraryError::Library {
-                        desc: "Library must have as many IDs as the number of elements"
-                            .to_string(),
+                        desc: "Library must have as many IDs as the number of elements".to_string(),
                     });
                 }
             }
@@ -788,7 +787,7 @@ impl Library {
                 None => Err(LibraryError::Library {
                     desc: "Ind out of bounds when attempting to fetch library ID".to_string(),
                 }),
-            }
+            },
         }
     }
 
@@ -1333,7 +1332,7 @@ impl Library {
             }
         }
 
-        let ids = if id_vec.len() > 0 {Some(id_vec)} else {None};
+        let ids = if id_vec.is_empty() { Some(id_vec) } else { None };
 
         Library::new(regions, ids, region_max_distance, default_max_distance)
     }

@@ -73,11 +73,19 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
         with open(f"data/benchmark/{outname}.log", "w") as file:
             print(str(out.stderr), file=file)
 
-    # Extract region count numbers
-    reg = REGION_RE.search(str(out.stderr))
-    reg_count = int(reg.group(1)) if reg is not None else "NA"
-    reg_time = extract_time(reg.group(2), reg.group(3)) if reg is not None else "NA"
-    reg_items = float(reg.group(4)) if reg is not None else "NA"
+    # Extract region count numbers (possibly multiple options as threaded)
+    reg = REGION_RE.findall(str(out.stderr))
+    reg_count = 0
+    reg_time = 0
+    reg_items = 0
+    for i in reg:
+        reg_count += int(i[0])
+        reg_time = max(extract_time(i[2], i[3]), reg_time)
+        reg_items += float(i[4])
+
+    reg_count = reg_count if reg_count > 0 else "NA"
+    reg_time = reg_time if reg_time > 0 else "NA"
+    reg_items = reg_items if reg_items > 0 else "NA"
 
     # Extract library processing
     lib = LIBRARY_RE.search(str(out.stderr))
@@ -105,7 +113,7 @@ def main():
     args = parse_args()
 
     os.makedirs(args.root, exist_ok=True)
-    
+
     inroot = f"{args.root}/{args.input}"
     outroot = f"{args.root}/{args.output}"
     outname = args.output
@@ -155,7 +163,7 @@ def main():
         for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired in param_combs:
             if mode == "full-read" and not (metric == "exact" and lib_size == 100):
                 continue
-            
+
             if mode == "inframe" and lib == "pegrna":
                 continue
 
