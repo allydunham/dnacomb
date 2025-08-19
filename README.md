@@ -69,7 +69,9 @@ Filtering:
   -r, --alignment-tolerance <ALIGNMENT_TOLERANCE>        Minimum proportion of expected alignment score to keep
 ```
 
-More details on the internals and interface can also be found in the [documentation](https://github.com/allydunham/dnacomb).
+The inputs and outputs are described below.
+The package can also be used programatically in your own Rust programs (or via e.g. Python if you build a wrapper library), but this is less well supported and tested.
+More details on the package internals and library interface can be found on [docs.rs](https://docs.rs/dnacomb/latest/dnacomb/).
 
 ## Inputs
 
@@ -86,7 +88,7 @@ Library specifications are a JSON file consisting of meta-data and a series of r
 Several examples can be found in `config/`
 In general it has the form:
 
-```JSON
+```text
 {
     "id": "Name", // Unused, just for info
     "forward_start_region": "{region_id}", // Start region for forward reads, used for inframe extraction
