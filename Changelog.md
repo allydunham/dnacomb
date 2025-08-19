@@ -2,6 +2,12 @@
 
 This file contains a record of the major changes between versions.
 
+## v0.3.0 Library IDs
+
+* Added library IDs to the LibSpec library format and supported them through the workflow
+* Logging handles threading better
+* Comprehensive benchmark
+
 ## v0.2.0 Multithreading and redesigned pattern matching
 
 * Added multithreading for region extraction and library mapping
