@@ -1332,7 +1332,7 @@ impl Library {
             }
         }
 
-        let ids = if id_vec.is_empty() { Some(id_vec) } else { None };
+        let ids = if !id_vec.is_empty() { Some(id_vec) } else { None };
 
         Library::new(regions, ids, region_max_distance, default_max_distance)
     }
