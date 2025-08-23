@@ -80,8 +80,8 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
     reg_items = 0
     for i in reg:
         reg_count += int(i[0])
-        reg_time = max(extract_time(i[2], i[3]), reg_time)
-        reg_items += float(i[4])
+        reg_time = max(extract_time(i[1], i[2]), reg_time)
+        reg_items += float(i[3])
 
     reg_count = reg_count if reg_count > 0 else "NA"
     reg_time = reg_time if reg_time > 0 else "NA"
