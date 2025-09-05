@@ -228,7 +228,7 @@ impl ObservedCombinations {
 
         // Compare each region to the library
         let mut reg_progress: Progress = Progress::from_style(
-            progress_style.unwrap_or(&ProgressStyle::new(None)),
+            progress_style.unwrap_or(&ProgressStyle::new(None, false)),
             "Matching regions:",
             "Matched regions:",
             Some(n_regs),
@@ -299,7 +299,7 @@ impl ObservedCombinations {
 
         // Compare the combinations to the libary
         let mut comb_progress: Progress = Progress::from_style(
-            progress_style.unwrap_or(&ProgressStyle::new(None)),
+            progress_style.unwrap_or(&ProgressStyle::new(None, false)),
             "Comparing combinations:",
             "Compared combinations:",
             Some(n_combs),
@@ -315,7 +315,7 @@ impl ObservedCombinations {
 
         // Make summary counts of observed library combinations
         let mut lib_summary_progress: Progress = Progress::from_style(
-            progress_style.unwrap_or(&ProgressStyle::new(None)),
+            progress_style.unwrap_or(&ProgressStyle::new(None, false)),
             "Summarising library matches:",
             "Summarised library matches:",
             Some(n_combs),
@@ -475,14 +475,18 @@ impl ObservedCombinations {
         }
         writeln!(
             count_writer,
-            "combination_status\tcombination_distance\tcombinations_in_library\tcombination_indexes\tcount"
+            "combination_status\tcombination_distance\tcombinations_in_library\tcombination_id\tcount"
         )?;
 
         for (key, _) in keys {
             let combination = self.combinations.get(key).expect(
                 "Combination key from extracted key list missing from ObservedCombinations",
             );
-            write!(count_writer, "{}", combination.to_tsv(&self.region_ids))?;
+            write!(
+                count_writer,
+                "{}",
+                combination.to_tsv(&self.region_ids, self.library.as_ref())?
+            )?;
         }
 
         count_writer.flush()?;
@@ -518,14 +522,18 @@ impl ObservedCombinations {
         }
         writeln!(
             writer,
-            "combination_status\tcombinations_in_library\tcombination_indexes\tcount"
+            "combination_status\tcombinations_in_library\tcombination_id\tcount"
         )?;
 
         for (key, _) in keys {
             let combination = combs.get(key).expect(
                 "Combination key from extracted key list missing from ObservedCombinations",
             );
-            write!(writer, "{}", combination.to_tsv(&self.region_ids))?;
+            write!(
+                writer,
+                "{}",
+                combination.to_tsv(&self.region_ids, self.library.as_ref())?
+            )?;
         }
 
         writer.flush()?;
@@ -581,47 +589,75 @@ impl CombinationMatch {
     ///
     /// Has the \t separated format:
     /// status combination_distance combinations_in_library combination_indexes
-    fn to_tsv_chunk(&self) -> String {
-        match self {
+    fn to_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
+        Ok(match self {
             CombinationMatch::Uncompared => "uncompared\t\t\t\t".to_string(),
-            CombinationMatch::Match { ind, distance } => format!("match\t{distance}\t1\t{ind}\t",),
-            CombinationMatch::MultiMatch { inds, distance } => format!(
-                "match\t{}\t{}\t{}\t",
-                distance,
-                inds.len(),
-                inds.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
+            CombinationMatch::Match { ind, distance } => {
+                let name = match library {
+                    None => ind.to_string(),
+                    Some(l) => l.get_name(*ind)?,
+                };
+                format!("match\t{distance}\t1\t{name}\t",)
+            }
+            CombinationMatch::MultiMatch { inds, distance } => {
+                let names = match library {
+                    None => inds
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    Some(l) => inds
+                        .iter()
+                        .map(|x| l.get_name(*x))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(","),
+                };
+
+                format!("match\t{}\t{}\t{}\t", distance, inds.len(), names)
+            }
             CombinationMatch::Recombination { distance } => {
                 format!("recombination\t{distance}\t0\t\t",)
             }
             CombinationMatch::Mismatch => "mismatch\t\t0\t\t".to_string(),
             CombinationMatch::Nonmatch => "nonmatch\t\t0\t\t".to_string(),
-        }
+        })
     }
 
     /// Output a summary TSV chunk for the combination match status
     ///
     /// Has the \t separated format:
     /// status combinations_in_library combination_indexes
-    fn to_summary_tsv_chunk(&self) -> String {
-        match self {
+    fn to_summary_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
+        Ok(match self {
             CombinationMatch::Uncompared => "uncompared\t\t\t".to_string(),
-            CombinationMatch::Match { ind, .. } => format!("match\t1\t{ind}\t",),
-            CombinationMatch::MultiMatch { inds, .. } => format!(
-                "match\t{}\t{}\t",
-                inds.len(),
-                inds.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
+            CombinationMatch::Match { ind, .. } => {
+                let name = match library {
+                    None => ind.to_string(),
+                    Some(l) => l.get_name(*ind)?,
+                };
+
+                format!("match\t1\t{name}\t",)
+            }
+            CombinationMatch::MultiMatch { inds, .. } => {
+                let names = match library {
+                    None => inds
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    Some(l) => inds
+                        .iter()
+                        .map(|x| l.get_name(*x))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(","),
+                };
+
+                format!("match\t{}\t{}\t", inds.len(), names)
+            }
             CombinationMatch::Recombination { .. } => "recombination\t0\t\t".to_string(),
             CombinationMatch::Mismatch => "mismatch\t0\t\t".to_string(),
             CombinationMatch::Nonmatch => "nonmatch\t0\t\t".to_string(),
-        }
+        })
     }
 }
 
@@ -745,7 +781,11 @@ impl ObservedCombination {
 
     /// Generate tsv line(s) corresponding to this combination. Each read group
     /// the combination is observed is given a separate line
-    fn to_tsv(&self, region_ids: &Vec<String>) -> String {
+    fn to_tsv(
+        &self,
+        region_ids: &Vec<String>,
+        library: Option<&Library>,
+    ) -> Result<String, LibraryError> {
         // Line has \t separated format:
         // group [{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
 
@@ -775,12 +815,12 @@ impl ObservedCombination {
                 }
             }
 
-            output.push_str(&self.library_matches.to_tsv_chunk());
+            output.push_str(&self.library_matches.to_tsv_chunk(library)?);
             output.push_str(&count.to_string());
             output.push('\n');
         }
 
-        output
+        Ok(output)
     }
 }
 
@@ -1099,7 +1139,11 @@ impl LibraryCombination {
 
     /// Generate tsv line(s) corresponding to this combination. Each read group
     /// the combination is observed is given a separate line
-    fn to_tsv(&self, region_ids: &Vec<String>) -> String {
+    fn to_tsv(
+        &self,
+        region_ids: &Vec<String>,
+        library: Option<&Library>,
+    ) -> Result<String, LibraryError> {
         // Line has \t separated format:
         // group [{region} for each region] status combinations_in_library combination_indexes count
 
@@ -1129,12 +1173,12 @@ impl LibraryCombination {
                 }
             }
 
-            output.push_str(&self.library_matches.to_summary_tsv_chunk());
+            output.push_str(&self.library_matches.to_summary_tsv_chunk(library)?);
             output.push_str(&count.to_string());
             output.push('\n');
         }
 
-        output
+        Ok(output)
     }
 }
 

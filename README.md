@@ -1,5 +1,9 @@
 # DNAComb: parsing, counting and library comparison for structured sequence reads
 
+![Crates.io Version](https://img.shields.io/crates/v/dnacomb)
+![Crates.io License](https://img.shields.io/crates/l/dnacomb)
+![docs.rs](https://img.shields.io/docsrs/dnacomb)
+
 CLI tool for counting structured single and paired end sequencing reads and comparing them to an expected library.
 It compares each read to a canonical form defined in a library specification using one of four approaches:
 
@@ -63,9 +67,14 @@ Library Comparison:
 Filtering:
   -q, --mean-quality-threshold <MEAN_QUALITY_THRESHOLD>  Filter reads with mean Phred score below this threshold
   -r, --alignment-tolerance <ALIGNMENT_TOLERANCE>        Minimum proportion of expected alignment score to keep
+
+Technical:
+  -T, --threads <THREADS>              Number of threads to use [default: 1]
 ```
 
-More details on the internals and interface can also be found in the [documentation](https://github.com/allydunham/dnacomb).
+The inputs and outputs are described below.
+The package can also be used programatically in your own Rust programs (or via e.g. Python if you build a wrapper library), but this is less well supported and tested.
+More details on the package internals and library interface can be found on [docs.rs](https://docs.rs/dnacomb/latest/dnacomb/).
 
 ## Inputs
 
@@ -82,7 +91,7 @@ Library specifications are a JSON file consisting of meta-data and a series of r
 Several examples can be found in `config/`
 In general it has the form:
 
-```JSON
+```text
 {
     "id": "Name", // Unused, just for info
     "forward_start_region": "{region_id}", // Start region for forward reads, used for inframe extraction
@@ -91,14 +100,14 @@ In general it has the form:
     "reverse_read_length": 150,// Expected read length
     "regions": [ // Array of region objects, with two seq_types currently supported. A variable region must be flanked by fixed regions to allow regions to be extracted
         {
-            "id": "id", // Region name
+            "id": "name1", // Region name
             "seq_type": "Library", // Library type, will be compared to the expected library
             "min_length": X, // Min/max expected lengths
             "max_length": Y,
             "max_distance": 2 // Maximum number of mismatches allowed to still be considered a match
         },
         {
-            "id": "id", // Region name
+            "id": "name2", // Region name
             "seq": "[ACTG]", // Fixed sequence
             "seq_type": "Fixed", // A fixed region, anchors variable regions to allow identification
             "length": 86 // Length, must be the length of seq
@@ -113,6 +122,7 @@ In general it has the form:
 Library TSV files are strictly tab-separated with one column per region you want to run library comparison for.
 This doesn't have to include all variable regions, for instance if you have a barcode with no expectation on association.
 Each row contains an expected sequence combination.
+A special column named `_id` can be used to associate a name with each library member, which will be used in the output table in place of it's numeric index (this means `_id` should be avoided as a region name).
 Examples are again found in `config/` matching the LibSpec JSONs.
 
 ## Outputs
@@ -132,7 +142,7 @@ This TSV file contains the full count data in the following columns:
 * `combination_status` - Flag determining whether the combination of regions occurs in the library.
 * `combination_distance` - Total distance to the assigned library combination(s).
 * `combinations_in_library` - How many library combinations match at this distance.
-* `combination_indexes` - The index of the matching library combinations, as the row number of the library TSV
+* `combination_indexes` - ID of the matching library combinations, either from the _id column or the row number of the library TSV
 * `count` - The number of times this combination was observed
 
 The possible combination statuses are:
@@ -170,21 +180,6 @@ It contains the following columns:
 * `overall_proportion` - The proportion of all reads
 * `group_proportion` - The proportion of reads in the same group
 
-## Future Roadmap
-
-A number of features are planned for the future, although there isn't a timeline for when they will be worked on or released.
-If there are other features that would benefit you feel free to submit issues with suggestions.
-We are also happy to accept pull requests with implementations or bug fixes although better to start with an issue to confirm the desired feature fits into the tool.
-
-Currently planned features:
-
-* More read filtering options
-* LibSpec enhancements, including more meta data
-* Multi-threading
-* Mutant regions, for instance for regions covering an ORF that has an expected sequence with minor variations
-* Reading Sam/Bam format files
-* More handling of unexpected sequences, for instance identifying the observed recombination positions or outputting unexpected reads to file for analysis
-
 ## Tests and Benchmarks
 
 Script for end to end tests and benchmarks are included in `scripts/`.
@@ -199,27 +194,25 @@ Unit tests and unit benchmarks are also used to test individual functionality, a
 
 We generally see good performance, with reasonable computation times on most workflows we have attempted.
 In general, larger sequence files and larger libraries lead to slower processing as expected.
-This benchmark shows alignment performance for simulated fastq files at a range of read counts for 10k guide a gRNA library with spacer and barcode regions.
-The mutation rate was sufficiently high that alignment caching didn't come into play - in real world examples with many repeated reads you would expect to see sub-linear scaling with read count.
+This benchmark shows performance for simulated fastq files for a range of inputs and parameters (read counts, oligo form, library size, alignment mode, distance metric & thread count).
 
-![Performance at different read count sizes](plots/bench_read_count.png)
-
-The other key result is the trade-offs for different distance metrics and region extraction approaches:
-
-![metric performance](plots/bench_metric.png)
-![mode performance](plots/bench_mode.png)
+![Performance at different read count sizes](plots/bench/threads.png)
 
 Alignment is generally slower but gives more accurate results and the same is true for Levenshtein distance, although in that case Bounded-Levenshtein is much quicker and equivalent.
 In this case alignment caching makes it competitive with other methods - how true this is will depend on the mutation rate and what proportion of reads are duplicated.
 There is a slight caveat in that they both can paper over unexpected DNA events, particularly indels in your construct.
 If you expect observed indels are likely real mutation rather than sequencing error then care must be taken with these approaches.
+It is also important to note that adding additional computation threads only speeds up results significantly when using the more demanding algorithms, particularly during initial region extraction where inframe and pattern matching can keep up with the reader thread producing fastq records.
+In future threaded IO could side-step this limitation.
+Some benefit is seen for hamming distance although this is generally fast enough to begin with for normal library sizes.
+As a starting point, we find multi-threading is worthwhile when using alignment and/or either of the Levenshtein metrics.
 
-### Current limitations
+### Correctness
 
 The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
-We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
+We test this with an integration test on simulated data using a range of mutation profiles and tool configuration (see the `scripts/` and `plots/` folders), which gives this summary:
 
-![summary counts](plots/test_summary_bars.png)
+![summary counts](plots/test/summary_bars.png)
 
 The different methods have the follow profiles:
 
@@ -228,10 +221,22 @@ The different methods have the follow profiles:
 * Flanking pattern matching is robust under normal mutation profiles but breaks down under more extreme variants like indels in the flanking patterns. It also cannot cope with as wide a range of regions structures as full alignment.
 * Full alignment is the most robust across error modes and region structures.
 
-The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
+The distance metrics behave as expected, with exact matching missing any mutant sequences and hamming distance being much less robust than the Levenshtein variants.
 Both flanking patterns and alignment can deal with variable length regions, including across the read junction in paired end matching but regions that cross reads are not always combined correctly.
 If a variable regions spans both reads it's recommended to merge reads first where practical.
 
-Additionally, the following bugs are currently known:
+If you discover any bugs or inaccuracies please submit issues describing them.
 
-* Errors when sequences are 0 or 1bp long
+## Future Roadmap
+
+A number of features are planned for the future, although there isn't a timeline for when they will be worked on or released.
+If there are other features that would benefit you feel free to submit issues with suggestions.
+We are also happy to accept pull requests with implementations or bug fixes although better to start with an issue to confirm the desired feature fits into the tool.
+
+Currently planned features:
+
+* LibSpec enhancements, including more meta data
+* Multi-threaded IO
+* Mutant regions, for instance for regions covering an ORF that has an expected sequence with minor variations
+* More handling of unexpected sequences, for instance identifying the observed recombination positions or outputting unexpected reads to file for analysis
+* More diagnostic output, for instance discarded reads and alignments

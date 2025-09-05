@@ -679,7 +679,7 @@ pub fn count_reads<T: ReadPairProducer>(
     threads: usize,
     progress_style: Option<&ProgressStyle>,
 ) -> Result<ObservedCombinations, anyhow::Error> {
-    let default_progress = ProgressStyle::new(None);
+    let default_progress = ProgressStyle::new(None, false);
     let progress = progress_style.unwrap_or(&default_progress);
 
     match threads.cmp(&1) {
@@ -753,7 +753,10 @@ pub fn count_reads<T: ReadPairProducer>(
                 let max_reads = reads.max_reads();
                 let lspec = lib_spec.as_ref().cloned();
                 let fconf = filter_config.clone();
-                let pstyle = progress_style.cloned();
+                let mut pstyle = progress_style.cloned();
+                if let Some(ref mut p) = pstyle {
+                    p.use_thread_id = true
+                }
 
                 handles.push(std::thread::spawn(move || {
                     let local_reads = ThreadedReadPairParser::new(rx, rev_reads, group, max_reads);

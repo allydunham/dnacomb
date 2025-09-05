@@ -183,7 +183,7 @@ struct Cli {
 
     /// Number of threads to use
     #[arg(short = 'T', long, default_value_t = 1, help_heading = "Technical")]
-    threads: usize
+    threads: usize,
 }
 
 /// Main function
@@ -219,7 +219,9 @@ fn run(args: Cli) -> Result<(), Error> {
     info!("Using options: {:#?}", args);
 
     let progress_style: ProgressStyle = match log::max_level() {
-        LevelFilter::Off | LevelFilter::Error | LevelFilter::Warn => ProgressStyle::new(None),
+        LevelFilter::Off | LevelFilter::Error | LevelFilter::Warn => {
+            ProgressStyle::new(None, false)
+        }
         LevelFilter::Info | LevelFilter::Debug | LevelFilter::Trace => ProgressStyle::default(),
     };
 
@@ -339,7 +341,7 @@ fn run(args: Cli) -> Result<(), Error> {
         args.mean_quality_threshold,
         alignment_tolerance,
         args.minimum_read_length,
-        false
+        false,
     );
 
     info!("Filtering reads with config: {:?}", filter_config);
