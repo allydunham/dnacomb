@@ -212,7 +212,7 @@ As a starting point, we find multi-threading is worthwhile when using alignment 
 The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
 We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
 
-![summary counts](plots/test_summary_bars.png)
+![summary counts](plots/test/summary_bars.png)
 
 The different methods have the follow profiles:
 
