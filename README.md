@@ -67,6 +67,9 @@ Library Comparison:
 Filtering:
   -q, --mean-quality-threshold <MEAN_QUALITY_THRESHOLD>  Filter reads with mean Phred score below this threshold
   -r, --alignment-tolerance <ALIGNMENT_TOLERANCE>        Minimum proportion of expected alignment score to keep
+
+Technical:
+  -T, --threads <THREADS>              Number of threads to use [default: 1]
 ```
 
 The inputs and outputs are described below.
@@ -177,21 +180,6 @@ It contains the following columns:
 * `overall_proportion` - The proportion of all reads
 * `group_proportion` - The proportion of reads in the same group
 
-## Future Roadmap
-
-A number of features are planned for the future, although there isn't a timeline for when they will be worked on or released.
-If there are other features that would benefit you feel free to submit issues with suggestions.
-We are also happy to accept pull requests with implementations or bug fixes although better to start with an issue to confirm the desired feature fits into the tool.
-
-Currently planned features:
-
-* More read filtering options
-* LibSpec enhancements, including more meta data
-* Multi-threading
-* Mutant regions, for instance for regions covering an ORF that has an expected sequence with minor variations
-* Reading Sam/Bam format files
-* More handling of unexpected sequences, for instance identifying the observed recombination positions or outputting unexpected reads to file for analysis
-
 ## Tests and Benchmarks
 
 Script for end to end tests and benchmarks are included in `scripts/`.
@@ -206,22 +194,20 @@ Unit tests and unit benchmarks are also used to test individual functionality, a
 
 We generally see good performance, with reasonable computation times on most workflows we have attempted.
 In general, larger sequence files and larger libraries lead to slower processing as expected.
-This benchmark shows alignment performance for simulated fastq files at a range of read counts for 10k guide a gRNA library with spacer and barcode regions.
-The mutation rate was sufficiently high that alignment caching didn't come into play - in real world examples with many repeated reads you would expect to see sub-linear scaling with read count.
+This benchmark shows performance for simulated fastq files for a range of inputs and parameters (read counts, oligo form, library size, alignment mode, distance metric & thread count).
 
-![Performance at different read count sizes](plots/bench_read_count.png)
-
-The other key result is the trade-offs for different distance metrics and region extraction approaches:
-
-![metric performance](plots/bench_metric.png)
-![mode performance](plots/bench_mode.png)
+![Performance at different read count sizes](plots/bench/threads.png)
 
 Alignment is generally slower but gives more accurate results and the same is true for Levenshtein distance, although in that case Bounded-Levenshtein is much quicker and equivalent.
 In this case alignment caching makes it competitive with other methods - how true this is will depend on the mutation rate and what proportion of reads are duplicated.
 There is a slight caveat in that they both can paper over unexpected DNA events, particularly indels in your construct.
 If you expect observed indels are likely real mutation rather than sequencing error then care must be taken with these approaches.
+It is also important to note that adding additional computation threads only speeds up results significantly when using the more demanding algorithms, particularly during initial region extraction where inframe and pattern matching can keep up with the reader thread producing fastq records.
+In future threaded IO could side-step this limitation.
+Some benefit is seen for hamming distance although this is generally fast enough to begin with for normal library sizes.
+As a starting point, we find multi-threading is worthwhile when using alignment and/or either of the Levenshtein metrics.
 
-### Current limitations
+### Correctness
 
 The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
 We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
@@ -239,6 +225,18 @@ The distance metrics behave as expected, with exact matching missing and mutant 
 Both flanking patterns and alignment can deal with variable length regions, including across the read junction in paired end matching but regions that cross reads are not always combined correctly.
 If a variable regions spans both reads it's recommended to merge reads first where practical.
 
-Additionally, the following bugs are currently known:
+If you discover any bugs or inaccuracies please submit issues describing them.
 
-* Errors when sequences are 0 or 1bp long
+## Future Roadmap
+
+A number of features are planned for the future, although there isn't a timeline for when they will be worked on or released.
+If there are other features that would benefit you feel free to submit issues with suggestions.
+We are also happy to accept pull requests with implementations or bug fixes although better to start with an issue to confirm the desired feature fits into the tool.
+
+Currently planned features:
+
+* LibSpec enhancements, including more meta data
+* Multi-threaded IO
+* Mutant regions, for instance for regions covering an ORF that has an expected sequence with minor variations
+* More handling of unexpected sequences, for instance identifying the observed recombination positions or outputting unexpected reads to file for analysis
+* More diagnostic output, for instance discarded reads and alignments
