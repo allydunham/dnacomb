@@ -73,6 +73,8 @@ Technical:
 ```
 
 The inputs and outputs are described below.
+We have also developed a [companion Nextflow pipeline](https://github.com/allydunham/dnacomb_pipeline) managing processing of raw sequence reads into count tables, making it easier to process many samples in parallel, particular on an HPC system.
+
 The package can also be used programatically in your own Rust programs (or via e.g. Python if you build a wrapper library), but this is less well supported and tested.
 More details on the package internals and library interface can be found on [docs.rs](https://docs.rs/dnacomb/latest/dnacomb/).
 
