@@ -210,7 +210,7 @@ As a starting point, we find multi-threading is worthwhile when using alignment 
 ### Correctness
 
 The current methods are generally robust, with options available to deal with various levels of mutant sequences, however some methods having bigger limitations than others under particular mutational profiles.
-We test this with an integration test on simulated data (see the `scripts/` and `plots/` folders), which gives this summary:
+We test this with an integration test on simulated data using a range of mutation profiles and tool configuration (see the `scripts/` and `plots/` folders), which gives this summary:
 
 ![summary counts](plots/test/summary_bars.png)
 
@@ -221,7 +221,7 @@ The different methods have the follow profiles:
 * Flanking pattern matching is robust under normal mutation profiles but breaks down under more extreme variants like indels in the flanking patterns. It also cannot cope with as wide a range of regions structures as full alignment.
 * Full alignment is the most robust across error modes and region structures.
 
-The distance metrics behave as expected, with exact matching missing and mutant sequences and hamming distance being much less robust than the Levenshtein variants.
+The distance metrics behave as expected, with exact matching missing any mutant sequences and hamming distance being much less robust than the Levenshtein variants.
 Both flanking patterns and alignment can deal with variable length regions, including across the read junction in paired end matching but regions that cross reads are not always combined correctly.
 If a variable regions spans both reads it's recommended to merge reads first where practical.
 
