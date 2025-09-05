@@ -142,7 +142,7 @@ This TSV file contains the full count data in the following columns:
 * `combination_status` - Flag determining whether the combination of regions occurs in the library.
 * `combination_distance` - Total distance to the assigned library combination(s).
 * `combinations_in_library` - How many library combinations match at this distance.
-* `combination_indexes` - The index of the matching library combinations, as the row number of the library TSV
+* `combination_indexes` - ID of the matching library combinations, either from the _id column or the row number of the library TSV
 * `count` - The number of times this combination was observed
 
 The possible combination statuses are:
