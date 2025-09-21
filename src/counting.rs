@@ -857,7 +857,7 @@ fn count_single_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(r);
+                    counts.update_filter_count(&record_key, r);
                 }
             }
         } else {
@@ -865,7 +865,7 @@ fn count_single_align<T: ReadPairProducer>(
             let alignment_path = read_alignment.path();
 
             // Filter reads with too low scores or otherwise unmatched
-            match counts.filter_alignment(&read_alignment, None) {
+            match counts.filter_alignment(&record, &read_alignment, None) {
                 FilterReason::None => {}
                 other => {
                     if cache {
@@ -1011,7 +1011,7 @@ fn count_paired_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(r);
+                    counts.update_filter_count(&record_key, r);
                 }
             }
         } else {
@@ -1046,7 +1046,7 @@ fn count_paired_align<T: ReadPairProducer>(
             let r_path = r_alignment.path();
 
             // Filter reads with too low scores or otherwise unmatched
-            match counts.filter_alignment(&f_alignment, Some(&r_alignment)) {
+            match counts.filter_alignment(&record, &f_alignment, Some(&r_alignment)) {
                 FilterReason::None => {}
                 other => {
                     if cache {

@@ -36,6 +36,7 @@ use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat,
 /// * {prefix}.counts.tsv - full count table
 /// * {prefix}.library_counts.tsv - summarised counts of library matches only
 /// * {prefix}.summary.tsv - summary read counts for e.g. matches, recombinations, mismatches
+/// * {prefix}.filtered.tsv - filtered read counts for e.g. bad alignments, low quality, short reads
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
@@ -244,6 +245,12 @@ fn run(args: Cli) -> Result<(), Error> {
         exit(1);
     }
 
+    let filtered_path: String = format!("{}.filtered.tsv", args.output);
+    if !args.overwrite && fs::exists(&filtered_path)? {
+        error!("File exists \"{filtered_path}\" with --overwrite disabled. Exiting");
+        exit(1);
+    }
+
     // Check SIMD status
     check_simd_features();
 
@@ -419,6 +426,16 @@ fn run(args: Cli) -> Result<(), Error> {
             false => fs::File::create_new(read_summary_path)?,
         };
         read_summary.write_tsv(summary_file)?;
+    }
+
+    // Write filter count table
+    {
+        info!("Writing filtered reads counts TSV to: {}", filtered_path);
+        let filtered_file = match args.overwrite {
+            true => fs::File::create(filtered_path)?,
+            false => fs::File::create_new(filtered_path)?,
+        };
+        counts.write_filtered_tsv(filtered_file, args.sort)?;
     }
 
     Ok(())

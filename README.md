@@ -19,6 +19,7 @@ Once regions of interest are extracted they can be compared to an expected libra
 * `{prefix}.counts.tsv` - Counts of each region combination
 * `{prefix}.library_counts.tsv` - Inferred counts of each library element in all combinations
 * `{prefix}.summary.tsv` - Summary counts of different types of reads (matches, mismatches, recombinations, etc.)
+* `{prefix}.filtered.tsv` - filtered read counts for e.g. bad alignments, low quality, short reads
 
 ## Installation
 
@@ -173,7 +174,7 @@ They have the same interpretation as above apart from now the region ID columns 
 
 ### Summary Counts
 
-Finally the summary counts TSV gives the count and proportion of reads from each combination status, as well as the count of reads that were filtered for each reason.
+The summary counts TSV gives the count and proportion of reads from each combination status, as well as the count of reads that were filtered for each reason.
 It contains the following columns:
 
 * `group` - The category group (all, unfiltered or filtered)
@@ -181,6 +182,17 @@ It contains the following columns:
 * `count` - The number of reads
 * `overall_proportion` - The proportion of all reads
 * `group_proportion` - The proportion of reads in the same group
+
+### Filtered Counts
+
+Finally, the filtered counts TSV gives the count and proportion of filtered reads for each filter reason.
+It contains the following columns:
+
+* `forward` - The forward sequence
+* `reverse` - The reverse sequence (if any)
+* `count` - The total number of reads filtered
+* `proportion` - The proportion of all filtered reads
+* `{reason}` - The count of each filter reason that this sequence was filtered for
 
 ## Tests and Benchmarks
 

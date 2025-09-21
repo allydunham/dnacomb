@@ -21,7 +21,7 @@ use crate::errors::{LibraryError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, FilteredReads};
 use crate::lib_spec::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 use crate::logging::{Progress, ProgressStyle};
-use crate::parsing::{ReadGroup, ReadPair};
+use crate::parsing::{ReadGroup, ReadKey, ReadPair};
 
 /// Region keys identify via the region name, the observed sequence and completeness status
 pub type RegionKey = (String, Sequence, RegionCompleteness);
@@ -187,8 +187,8 @@ impl ObservedCombinations {
     ///
     /// Passes through to self.filtered_reads.update_count, useful when using
     /// cached FilterReasons to prevent needing to re-align.
-    pub fn update_filter_count(&mut self, reason: &FilterReason) {
-        self.filtered_reads.update_count(reason)
+    pub fn update_filter_count(&mut self, read: &ReadKey, reason: &FilterReason) {
+        self.filtered_reads.increment_count(read, reason)
     }
 
     /// Determine if a read should be filtered
@@ -207,11 +207,12 @@ impl ObservedCombinations {
     /// was filtered
     pub fn filter_alignment(
         &mut self,
+        record: &ReadPair,
         f_alignment: &Alignment,
         r_alignment: Option<&Alignment>,
     ) -> FilterReason {
         self.filtered_reads
-            .filter_alignment(f_alignment, r_alignment)
+            .filter_alignment(record, f_alignment, r_alignment)
     }
 
     /// Compare observed combinations to those expected in a Library
@@ -537,6 +538,12 @@ impl ObservedCombinations {
         }
 
         writer.flush()?;
+        Ok(())
+    }
+
+    /// Write all counts to file
+    pub fn write_filtered_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
+        self.filtered_reads.write_filter_tsv(file, sort)?;
         Ok(())
     }
 }
@@ -1353,7 +1360,7 @@ impl ReadSummary {
 
         match self.filtered_reads {
             Some(f) => {
-                write!(writer, "{}", f.to_tsv(total))?;
+                write!(writer, "{}", f.to_summary_tsv_lines(total))?;
             }
             None => {
                 writeln!(writer, "filtered\ttotal\t0\t0.0000\t0.0000",)?;

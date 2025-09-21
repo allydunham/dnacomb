@@ -5,7 +5,9 @@
 //! interface, easily filtering reads for a range of reasons.
 //! Also makes it easy to keep track of filtered reads and
 //! print a summary to file.
-use crate::{errors::ReadCountError, parsing::ReadPair};
+use std::{collections::HashMap, fs::File, io::BufWriter};
+
+use crate::{errors::ReadCountError, parsing::{ReadKey, ReadPair}};
 use bio::bio_types::alignment::Alignment;
 
 /// Calculate the mean of a fastq quality vector
@@ -14,17 +16,6 @@ pub fn mean_quality(qual: &[u8]) -> f32 {
     total as f32 / qual.len() as f32 - 33.0 // Subtract 33 as Phred scores are shifted 33 in byte codepoints
 }
 
-/// Container for filtered reads
-///
-/// Keeps track of counts for filtered reads during counting
-#[derive(Debug, Clone)]
-pub struct FilteredReads {
-    config: FilterConfig,
-    low_mean_quality: u64,
-    bad_alignment: u64,
-    short_read: u64,
-    empty_read: u64,
-}
 
 #[derive(Debug, PartialEq)]
 pub enum FilterReason {
@@ -35,10 +26,17 @@ pub enum FilterReason {
     EmptyRead,
 }
 
-impl FilteredReads {
-    pub fn new(config: FilterConfig) -> Self {
+#[derive(Debug, Clone)]
+struct FilteredCounts {
+    low_mean_quality: u64,
+    bad_alignment: u64,
+    short_read: u64,
+    empty_read: u64,
+}
+
+impl FilteredCounts {
+    fn new() -> Self {
         Self {
-            config,
             low_mean_quality: 0,
             bad_alignment: 0,
             short_read: 0,
@@ -46,11 +44,7 @@ impl FilteredReads {
         }
     }
 
-    /// Update the count without checking a read
-    ///
-    /// This lets you update counts if manually checking or when
-    /// using a cached result
-    pub fn update_count(&mut self, reason: &FilterReason) {
+    fn increment_count(&mut self, reason: &FilterReason) {
         match reason {
             FilterReason::None => {}
             FilterReason::LowMeanQuality => self.low_mean_quality += 1,
@@ -58,6 +52,56 @@ impl FilteredReads {
             FilterReason::ShortRead => self.short_read += 1,
             FilterReason::EmptyRead => self.empty_read += 1,
         };
+    }
+
+    /// Total count of filtered reads
+    pub fn total(&self) -> u64 {
+        self.low_mean_quality + self.bad_alignment + self.empty_read + self.short_read
+    }
+
+    /// Merge counts from another FilteredCounts
+    pub fn merge(&mut self, new_counts: FilteredCounts) {
+        self.low_mean_quality += new_counts.low_mean_quality;
+        self.bad_alignment += new_counts.bad_alignment;
+        self.empty_read += new_counts.empty_read;
+        self.short_read += new_counts.short_read;
+    }
+}
+
+/// Container for filtered reads
+///
+/// Keeps track of counts for filtered reads during counting
+#[derive(Debug, Clone)]
+pub struct FilteredReads {
+    config: FilterConfig,
+    totals: FilteredCounts,
+    counts: HashMap<ReadKey, FilteredCounts>
+}
+
+impl FilteredReads {
+    pub fn new(config: FilterConfig) -> Self {
+        Self {
+            config,
+            totals: FilteredCounts::new(),
+            counts: HashMap::new(),
+        }
+    }
+
+    /// Update the count of a specifc read
+    ///
+    /// Counts are updated without checking the read meets the criteria. If using outside of
+    /// filter_readpair/filter_alignment (for instance from a cache) be sure it is correct.
+    pub fn increment_count(&mut self, read: &ReadKey, reason: &FilterReason) {
+        self.totals.increment_count(reason);
+
+        match self.counts.get_mut(read) {
+            Some(counts) => counts.increment_count(reason),
+            None => {
+                let mut new_counts = FilteredCounts::new();
+                new_counts.increment_count(reason);
+                self.counts.insert(read.clone(), new_counts);
+            },
+        }
     }
 
     /// Determine if a readpair should be filtered based on the supplied config
@@ -76,13 +120,13 @@ impl FilteredReads {
             (false, _) => {}
             (true, None) => {
                 if f_read.seq().is_empty() {
-                    self.empty_read += 1;
+                    self.increment_count(&record.key(), &FilterReason::EmptyRead);
                     return FilterReason::EmptyRead;
                 }
             }
             (true, Some(r)) => {
                 if f_read.seq().is_empty() || r.seq().is_empty() {
-                    self.empty_read += 1;
+                    self.increment_count(&record.key(), &FilterReason::EmptyRead);
                     return FilterReason::EmptyRead;
                 }
             }
@@ -94,13 +138,13 @@ impl FilteredReads {
             (None, _) => {}
             (Some(len), None) => {
                 if f_read.seq().len() < len {
-                    self.short_read += 1;
+                    self.increment_count(&record.key(), &FilterReason::ShortRead);
                     return FilterReason::ShortRead;
                 }
             }
             (Some(len), Some(r)) => {
                 if f_read.seq().len() < len || r.seq().len() < len {
-                    self.short_read += 1;
+                    self.increment_count(&record.key(), &FilterReason::ShortRead);
                     return FilterReason::ShortRead;
                 }
             }
@@ -111,13 +155,13 @@ impl FilteredReads {
             (None, _) => {}
             (Some(q), None) => {
                 if mean_quality(f_read.qual()) < q {
-                    self.low_mean_quality += 1;
+                    self.increment_count(&record.key(), &FilterReason::LowMeanQuality);
                     return FilterReason::LowMeanQuality;
                 }
             }
             (Some(q), Some(r)) => {
                 if mean_quality(f_read.qual()) < q || mean_quality(r.qual()) < q {
-                    self.low_mean_quality += 1;
+                    self.increment_count(&record.key(), &FilterReason::LowMeanQuality);
                     return FilterReason::LowMeanQuality;
                 }
             }
@@ -132,6 +176,7 @@ impl FilteredReads {
     /// returns a FilterReason determining why it was filtered
     pub fn filter_alignment(
         &mut self,
+        record: &ReadPair,
         f_alignment: &Alignment,
         r_alignment: Option<&Alignment>,
     ) -> FilterReason {
@@ -139,13 +184,13 @@ impl FilteredReads {
             None => {}
             Some(t) => {
                 if f_alignment.score < t.minimum_f_score {
-                    self.bad_alignment += 1;
+                    self.increment_count(&record.key(), &FilterReason::BadAlignment);
                     return FilterReason::BadAlignment;
                 }
 
                 if let Some(r_al) = r_alignment {
                     if r_al.score < t.minimum_r_score {
-                        self.bad_alignment += 1;
+                        self.increment_count(&record.key(), &FilterReason::BadAlignment);
                         return FilterReason::BadAlignment;
                     }
                 }
@@ -157,7 +202,7 @@ impl FilteredReads {
 
     /// Total count of filtered reads
     pub fn total(&self) -> u64 {
-        self.low_mean_quality + self.bad_alignment + self.empty_read + self.short_read
+        self.totals.total()
     }
 
     /// Merge counts from another FilteredReads object
@@ -168,20 +213,48 @@ impl FilteredReads {
             });
         }
 
-        self.low_mean_quality += new_reads.low_mean_quality;
-        self.bad_alignment += new_reads.bad_alignment;
-        self.empty_read += new_reads.empty_read;
-        self.short_read += new_reads.short_read;
+        self.totals.merge(new_reads.totals);
+
+        for (key, new_counts) in new_reads.counts {
+            match self.counts.get_mut(&key) {
+                Some(counts) => counts.merge(new_counts),
+                None => {self.counts.insert(key, new_counts);},
+            }
+        }
 
         Ok(())
     }
 
-    /// Generate a string of TSV lines representing the filter counts
+    /// Write a TSV file listing the filteed reads
+    ///
+    /// Writes a TSV with columns for forward sequence, reverse sequence,
+    /// total count, frequency, then one for each filter reason count.
+    pub fn write_filter_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
+        let total = self.total();
+
+        let mut writer = BufWriter::new(file);
+        let mut keys: Vec<(&ReadKey, u64)> = self
+            .counts
+            .iter()
+            .map(|x| (x.0, x.1.total()))
+            .collect();
+
+        if sort {
+            // Invert count to get desc order
+            keys.sort_unstable_by_key(|x| 0 - i128::from(x.1));
+        }
+
+        todo!();
+
+        Ok(())
+    }
+
+    /// Generate a string of TSV lines representing the total filter counts
     ///
     /// Creates a TSV string with columns for filter reason, count and
     /// proportion of the supplied total read count. Mainly for use
     /// wihen outputing from ReadSummary
-    pub fn to_tsv(&self, total: u64) -> String {
+    pub fn to_summary_tsv_lines(&self, total: u64) -> String {
         let filtered_total = self.total();
 
         let mut out = String::with_capacity(300);
@@ -194,30 +267,30 @@ impl FilteredReads {
 
         out.push_str(&format!(
             "filtered\tlow_mean_quality\t{}\t{:.4}\t{:.4}\n",
-            self.low_mean_quality,
-            self.low_mean_quality as f32 / total as f32,
-            self.low_mean_quality as f32 / filtered_total as f32,
+            self.totals.low_mean_quality,
+            self.totals.low_mean_quality as f32 / total as f32,
+            self.totals.low_mean_quality as f32 / filtered_total as f32,
         ));
 
         out.push_str(&format!(
             "filtered\tbad_alignment\t{}\t{:.4}\t{:.4}\n",
-            self.bad_alignment,
-            self.bad_alignment as f32 / total as f32,
-            self.bad_alignment as f32 / filtered_total as f32,
+            self.totals.bad_alignment,
+            self.totals.bad_alignment as f32 / total as f32,
+            self.totals.bad_alignment as f32 / filtered_total as f32,
         ));
 
         out.push_str(&format!(
             "filtered\tempty_read\t{}\t{:.4}\t{:.4}\n",
-            self.empty_read,
-            self.empty_read as f32 / total as f32,
-            self.empty_read as f32 / filtered_total as f32,
+            self.totals.empty_read,
+            self.totals.empty_read as f32 / total as f32,
+            self.totals.empty_read as f32 / filtered_total as f32,
         ));
 
         out.push_str(&format!(
             "filtered\tshort_read\t{}\t{:.4}\t{:.4}\n",
-            self.short_read,
-            self.short_read as f32 / total as f32,
-            self.short_read as f32 / filtered_total as f32,
+            self.totals.short_read,
+            self.totals.short_read as f32 / total as f32,
+            self.totals.short_read as f32 / filtered_total as f32,
         ));
 
         out
@@ -310,7 +383,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::EmptyRead, "Empty read not filtered");
         assert_eq!(
-            f.empty_read, 1,
+            f.totals.empty_read, 1,
             "Inccorect filtered read count for empty read denied filter"
         );
     }
@@ -329,7 +402,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::None, "Empty read not allowed");
         assert_eq!(
-            f.empty_read, 0,
+            f.totals.empty_read, 0,
             "Inccorect filtered read count for empty read allowed filter"
         );
     }
@@ -352,7 +425,7 @@ mod tests {
             "Empty paired read not filtered"
         );
         assert_eq!(
-            f.empty_read, 1,
+            f.totals.empty_read, 1,
             "Inccorect filtered read count for empty paired read denied filter"
         );
     }
@@ -371,7 +444,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::None, "Empty paired read not allowed");
         assert_eq!(
-            f.empty_read, 0,
+            f.totals.empty_read, 0,
             "Inccorect filtered read count for empty paired read allowed filter"
         );
     }
@@ -391,7 +464,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::ShortRead, "Short read not filtered");
         assert_eq!(
-            f.short_read, 1,
+            f.totals.short_read, 1,
             "Inccorect filtered read count for short read denied filter"
         );
     }
@@ -410,7 +483,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::None, "Short read not allowed");
         assert_eq!(
-            f.short_read, 0,
+            f.totals.short_read, 0,
             "Inccorect filtered read count for short read allowed filter"
         );
     }
@@ -440,7 +513,7 @@ mod tests {
             "Short paired read not filtered"
         );
         assert_eq!(
-            f.short_read, 1,
+            f.totals.short_read, 1,
             "Inccorect filtered read count for short paired read denied filter"
         );
     }
@@ -466,7 +539,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::None, "Short paired read not allowed");
         assert_eq!(
-            f.short_read, 0,
+            f.totals.short_read, 0,
             "Inccorect filtered read count for short paired read allowed filter"
         );
     }
@@ -490,7 +563,7 @@ mod tests {
             "Low quality read not filtered"
         );
         assert_eq!(
-            f.low_mean_quality, 1,
+            f.totals.low_mean_quality, 1,
             "Inccorect filtered read count for low quality denied filter"
         );
     }
@@ -509,7 +582,7 @@ mod tests {
 
         assert_eq!(out, FilterReason::None, "Low quality read not allowed");
         assert_eq!(
-            f.short_read, 0,
+            f.totals.short_read, 0,
             "Inccorect filtered read count for low quality read allowed filter"
         );
     }
@@ -534,7 +607,7 @@ mod tests {
             "Low quality paired read not filtered"
         );
         assert_eq!(
-            f.low_mean_quality, 1,
+            f.totals.low_mean_quality, 1,
             "Inccorect filtered read count for low quality paired read denied filter"
         );
     }
@@ -559,7 +632,7 @@ mod tests {
             "Low quality paired read not allowed"
         );
         assert_eq!(
-            f.short_read, 0,
+            f.totals.short_read, 0,
             "Inccorect filtered read count for low quality paired read allowed filter"
         );
     }
