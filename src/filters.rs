@@ -7,7 +7,7 @@
 //! print a summary to file.
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter,Write};
+use std::io::{BufWriter, Write};
 
 use crate::errors::{ReadCountError, seq_to_string_or_log};
 use crate::parsing::{ReadKey, ReadPair};
@@ -18,7 +18,6 @@ pub fn mean_quality(qual: &[u8]) -> f32 {
     let total: u32 = qual.iter().fold(0, |a, e| a + *e as u32);
     total as f32 / qual.len() as f32 - 33.0 // Subtract 33 as Phred scores are shifted 33 in byte codepoints
 }
-
 
 #[derive(Debug, PartialEq)]
 pub enum FilterReason {
@@ -96,7 +95,7 @@ impl FilteredCounts {
 pub struct FilteredReads {
     config: FilterConfig,
     totals: FilteredCounts,
-    counts: HashMap<ReadKey, FilteredCounts>
+    counts: HashMap<ReadKey, FilteredCounts>,
 }
 
 impl FilteredReads {
@@ -121,7 +120,7 @@ impl FilteredReads {
                 let mut new_counts = FilteredCounts::new();
                 new_counts.increment_count(reason);
                 self.counts.insert(read.clone(), new_counts);
-            },
+            }
         }
     }
 
@@ -239,7 +238,9 @@ impl FilteredReads {
         for (key, new_counts) in new_reads.counts {
             match self.counts.get_mut(&key) {
                 Some(counts) => counts.merge(new_counts),
-                None => {self.counts.insert(key, new_counts);},
+                None => {
+                    self.counts.insert(key, new_counts);
+                }
             }
         }
 
@@ -254,11 +255,8 @@ impl FilteredReads {
         let total = self.total() as f32;
 
         let mut writer = BufWriter::new(file);
-        let mut keys: Vec<(&ReadKey, u64)> = self
-            .counts
-            .iter()
-            .map(|x| (x.0, x.1.total()))
-            .collect();
+        let mut keys: Vec<(&ReadKey, u64)> =
+            self.counts.iter().map(|x| (x.0, x.1.total())).collect();
 
         if sort {
             // Invert count to get desc order
@@ -266,18 +264,26 @@ impl FilteredReads {
         }
 
         // Write header
-        write!(writer, "forward\treverse\t{}\n", FilteredCounts::tsv_headers())?;
+        writeln!(
+            writer,
+            "forward\treverse\t{}",
+            FilteredCounts::tsv_headers()
+        )?;
 
         for (key, _) in keys {
-            let counts = self.counts.get(key).expect(
-                "Count key from extracted key list missing from FilteredReads",
-            );
+            let counts = self
+                .counts
+                .get(key)
+                .expect("Count key from extracted key list missing from FilteredReads");
 
-            write!(
+            writeln!(
                 writer,
-                "{}\t{}\t{}\n",
+                "{}\t{}\t{}",
                 seq_to_string_or_log(&key.0),
-                match &key.1 {Some(x) => seq_to_string_or_log(&x), None => "".to_string()},
+                match &key.1 {
+                    Some(x) => seq_to_string_or_log(x),
+                    None => "".to_string(),
+                },
                 counts.to_tsv_line(total),
             )?;
         }
@@ -426,7 +432,8 @@ mod tests {
             "Inccorect filtered read count for empty read denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for empty read denied filter"
         );
 
@@ -441,7 +448,8 @@ mod tests {
             "Incorrect per-read empty_read count for empty read denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for empty read denied filter"
         );
     }
@@ -466,7 +474,8 @@ mod tests {
         );
 
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for empty read allowed filter"
         );
 
@@ -500,7 +509,8 @@ mod tests {
             "Inccorect filtered read count for empty paired read denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for empty paired read denied filter"
         );
 
@@ -515,7 +525,8 @@ mod tests {
             "Incorrect per-read empty_read count for empty paired read denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for empty paired read denied filter"
         );
     }
@@ -539,7 +550,8 @@ mod tests {
             "Inccorect filtered read count for empty paired read allowed filter"
         );
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for empty paired read allowed filter"
         );
 
@@ -570,7 +582,8 @@ mod tests {
             "Inccorect filtered read count for short read denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for short read denied filter"
         );
 
@@ -585,7 +598,8 @@ mod tests {
             "Incorrect per-read short_read count for short read denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for short read denied filter"
         );
     }
@@ -609,7 +623,8 @@ mod tests {
             "Inccorect filtered read count for short read allowed filter"
         );
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for short read allowed filter"
         );
 
@@ -650,7 +665,8 @@ mod tests {
             "Inccorect filtered read count for short paired read denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for short paired read denied filter"
         );
 
@@ -665,7 +681,8 @@ mod tests {
             "Incorrect per-read short_read count for short paired read denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for short paired read denied filter"
         );
     }
@@ -696,7 +713,8 @@ mod tests {
             "Inccorect filtered read count for short paired read allowed filter"
         );
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for short paired read allowed filter"
         );
 
@@ -731,7 +749,8 @@ mod tests {
             "Inccorect filtered read count for low quality denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for low quality denied filter"
         );
 
@@ -746,7 +765,8 @@ mod tests {
             "Incorrect per-read low_mean_quality count for low quality denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for low quality denied filter"
         );
     }
@@ -770,7 +790,8 @@ mod tests {
             "Inccorect filtered read count for low quality read allowed filter"
         );
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for low quality read allowed filter"
         );
 
@@ -806,7 +827,8 @@ mod tests {
             "Inccorect filtered read count for low quality paired read denied filter"
         );
         assert_eq!(
-            f.total(), 1,
+            f.total(),
+            1,
             "Inccorect total filtered read count for low quality paired read denied filter"
         );
 
@@ -821,7 +843,8 @@ mod tests {
             "Incorrect per-read low_mean_quality count for low quality paired read denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Incorrect per-read total count for low quality paired read denied filter"
         );
     }
@@ -851,7 +874,8 @@ mod tests {
             "Inccorect filtered read count for low quality paired read allowed filter"
         );
         assert_eq!(
-            f.total(), 0,
+            f.total(),
+            0,
             "Inccorect total filtered read count for low quality paired read allowed filter"
         );
 
@@ -872,14 +896,22 @@ mod tests {
         let key = readpair.key();
 
         // tolerance 0.8 of expected=100 -> minimum = 80
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(None, Some(aln_tol), None, false));
 
         // forward below threshold
-        let f_aln = Alignment { score: 79, ..Default::default() };
+        let f_aln = Alignment {
+            score: 79,
+            ..Default::default()
+        };
         let out = f.filter_alignment(&readpair, &f_aln, None);
 
-        assert_eq!(out, FilterReason::BadAlignment, "Bad alignment single-end read not filtered");
+        assert_eq!(
+            out,
+            FilterReason::BadAlignment,
+            "Bad alignment single-end read not filtered"
+        );
         assert_eq!(
             f.totals.bad_alignment, 1,
             "Inccorect filtered read count for bad alignment single-end denied filter"
@@ -896,7 +928,8 @@ mod tests {
             "Inccorect per-read bad_alignment count for bad alignment single-end denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Inccorect per-read total count for bad alignment single-end denied filter"
         );
     }
@@ -911,14 +944,22 @@ mod tests {
         let key = readpair.key();
 
         // threshold = 80 again
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(None, Some(aln_tol), None, false));
 
         // forward meets threshold
-        let f_aln = Alignment { score: 80, ..Default::default() };
+        let f_aln = Alignment {
+            score: 80,
+            ..Default::default()
+        };
         let out = f.filter_alignment(&readpair, &f_aln, None);
 
-        assert_eq!(out, FilterReason::None, "Bad alignment single-end read not allowed");
+        assert_eq!(
+            out,
+            FilterReason::None,
+            "Bad alignment single-end read not allowed"
+        );
         assert_eq!(
             f.totals.bad_alignment, 0,
             "Inccorect filtered read count for bad alignment single-end allowed filter"
@@ -934,22 +975,43 @@ mod tests {
     #[test]
     fn test_alignment_filter_paired_end_denies() {
         let readpair = ReadPair {
-            forward: bio::io::fastq::Record::with_attrs("seq", None, b"AAACCCGGGTTT", b"FFFFFFFFFFFF"),
-            reverse: Some(bio::io::fastq::Record::with_attrs("seq", None, b"ACTGACTG", b"FFFFFFFF")),
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"AAACCCGGGTTT",
+                b"FFFFFFFFFFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTGACTG",
+                b"FFFFFFFF",
+            )),
             group: ReadGroup::Ungrouped,
         };
         let key = readpair.key();
 
         // threshold = 80
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(None, Some(aln_tol), None, false));
 
         // forward fails, reverse passes
-        let f_aln = Alignment { score: 79, ..Default::default() };
-        let r_aln = Alignment { score: 95, ..Default::default() };
+        let f_aln = Alignment {
+            score: 79,
+            ..Default::default()
+        };
+        let r_aln = Alignment {
+            score: 95,
+            ..Default::default()
+        };
         let out = f.filter_alignment(&readpair, &f_aln, Some(&r_aln));
 
-        assert_eq!(out, FilterReason::BadAlignment, "Bad alignment paired read not filtered");
+        assert_eq!(
+            out,
+            FilterReason::BadAlignment,
+            "Bad alignment paired read not filtered"
+        );
         assert_eq!(
             f.totals.bad_alignment, 1,
             "Inccorect filtered read count for bad alignment paired-end denied filter"
@@ -966,7 +1028,8 @@ mod tests {
             "Inccorect per-read bad_alignment count for bad alignment paired-end denied filter"
         );
         assert_eq!(
-            counts.total(), 1,
+            counts.total(),
+            1,
             "Inccorect per-read total count for bad alignment paired-end denied filter"
         );
     }
@@ -974,22 +1037,43 @@ mod tests {
     #[test]
     fn test_alignment_filter_paired_end_allows() {
         let readpair = ReadPair {
-            forward: bio::io::fastq::Record::with_attrs("seq", None, b"AAACCCGGGTTT", b"FFFFFFFFFFFF"),
-            reverse: Some(bio::io::fastq::Record::with_attrs("seq", None, b"ACTGACTG", b"FFFFFFFF")),
+            forward: bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"AAACCCGGGTTT",
+                b"FFFFFFFFFFFF",
+            ),
+            reverse: Some(bio::io::fastq::Record::with_attrs(
+                "seq",
+                None,
+                b"ACTGACTG",
+                b"FFFFFFFF",
+            )),
             group: ReadGroup::Ungrouped,
         };
         let key = readpair.key();
 
         // threshold = 80
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(None, Some(aln_tol), None, false));
 
         // both pass threshold
-        let f_aln = Alignment { score: 100, ..Default::default() };
-        let r_aln = Alignment { score: 80, ..Default::default() };
+        let f_aln = Alignment {
+            score: 100,
+            ..Default::default()
+        };
+        let r_aln = Alignment {
+            score: 80,
+            ..Default::default()
+        };
         let out = f.filter_alignment(&readpair, &f_aln, Some(&r_aln));
 
-        assert_eq!(out, FilterReason::None, "Bad alignment paired read not allowed");
+        assert_eq!(
+            out,
+            FilterReason::None,
+            "Bad alignment paired read not allowed"
+        );
         assert_eq!(
             f.totals.bad_alignment, 0,
             "Inccorect filtered read count for bad alignment paired-end allowed filter"
@@ -1002,7 +1086,7 @@ mod tests {
         );
     }
 
-        #[test]
+    #[test]
     fn test_repeated_empty_filter_increments_counts() {
         let readpair = ReadPair {
             forward: bio::io::fastq::Record::with_attrs("id", None, b"", b""),
@@ -1022,7 +1106,8 @@ mod tests {
             "Incorrect totals.empty_read after repeated empty filter"
         );
         assert_eq!(
-            f.total(), 2,
+            f.total(),
+            2,
             "Incorrect FilteredReads.total() after repeated empty filter"
         );
 
@@ -1032,7 +1117,8 @@ mod tests {
             "Incorrect per-read empty_read count after repeated empty filter"
         );
         assert_eq!(
-            counts.total(), 2,
+            counts.total(),
+            2,
             "Incorrect per-read total count after repeated empty filter"
         );
     }
@@ -1057,7 +1143,8 @@ mod tests {
             "Incorrect totals.short_read after repeated short filter"
         );
         assert_eq!(
-            f.total(), 2,
+            f.total(),
+            2,
             "Incorrect FilteredReads.total() after repeated short filter"
         );
 
@@ -1067,7 +1154,8 @@ mod tests {
             "Incorrect per-read short_read count after repeated short filter"
         );
         assert_eq!(
-            counts.total(), 2,
+            counts.total(),
+            2,
             "Incorrect per-read total count after repeated short filter"
         );
     }
@@ -1092,7 +1180,8 @@ mod tests {
             "Incorrect totals.low_mean_quality after repeated quality filter"
         );
         assert_eq!(
-            f.total(), 2,
+            f.total(),
+            2,
             "Incorrect FilteredReads.total() after repeated quality filter"
         );
 
@@ -1102,7 +1191,8 @@ mod tests {
             "Incorrect per-read low_mean_quality count after repeated quality filter"
         );
         assert_eq!(
-            counts.total(), 2,
+            counts.total(),
+            2,
             "Incorrect per-read total count after repeated quality filter"
         );
     }
@@ -1116,10 +1206,14 @@ mod tests {
         };
         let key = readpair.key();
 
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(None, Some(aln_tol), None, false));
 
-        let f_aln = Alignment { score: 79, ..Default::default() }; // below threshold
+        let f_aln = Alignment {
+            score: 79,
+            ..Default::default()
+        }; // below threshold
 
         // apply twice
         f.filter_alignment(&readpair, &f_aln, None);
@@ -1130,7 +1224,8 @@ mod tests {
             "Incorrect totals.bad_alignment after repeated alignment filter"
         );
         assert_eq!(
-            f.total(), 2,
+            f.total(),
+            2,
             "Incorrect FilteredReads.total() after repeated alignment filter"
         );
 
@@ -1140,11 +1235,11 @@ mod tests {
             "Incorrect per-read bad_alignment count after repeated alignment filter"
         );
         assert_eq!(
-            counts.total(), 2,
+            counts.total(),
+            2,
             "Incorrect per-read total count after repeated alignment filter"
         );
     }
-
 
     #[test]
     fn test_mixed_filters_same_sequence_two_readpairs() {
@@ -1159,45 +1254,83 @@ mod tests {
             group: ReadGroup::Ungrouped,
         };
 
-        let aln_tol = AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
+        let aln_tol =
+            AlignmentTolerance::new(0.8, 100, 100).expect("AlignmentTolerance config failed");
         let mut f = FilteredReads::new(FilterConfig::new(Some(40.0), Some(aln_tol), None, false));
         let key = low_q_rp.key(); // same key for both readpairs (same forward seq; no reverse)
 
         // Filter_readpair on low-quality read => LowMeanQuality
         let out1 = f.filter_readpair(&low_q_rp);
         assert_eq!(
-            out1, FilterReason::LowMeanQuality,
+            out1,
+            FilterReason::LowMeanQuality,
             "Low-quality read was not filtered as LowMeanQuality"
         );
 
         // Filter_readpair on high-quality read => None (doesn't trigger length or empty)
         let out2 = f.filter_readpair(&high_q_rp);
         assert_eq!(
-            out2, FilterReason::None,
+            out2,
+            FilterReason::None,
             "High-quality read unexpectedly filtered by filter_readpair"
         );
 
         // Mocked alignment below threshold on high-quality read => BadAlignment
-        let bad_f = Alignment { score: 79, ..Default::default() }; // threshold is 80 (0.8 * 100)
+        let bad_f = Alignment {
+            score: 79,
+            ..Default::default()
+        }; // threshold is 80 (0.8 * 100)
         let out3 = f.filter_alignment(&high_q_rp, &bad_f, None);
         assert_eq!(
-            out3, FilterReason::BadAlignment,
+            out3,
+            FilterReason::BadAlignment,
             "Bad-alignment case did not return BadAlignment"
         );
 
         // ---- totals checks ----
-        assert_eq!(f.totals.low_mean_quality, 1, "Incorrect totals.low_mean_quality in mixed test");
-        assert_eq!(f.totals.bad_alignment,    1, "Incorrect totals.bad_alignment in mixed test");
-        assert_eq!(f.totals.short_read,       0, "Incorrect totals.short_read in mixed test");
-        assert_eq!(f.totals.empty_read,       0, "Incorrect totals.empty_read in mixed test (should be zero)");
-        assert_eq!(f.total(),                 2, "Incorrect FilteredReads.total() in mixed test");
+        assert_eq!(
+            f.totals.low_mean_quality, 1,
+            "Incorrect totals.low_mean_quality in mixed test"
+        );
+        assert_eq!(
+            f.totals.bad_alignment, 1,
+            "Incorrect totals.bad_alignment in mixed test"
+        );
+        assert_eq!(
+            f.totals.short_read, 0,
+            "Incorrect totals.short_read in mixed test"
+        );
+        assert_eq!(
+            f.totals.empty_read, 0,
+            "Incorrect totals.empty_read in mixed test (should be zero)"
+        );
+        assert_eq!(
+            f.total(),
+            2,
+            "Incorrect FilteredReads.total() in mixed test"
+        );
 
         // ---- per-read counts (same key for both readpairs) ----
-        let counts = f.counts.get(&key).expect("Counts hashmap missing key in mixed test");
-        assert_eq!(counts.low_mean_quality, 1, "Incorrect per-read low_mean_quality in mixed test");
-        assert_eq!(counts.bad_alignment,    1, "Incorrect per-read bad_alignment in mixed test");
-        assert_eq!(counts.short_read,       0, "Incorrect per-read short_read in mixed test");
-        assert_eq!(counts.empty_read,       0, "Incorrect per-read empty_read in mixed test (should be zero)");
-        assert_eq!(counts.total(),          2, "Incorrect per-read total in mixed test");
+        let counts = f
+            .counts
+            .get(&key)
+            .expect("Counts hashmap missing key in mixed test");
+        assert_eq!(
+            counts.low_mean_quality, 1,
+            "Incorrect per-read low_mean_quality in mixed test"
+        );
+        assert_eq!(
+            counts.bad_alignment, 1,
+            "Incorrect per-read bad_alignment in mixed test"
+        );
+        assert_eq!(
+            counts.short_read, 0,
+            "Incorrect per-read short_read in mixed test"
+        );
+        assert_eq!(
+            counts.empty_read, 0,
+            "Incorrect per-read empty_read in mixed test (should be zero)"
+        );
+        assert_eq!(counts.total(), 2, "Incorrect per-read total in mixed test");
     }
 }
