@@ -367,10 +367,14 @@ fn run(args: Cli) -> Result<(), Error> {
         Some(&progress_style),
     )?;
 
-    if counts.is_empty() {
-        error!("No observed combinations counted (empty fasta?). Exiting");
+    if counts.is_empty() && counts.total_filtered() == 0 {
+        error!("No observed combinations or filtered reads (empty fasta?). Exiting");
         debug!("ObservedCombinations:\n{:?}", counts);
         exit(1);
+    }
+
+    if counts.is_empty() && counts.total_filtered() > 0 {
+        warn!("All reads filtered. Check input files and filter settings.");
     }
 
     if args.library_counts && library.is_none() {

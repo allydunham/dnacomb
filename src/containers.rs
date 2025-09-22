@@ -139,6 +139,11 @@ impl ObservedCombinations {
         self.combinations.is_empty()
     }
 
+    /// Total number of filtered reads
+    pub fn total_filtered(&self) -> u64 {
+        self.filtered_reads.total()
+    }
+
     /// Increment a combination count or add a new combination if it hasn't been seen yet
     pub fn add_or_increment_combination(
         &mut self,
