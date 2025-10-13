@@ -148,6 +148,14 @@ def main():
                  lib_spec="config/pegrna.json",
                  expected_code=0, additional_args=["--threads", str(threads)])
 
+    # Filtering
+    filter_args = ["--minimum-read-length", "80", "--alignment-tolerance", "0.9",
+                   "--mean-quality-threshold", "38"]
+    run_test("Filtering", f_file=f"{root}/mutant_pegrna.fq",
+             output=f"{root}/filtering", mode="align", metric="bounded-levenshtein",
+             verbose=True, sort=True, lib_spec="config/pegrna.json",
+             expected_code=0, additional_args=filter_args)
+
     print(f"\nTesting complete {sum(results)}/{len(results)} passed")
     if all(results):
         print(f"All tests passed")
