@@ -2,6 +2,11 @@
 
 This file contains a record of the major changes between versions.
 
+## v0.4.0 Tracking filtered reads
+
+* Added a new output table detailing which reads are filtered and for what reason
+* More comprehensive testing
+
 ## v0.3.0 Library IDs
 
 * Added library IDs to the LibSpec library format and supported them through the workflow
