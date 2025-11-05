@@ -18,10 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::scope;
 
 use crate::errors::{LibraryError, ReadCountError, seq_to_string_or_log};
-use crate::filters::{FilterConfig, FilterReason, FilteredReads};
+use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
 use crate::lib_spec::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadGroup, ReadKey, ReadPair};
+use crate::utils::div_or_zero;
 
 /// Region keys identify via the region name, the observed sequence and completeness status
 pub type RegionKey = (String, Sequence, RegionCompleteness);
@@ -192,7 +193,7 @@ impl ObservedCombinations {
     ///
     /// Passes through to self.filtered_reads.update_count, useful when using
     /// cached FilterReasons to prevent needing to re-align.
-    pub fn update_filter_count(&mut self, read: &ReadKey, reason: &FilterReason) {
+    pub fn update_filter_count(&mut self, read: &ReadKey, reason: FilterReason) {
         self.filtered_reads.increment_count(read, reason)
     }
 
@@ -201,7 +202,7 @@ impl ObservedCombinations {
     /// Pass through to self.filtered_reads.filter_read, which Checks whether the read should
     /// be filtered, adding it to the appropriate count if is, and returns a bool determining
     /// if it was filtered.
-    pub fn filter_readpair(&mut self, record: &ReadPair) -> FilterReason {
+    pub fn filter_readpair(&mut self, record: &ReadPair) -> Option<FilterReason> {
         self.filtered_reads.filter_readpair(record)
     }
 
@@ -215,7 +216,7 @@ impl ObservedCombinations {
         record: &ReadPair,
         f_alignment: &Alignment,
         r_alignment: Option<&Alignment>,
-    ) -> FilterReason {
+    ) -> Option<FilterReason> {
         self.filtered_reads
             .filter_alignment(record, f_alignment, r_alignment)
     }
@@ -426,7 +427,7 @@ impl ObservedCombinations {
     pub fn summarise(&self) -> ReadSummary {
         let mut read_summary = ReadSummary::empty();
 
-        read_summary.filtered_reads = Some(self.filtered_reads.clone());
+        read_summary.filtered_reads = self.filtered_reads.totals.clone();
 
         for comb in self.combinations.values() {
             let count: u64 = comb.total_count() as u64;
@@ -1221,7 +1222,7 @@ pub struct ReadSummary {
     pub nonmatch: u64,
 
     /// Filtered Reads
-    pub filtered_reads: Option<FilteredReads>,
+    pub filtered_reads: FilteredCounts,
 }
 
 impl ReadSummary {
@@ -1235,7 +1236,7 @@ impl ReadSummary {
         nearest_recombination: u64,
         mismatch: u64,
         nonmatch: u64,
-        filtered_reads: Option<FilteredReads>,
+        filtered_reads: FilteredCounts,
     ) -> Self {
         Self {
             uncompared,
@@ -1263,7 +1264,7 @@ impl ReadSummary {
             nearest_recombination: 0,
             mismatch: 0,
             nonmatch: 0,
-            filtered_reads: None,
+            filtered_reads: FilteredCounts::new(),
         }
     }
 
@@ -1281,11 +1282,7 @@ impl ReadSummary {
 
     /// Total reads observed across categories
     pub fn total(&self) -> u64 {
-        self.total_unfiltered()
-            + match &self.filtered_reads {
-                Some(f) => f.total(),
-                None => 0,
-            }
+        self.total_unfiltered() + self.filtered_reads.total()
     }
 
     /// Write to file in TSV format
@@ -1299,78 +1296,78 @@ impl ReadSummary {
             writer,
             "group\tmetric\tcount\toverall_proportion\tgroup_proportion"
         )?;
-        writeln!(writer, "all\ttotal\t{}\t1.0000\t1.000", total)?;
         writeln!(
             writer,
-            "unfiltered\ttotal\t{}\t{:.4}\t1.000",
+            "all\ttotal\t{}\t{:.4}\t{:.4}",
+            total,
+            if total > 0 { 1.0 } else { 0.0 },
+            if total > 0 { 1.0 } else { 0.0 },
+        )?;
+        writeln!(
+            writer,
+            "unfiltered\ttotal\t{}\t{:.4}\t{:.4}",
             unfiltered_total,
-            unfiltered_total as f32 / total as f32,
+            div_or_zero(unfiltered_total as f32, total as f32),
+            div_or_zero(unfiltered_total as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tuncompared\t{}\t{:.4}\t{:.4}",
             self.uncompared,
-            self.uncompared as f32 / total as f32,
-            self.uncompared as f32 / unfiltered_total as f32,
+            div_or_zero(self.uncompared as f32, total as f32),
+            div_or_zero(self.uncompared as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\texact_match\t{}\t{:.4}\t{:.4}",
             self.exact_match,
-            self.exact_match as f32 / total as f32,
-            self.exact_match as f32 / unfiltered_total as f32,
+            div_or_zero(self.exact_match as f32, total as f32),
+            div_or_zero(self.exact_match as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tnearest_match\t{}\t{:.4}\t{:.4}",
             self.nearest_match,
-            self.nearest_match as f32 / total as f32,
-            self.nearest_match as f32 / unfiltered_total as f32,
+            div_or_zero(self.nearest_match as f32, total as f32),
+            div_or_zero(self.nearest_match as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tmultimatch\t{}\t{:.4}\t{:.4}",
             self.multimatch,
-            self.multimatch as f32 / total as f32,
-            self.multimatch as f32 / unfiltered_total as f32,
+            div_or_zero(self.multimatch as f32, total as f32),
+            div_or_zero(self.multimatch as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\texact_recombination\t{}\t{:.4}\t{:.4}",
             self.exact_recombination,
-            self.exact_recombination as f32 / total as f32,
-            self.exact_recombination as f32 / unfiltered_total as f32,
+            div_or_zero(self.exact_recombination as f32, total as f32),
+            div_or_zero(self.exact_recombination as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tnearest_recombination\t{}\t{:.4}\t{:.4}",
             self.nearest_recombination,
-            self.nearest_recombination as f32 / total as f32,
-            self.nearest_recombination as f32 / unfiltered_total as f32,
+            div_or_zero(self.nearest_recombination as f32, total as f32),
+            div_or_zero(self.nearest_recombination as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tmismatch\t{}\t{:.4}\t{:.4}",
             self.mismatch,
-            self.mismatch as f32 / total as f32,
-            self.mismatch as f32 / unfiltered_total as f32,
+            div_or_zero(self.mismatch as f32, total as f32),
+            div_or_zero(self.mismatch as f32, unfiltered_total as f32),
         )?;
         writeln!(
             writer,
             "unfiltered\tnonmatch\t{}\t{:.4}\t{:.4}",
             self.nonmatch,
-            self.nonmatch as f32 / total as f32,
-            self.nonmatch as f32 / unfiltered_total as f32,
+            div_or_zero(self.nonmatch as f32, total as f32),
+            div_or_zero(self.nonmatch as f32, unfiltered_total as f32),
         )?;
 
-        match self.filtered_reads {
-            Some(f) => {
-                write!(writer, "{}", f.to_summary_tsv_lines(total))?;
-            }
-            None => {
-                writeln!(writer, "filtered\ttotal\t0\t0.0000\t0.0000",)?;
-            }
-        }
+        write!(writer, "{}", self.filtered_reads.to_long_tsv_lines(total))?;
 
         writer.flush()?;
         Ok(())

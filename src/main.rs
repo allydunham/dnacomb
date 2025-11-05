@@ -142,6 +142,10 @@ struct Cli {
     #[arg(short = 'L', long, help_heading = "Filtering")]
     minimum_read_length: Option<usize>,
 
+    /// Filter reads longer than this length. Both F and R must meet the threshold.
+    #[arg(short = 'M', long, help_heading = "Filtering")]
+    maximum_read_length: Option<usize>,
+
     /// Length of flanking pattern to use (where possible)
     #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
     pattern_length: usize,
@@ -348,7 +352,8 @@ fn run(args: Cli) -> Result<(), Error> {
         args.mean_quality_threshold,
         alignment_tolerance,
         args.minimum_read_length,
-        false,
+        args.maximum_read_length,
+        true,
     );
 
     info!("Filtering reads with config: {:?}", filter_config);

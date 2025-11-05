@@ -15,7 +15,8 @@ theme_set(theme_pubclean() + theme(legend.position = 'right',
 test_pairs <- tibble(
   observed = str_remove(dir("data/tests/", pattern = "*\\.counts.tsv"), ".counts.tsv")
 ) %>%
-  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "expected", "end", "threads"), cols_remove = FALSE)
+  separate_wider_delim(observed, delim = ":", names = c("test", "mode", "distance", "expected", "end", "threads"),
+                       cols_remove = FALSE, too_few = "align_start")
 
 test_pair <- function(observed, expected) {
   true_counts <- read_tsv(str_c("data/tests/", expected, ".true_counts.tsv"))
@@ -75,7 +76,7 @@ test_counts <- filter(test_pairs, threads == 1) %>%
   bind_rows() %>%
   replace_na(replace = list(count = 0, true_count = 0)) %>%
   select(-expected) %>%
-  separate_wider_delim(observed, delim = ":", names = c("mode", "distance", "library", "end", "threads"), cols_remove = TRUE) %>%
+  separate_wider_delim(observed, delim = ":", names = c("test", "mode", "distance", "library", "end", "threads"), cols_remove = TRUE) %>%
   mutate(threads = as.integer(threads))
 
 category_colours <- c(

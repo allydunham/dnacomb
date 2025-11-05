@@ -130,27 +130,28 @@ def main():
         spec = f"config/{lib_specs[lib]}.json"
 
         run_test(f"{mode} {dist} {lib} single end", f_file=f"{root}/{lib}.fq",
-                 output=f"{root}/{mode}:{dist}:{lib}:single:1",
+                 output=f"{root}/params:{mode}:{dist}:{lib}:single:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
                  lib_spec=spec,
                  expected_code=expected_code)
 
         run_test(f"{mode} {dist} {lib} paired end", f_file=f"{root}/{lib}_forward.fq",
-                 r_file=f"{root}/{lib}_reverse.fq", output=f"{root}/{mode}:{dist}:{lib}:paired:1",
+                 r_file=f"{root}/{lib}_reverse.fq",
+                 output=f"{root}/params:{mode}:{dist}:{lib}:paired:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
                  lib_spec=spec,
                  expected_code=expected_code)
 
     for threads in [2, 4, 6]:
         run_test(f"{threads} Threads", f_file=f"{root}/mutant_pegrna.fq",
-                 output=f"{root}/align:bounded-levenshtein:mutant_pegrna:single:{threads}",
+                 output=f"{root}/threads:align:bounded-levenshtein:mutant_pegrna:single:{threads}",
                  mode="align", metric="bounded-levenshtein", verbose=True, sort=True,
                  lib_spec="config/pegrna.json",
                  expected_code=0, additional_args=["--threads", str(threads)])
 
     # Filtering
-    filter_args = ["--minimum-read-length", "80", "--alignment-tolerance", "0.9",
-                   "--mean-quality-threshold", "38"]
+    filter_args = ["--minimum-read-length", "80", "--maximum-read-length", "300",
+                   "--alignment-tolerance", "0.9", "--mean-quality-threshold", "38"]
     run_test("Filtering", f_file=f"{root}/mutant_pegrna.fq",
              output=f"{root}/filtering", mode="align", metric="bounded-levenshtein",
              verbose=True, sort=True, lib_spec="config/pegrna.json",

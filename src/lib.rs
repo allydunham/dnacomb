@@ -23,6 +23,7 @@ pub mod filters;
 pub mod lib_spec;
 pub mod logging;
 pub mod parsing;
+pub mod utils;
 
 // Re-Exports
 pub use containers::ObservedCombinations;

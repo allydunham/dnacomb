@@ -22,10 +22,11 @@ use crate::containers::{
     RegionKey,
 };
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
-use crate::filters::{FilterConfig, FilterReason, mean_quality};
+use crate::filters::{FilterConfig, FilterReason};
 use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadKey, ReadPair, ReadPairProducer, ThreadedReadPairParser};
+use crate::utils::mean_quality;
 
 /// Position in an alignment where a region is found
 ///
@@ -841,7 +842,7 @@ fn count_single_align<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -857,7 +858,7 @@ fn count_single_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, r);
+                    counts.update_filter_count(&record_key, *r);
                 }
             }
         } else {
@@ -866,10 +867,10 @@ fn count_single_align<T: ReadPairProducer>(
 
             // Filter reads with too low scores or otherwise unmatched
             match counts.filter_alignment(&record, &read_alignment, None) {
-                FilterReason::None => {}
-                other => {
+                None => {}
+                Some(reason) => {
                     if cache {
-                        observed_reads.insert(record_key, CacheHit::Filter(other));
+                        observed_reads.insert(record_key, CacheHit::Filter(reason));
                     }
                     continue;
                 }
@@ -995,7 +996,7 @@ fn count_paired_align<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1011,7 +1012,7 @@ fn count_paired_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, r);
+                    counts.update_filter_count(&record_key, *r);
                 }
             }
         } else {
@@ -1047,10 +1048,10 @@ fn count_paired_align<T: ReadPairProducer>(
 
             // Filter reads with too low scores or otherwise unmatched
             match counts.filter_alignment(&record, &f_alignment, Some(&r_alignment)) {
-                FilterReason::None => {}
-                other => {
+                None => {}
+                Some(reason) => {
                     if cache {
-                        observed_reads.insert(record_key, CacheHit::Filter(other));
+                        observed_reads.insert(record_key, CacheHit::Filter(reason));
                     }
                     continue;
                 }
@@ -1268,7 +1269,7 @@ fn count_single_pattern<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1345,7 +1346,7 @@ fn count_paired_pattern<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1440,7 +1441,7 @@ fn count_single_inframe<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1567,7 +1568,7 @@ fn count_paired_inframe<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read needs to be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1699,7 +1700,7 @@ fn count_single_raw<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
@@ -1736,7 +1737,7 @@ fn count_paired_raw<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record).is_some() {
             continue;
         }
 
