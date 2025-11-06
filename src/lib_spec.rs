@@ -44,11 +44,9 @@ pub enum Region {
     ///
     /// id: region id
     /// seq: expected sequence
-    /// length: length (must match seq)
     Fixed {
         id: String,
         seq: String,
-        length: usize,
     },
 }
 
@@ -64,7 +62,7 @@ impl Region {
     /// Get the region length
     pub fn len(&self) -> usize {
         match self {
-            Region::Fixed { length, .. } => *length,
+            Region::Fixed { seq, .. } => seq.len(),
             Region::Library { max_length, .. } => *max_length,
         }
     }
@@ -276,7 +274,7 @@ impl LibrarySpec {
         for region in &self.regions {
             match region {
                 Region::Library { max_length, .. } => len += max_length,
-                Region::Fixed { length, .. } => len += length,
+                Region::Fixed { seq, .. } => len += seq.len(),
             }
         }
 

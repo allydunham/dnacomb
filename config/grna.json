@@ -8,8 +8,7 @@
         {
             "id": "primer_f",
             "seq": "GAAAGGACGAAACACC",
-            "seq_type": "Fixed",
-            "length": 16
+            "seq_type": "Fixed"
         },
         {
             "id": "spacer",
@@ -21,14 +20,12 @@
         {
             "id": "scaffold",
             "seq": "GTTTAAGAGCTAAGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTCGAAAGAGTGGCACCGAGTCGGTGC",
-            "seq_type": "Fixed",
-            "length": 86
+            "seq_type": "Fixed"
         },
         {
             "id": "polyT",
             "seq": "TTTTTTTT",
-            "seq_type": "Fixed",
-            "length": 8
+            "seq_type": "Fixed"
         },
         {
             "id": "barcode",
@@ -40,8 +37,7 @@
         {
             "id": "primer_r",
             "seq": "GTTTGGATCCAATTCT",
-            "seq_type": "Fixed",
-            "length": 16
+            "seq_type": "Fixed"
         }
     ],
     "library": "config/grna.tsv"
