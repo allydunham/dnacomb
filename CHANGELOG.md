@@ -2,6 +2,11 @@
 
 This file contains a record of the major changes between versions.
 
+## v0.5.0 Deeper tracking, refined config and performance improvements
+
+* Removed superfluous length field from fixed length regions in LibSpec - now the sequence is the core data.
+* Cleaned up filters internally, making them more robust to changes and easier to add new ones, plus added a new filter
+
 ## v0.4.0 Tracking filtered reads
 
 * Added a new output table detailing which reads are filtered and for what reason

@@ -130,6 +130,16 @@ pub enum ReadGroup {
     Match(String),
 }
 
+impl fmt::Display for ReadGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReadGroup::Ungrouped => write!(f, ""),
+            ReadGroup::Unmatched => write!(f, "_unmatched_"),
+            ReadGroup::Match(x) => write!(f, "{}", x),
+        }
+    }
+}
+
 pub trait ReadPairProducer: Iterator<Item = Result<ReadPair, ReadPairError>> {
     fn has_reverse(&self) -> bool;
     fn group(&self) -> &Option<Regex>;

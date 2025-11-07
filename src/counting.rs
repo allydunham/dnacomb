@@ -858,7 +858,7 @@ fn count_single_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, *r);
+                    counts.update_filter_count(&record, *r);
                 }
             }
         } else {
@@ -1012,7 +1012,7 @@ fn count_paired_align<T: ReadPairProducer>(
                     counts.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, *r);
+                    counts.update_filter_count(&record, *r);
                 }
             }
         } else {

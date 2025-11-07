@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::errors::{ReadCountError, seq_to_string_or_log};
-use crate::parsing::{ReadKey, ReadPair};
+use crate::parsing::{ReadGroup, ReadKey, ReadPair};
 use crate::utils::{div_or_zero, mean_quality};
 
 /// Function filtering based on a read pair
@@ -339,7 +339,7 @@ impl Default for FilteredCounts {
 pub struct FilteredReads {
     pub config: FilterConfig,
     pub totals: FilteredCounts,
-    pub counts: HashMap<ReadKey, FilteredCounts>,
+    pub counts: HashMap<ReadKey, HashMap<ReadGroup, FilteredCounts>>,
 }
 
 impl FilteredReads {
@@ -355,15 +355,30 @@ impl FilteredReads {
     ///
     /// Counts are updated without checking the read meets the criteria. If using outside of
     /// filter_readpair/filter_alignment (for instance from a cache) be sure it is correct.
-    pub fn increment_count(&mut self, read: &ReadKey, reason: FilterReason) {
+    pub fn increment_count(&mut self, read: &ReadPair, reason: FilterReason) {
         self.totals.increment_count(reason);
 
-        match self.counts.get_mut(read) {
-            Some(counts) => counts.increment_count(reason),
+        let key = read.key();
+        let group = &read.group;
+
+        match self.counts.get_mut(&key) {
+            Some(groups) => match groups.get_mut(group) {
+                Some(c) => c.increment_count(reason),
+                None => {
+                    let mut new_counts = FilteredCounts::new();
+                    new_counts.increment_count(reason);
+
+                    groups.insert(group.clone(), new_counts);
+                }
+            },
             None => {
                 let mut new_counts = FilteredCounts::new();
                 new_counts.increment_count(reason);
-                self.counts.insert(read.clone(), new_counts);
+
+                let mut new_groups = HashMap::new();
+                new_groups.insert(group.clone(), new_counts);
+
+                self.counts.insert(key.clone(), new_groups);
             }
         }
     }
@@ -378,7 +393,7 @@ impl FilteredReads {
 
         for f in READPAIR_FILTERS {
             if let Some(r) = f(f_read, r_read, &self.config) {
-                self.increment_count(&record.key(), r);
+                self.increment_count(record, r);
                 return Some(r);
             }
         }
@@ -398,7 +413,7 @@ impl FilteredReads {
     ) -> Option<FilterReason> {
         for f in ALIGNMENT_FILTERS {
             if let Some(r) = f(f_alignment, r_alignment, &self.config) {
-                self.increment_count(&record.key(), r);
+                self.increment_count(record, r);
                 return Some(r);
             }
         }
@@ -421,11 +436,20 @@ impl FilteredReads {
 
         self.totals.merge(new_reads.totals);
 
-        for (key, new_counts) in new_reads.counts {
+        for (key, new_groups) in new_reads.counts {
             match self.counts.get_mut(&key) {
-                Some(counts) => counts.merge(new_counts),
+                Some(old_groups) => {
+                    for (new_group, new_counts) in new_groups {
+                        match old_groups.get_mut(&new_group) {
+                            Some(old_counts) => old_counts.merge(new_counts),
+                            None => {
+                                old_groups.insert(new_group, new_counts);
+                            }
+                        }
+                    }
+                }
                 None => {
-                    self.counts.insert(key, new_counts);
+                    self.counts.insert(key, new_groups);
                 }
             }
         }
@@ -441,8 +465,11 @@ impl FilteredReads {
         let total = self.total() as f32;
 
         let mut writer = BufWriter::new(file);
-        let mut keys: Vec<(&ReadKey, u64)> =
-            self.counts.iter().map(|x| (x.0, x.1.total())).collect();
+        let mut keys: Vec<(&ReadKey, u64)> = self
+            .counts
+            .iter()
+            .map(|x| (x.0, x.1.iter().map(|y| y.1.total()).sum()))
+            .collect();
 
         if sort {
             // Invert count to get desc order
@@ -452,26 +479,29 @@ impl FilteredReads {
         // Write header
         writeln!(
             writer,
-            "forward\treverse\t{}",
+            "group\tforward\treverse\t{}",
             FilteredCounts::wide_tsv_headers()
         )?;
 
         for (key, _) in keys {
-            let counts = self
+            let groups = self
                 .counts
                 .get(key)
                 .expect("Count key from extracted key list missing from FilteredReads");
 
-            writeln!(
-                writer,
-                "{}\t{}\t{}",
-                seq_to_string_or_log(&key.0),
-                match &key.1 {
-                    Some(x) => seq_to_string_or_log(x),
-                    None => "".to_string(),
-                },
-                counts.to_wide_tsv_line(total),
-            )?;
+            for (group, counts) in groups {
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}",
+                    group,
+                    seq_to_string_or_log(&key.0),
+                    match &key.1 {
+                        Some(x) => seq_to_string_or_log(x),
+                        None => "".to_string(),
+                    },
+                    counts.to_wide_tsv_line(total),
+                )?;
+            }
         }
 
         writer.flush()?;
@@ -680,9 +710,11 @@ mod tests {
                         "Total count not incremented (case: {})",
                         c.name
                     );
-                    // per-read was recorded
-                    let per = fr.counts.get(&key).expect("missing per-read counts");
-                    assert_eq!(per.get(&reason), 1, "Read not tracked (case: {})", c.name);
+                    let read = fr.counts.get(&key).expect("Missing per-read counts");
+                    let grp = read
+                        .get(&ReadGroup::Ungrouped)
+                        .expect("Missing group counts");
+                    assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }
                 None => {
                     assert!(
@@ -774,8 +806,11 @@ mod tests {
                         "Total count not incremented (case: {})",
                         c.name
                     );
-                    let per = fr.counts.get(&key).expect("missing per-read counts");
-                    assert_eq!(per.get(&reason), 1, "Read not tracked (case: {})", c.name);
+                    let read = fr.counts.get(&key).expect("Missing per-read counts");
+                    let grp = read
+                        .get(&ReadGroup::Ungrouped)
+                        .expect("Missing group counts");
+                    assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }
                 None => {
                     assert!(

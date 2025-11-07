@@ -21,7 +21,7 @@ use crate::errors::{LibraryError, ReadCountError, seq_to_string_or_log};
 use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
 use crate::lib_spec::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 use crate::logging::{Progress, ProgressStyle};
-use crate::parsing::{ReadGroup, ReadKey, ReadPair};
+use crate::parsing::{ReadGroup, ReadPair};
 use crate::utils::div_or_zero;
 
 /// Region keys identify via the region name, the observed sequence and completeness status
@@ -193,7 +193,7 @@ impl ObservedCombinations {
     ///
     /// Passes through to self.filtered_reads.update_count, useful when using
     /// cached FilterReasons to prevent needing to re-align.
-    pub fn update_filter_count(&mut self, read: &ReadKey, reason: FilterReason) {
+    pub fn update_filter_count(&mut self, read: &ReadPair, reason: FilterReason) {
         self.filtered_reads.increment_count(read, reason)
     }
 
@@ -806,14 +806,8 @@ impl ObservedCombination {
 
         for (group, count) in self.counts.iter() {
             // Read group
-            match group {
-                ReadGroup::Ungrouped => output.push('\t'),
-                ReadGroup::Unmatched => output.push_str("_unmatched_\t"),
-                ReadGroup::Match(x) => {
-                    output.push_str(x);
-                    output.push('\t');
-                }
-            };
+            output.push_str(&group.to_string());
+            output.push('\t');
 
             // Region seq/nearest match(s)/distance per region
             for reg_id in region_ids {

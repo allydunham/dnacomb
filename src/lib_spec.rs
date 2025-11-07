@@ -44,10 +44,7 @@ pub enum Region {
     ///
     /// id: region id
     /// seq: expected sequence
-    Fixed {
-        id: String,
-        seq: String,
-    },
+    Fixed { id: String, seq: String },
 }
 
 impl Region {
