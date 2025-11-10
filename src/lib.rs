@@ -16,16 +16,20 @@
 //! [DNAComb]: https://github.com/allydunham/dnacomb
 //! [GitHub]: https://github.com/allydunham/dnacomb
 //! [Crates.io]: https://crates.io/crates/dnacomb
-pub mod containers;
+pub mod combination;
+pub mod combinations;
 pub mod counting;
 pub mod errors;
 pub mod filters;
 pub mod lib_spec;
+pub mod library_combination;
 pub mod logging;
 pub mod parsing;
+pub mod region;
+pub mod seqs;
 pub mod utils;
 
 // Re-Exports
-pub use containers::ObservedCombinations;
+pub use combinations::ObservedCombinations;
 pub use counting::{CountMode, count_reads};
 pub use lib_spec::{Library, LibrarySpec};

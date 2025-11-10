@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::errors::{ReadCountError, seq_to_string_or_log};
-use crate::parsing::{ReadGroup, ReadKey, ReadPair};
+use crate::seqs::{ReadGroup, ReadKey, ReadPair};
 use crate::utils::{div_or_zero, mean_quality};
 
 /// Function filtering based on a read pair
@@ -542,7 +542,7 @@ impl FilteredReads {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parsing::{ReadGroup, ReadPair};
+    use crate::seqs::{ReadGroup, ReadPair};
     use bio::bio_types::alignment::Alignment;
 
     /// Generate a read pair

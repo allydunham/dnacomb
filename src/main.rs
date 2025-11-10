@@ -86,6 +86,12 @@ struct Cli {
     #[arg(short = 'm', long, value_enum, default_value_t = CountMode::Align, help_heading = "Counting")]
     mode: CountMode,
 
+    /// Additionally store the full read sequence associated with each combination. This is useful for debugging
+    /// computation and experiments but also generally each combination is associated with many sequences so it
+    /// doesn't compress results as much.
+    #[arg(short = 'F', long, action, help_heading = "Counting")]
+    full_seq: bool,
+
     /// Group counts by applying this capture group regex to forward read names and
     /// extracting the first capture group match
     #[arg(short = 'g', long, help_heading = "Counting")]
@@ -363,6 +369,7 @@ fn run(args: Cli) -> Result<(), Error> {
         reader,
         &lib_spec,
         args.mode,
+        args.full_seq,
         filter_config,
         Some(alignment_scorer),
         Some(args.pattern_length),

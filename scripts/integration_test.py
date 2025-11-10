@@ -102,12 +102,12 @@ def main():
 
     # Full read counts
     run_test("Total counts", f_file=f"{root}/perfect_grna.fq",
-             output="total_counts", mode="full-read",
-             verbose=True, sort=True, library_counts=False, rm_output=True)
+             output=f"{root}/total_counts", mode="full-read",
+             verbose=True, sort=True, library_counts=False, rm_output=False)
     run_test("Paired total counts", f_file=f"{root}/perfect_grna_forward.fq",
-             r_file=f"{root}/perfect_grna_reverse.fq", output="total_pairs",
+             r_file=f"{root}/perfect_grna_reverse.fq", output=f"{root}/total_pairs",
              mode="full-read", verbose=True, sort=True, library_counts=False,
-             rm_output=True)
+             rm_output=False)
 
     # Combination of different params
     param_combs = product(
