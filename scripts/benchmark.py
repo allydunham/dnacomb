@@ -12,16 +12,20 @@ from utils import run_tool
 from itertools import product
 from generate_test_data import generate_test_data, generate_library
 
-REGION_RE = re.compile(
+EXTRACT_RE = re.compile(
     "Extracted regions\: ([0-9]*) in ([0-9\.]*)([^ ]*) \| avg\. rate\: ([0-9\.]*)"
 )
 
-LIBRARY_RE = re.compile(
+MATCH_RE = re.compile(
+    "Matched regions\: ([0-9]*)\/[0-9]* 100\% in ([0-9\.]*)([^ ]*) \| avg\. rate\: ([0-9\.]*)"
+)
+
+COMBS_RE = re.compile(
     "Compared combinations\: ([0-9]*)\/[0-9]* 100\% in ([0-9\.]*)([^ ]*) \| avg\. rate\: ([0-9\.]*)"
 )
 
 SUMMARY_RE = re.compile(
-    "library matches\: ([0-9]*)\/[0-9]* 100\% in ([0-9\.]*)([^ ]*) \| avg\. rate\: ([0-9\.]*)"
+    "Summarised library matches\: ([0-9]*)\/[0-9]* 100\% in ([0-9\.]*)([^ ]*) \| avg\. rate\: ([0-9\.]*)"
 )
 
 def extract_time(time, unit):
@@ -44,8 +48,9 @@ BENCH_HEADERS = [
     "name", "fwd", "rev", "lib_spec", "mode", "metric",
     "no_cache", "sort", "group", "library_counts",
     "library_size", "read_length", "additional_args",
-    "total_time", "reads", "region_time", "region_rate",
-    "unique_regions", "library_time", "library_rate",
+    "total_time", "reads", "extraction_time", "extraction_rate",
+    "unique_regions", "region_matching_time", "region_matching_rate",
+    "unique_combinations", "combination_time", "combination_rate",
     "summary_size", "summary_time", "summary_rate"
 ]
 
@@ -73,28 +78,34 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
         with open(f"data/benchmark/{outname}.log", "w") as file:
             print(str(out.stderr), file=file)
 
-    # Extract region count numbers (possibly multiple options as threaded)
-    reg = REGION_RE.findall(str(out.stderr))
-    reg_count = 0
-    reg_time = 0
-    reg_items = 0
-    for i in reg:
-        reg_count += int(i[0])
-        reg_time = max(extract_time(i[1], i[2]), reg_time)
-        reg_items += float(i[3])
+    # Extract region extraction processing (possibly multiple options as threaded)
+    extraction = EXTRACT_RE.findall(str(out.stderr))
+    extraction_count = 0
+    extraction_time = 0
+    extraction_items = 0
+    for i in extraction:
+        extraction_count += int(i[0])
+        extraction_time = max(extract_time(i[1], i[2]), extraction_time)
+        extraction_items += float(i[3])
 
-    reg_count = reg_count if reg_count > 0 else "NA"
-    reg_time = reg_time if reg_time > 0 else "NA"
-    reg_items = reg_items if reg_items > 0 else "NA"
+    extraction_count = extraction_count if extraction_count > 0 else "NA"
+    extraction_time = extraction_time if extraction_time > 0 else "NA"
+    extraction_items = extraction_items if extraction_items > 0 else "NA"
 
-    # Extract library processing
-    lib = LIBRARY_RE.search(str(out.stderr))
+    # Extract region matching processing
+    match = MATCH_RE.search(str(out.stderr))
+    match_count = int(match.group(1)) if match is not None else "NA"
+    match_time = extract_time(match.group(2), match.group(3)) if match is not None else "NA"
+    match_items = float(match.group(4)) if match is not None else "NA"
+
+    # Extract combination processing
+    lib = COMBS_RE.search(str(out.stderr))
     lib_count = int(lib.group(1)) if lib is not None else "NA"
     lib_time = extract_time(lib.group(2), lib.group(3)) if lib is not None else "NA"
     lib_items = float(lib.group(4)) if lib is not None else "NA"
 
     # Extract library summarisation
-    suma = LIBRARY_RE.search(str(out.stderr))
+    suma = SUMMARY_RE.search(str(out.stderr))
     suma_count = int(suma.group(1)) if suma is not None else "NA"
     suma_time = extract_time(suma.group(2), suma.group(3)) if suma is not None else "NA"
     suma_items = float(suma.group(4)) if suma is not None else "NA"
@@ -102,8 +113,9 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
     print(name, f_file, r_file, lib_spec,
           mode, metric, no_cache, sort, group,
           library_counts, library_size, read_length,
-          additional_args,
-          time, reg_count, reg_time, reg_items,
+          additional_args, time,
+          extraction_count, extraction_time, extraction_items,
+          match_count, match_time, match_items,
           lib_count, lib_time, lib_items,
           suma_count, suma_time, suma_items,
           sep="\t", file=outfile)
