@@ -4,8 +4,6 @@
 use bio::{bio_types::sequence::Sequence, io::fastq};
 use std::fmt;
 
-pub type ReadKey = (Vec<u8>, Option<Vec<u8>>);
-
 /// Pair of sequences
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct SeqPair {
@@ -36,15 +34,8 @@ pub struct ReadPair {
 
 impl ReadPair {
     /// Generate a key to identify unique read types
-    pub fn key(&self) -> ReadKey {
-        if self.reverse.is_some() {
-            (
-                self.forward.seq().to_vec(),
-                Some(self.reverse.as_ref().unwrap().seq().to_vec()),
-            )
-        } else {
-            (self.forward.seq().to_vec(), None)
-        }
+    pub fn key(&self) -> SeqPair {
+        SeqPair::from_readpair(self)
     }
 
     pub fn into_seqpair(self) -> SeqPair {

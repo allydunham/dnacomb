@@ -17,8 +17,8 @@ use crate::lib_spec::{DistanceMetric, Library};
 use crate::library_combination::{LibraryCombination, LibraryCombinationKey};
 use crate::logging::{Progress, ProgressStyle};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
-use crate::seqs::ReadGroup;
 use crate::seqs::ReadPair;
+use crate::seqs::{ReadGroup, SeqPair};
 use crate::utils::div_or_zero;
 
 /// Container for ObservedCombination objects
@@ -35,6 +35,7 @@ pub struct ObservedCombinations {
     library: Option<Library>,
     library_combinations: Option<HashMap<LibraryCombinationKey, LibraryCombination>>,
     filtered_reads: FilteredReads,
+    cache: ObservedReads,
 }
 
 impl ObservedCombinations {
@@ -46,6 +47,7 @@ impl ObservedCombinations {
             library: None,
             library_combinations: None,
             filtered_reads: FilteredReads::new(filter_config),
+            cache: HashMap::new(),
         }
     }
 
@@ -136,15 +138,15 @@ impl ObservedCombinations {
     /// Increment a combination count or add a new combination if it hasn't been seen yet
     pub fn add_or_increment_combination(
         &mut self,
-        key: &CombinationKey,
+        comb_key: &CombinationKey,
         group: ReadGroup,
     ) -> Result<(), anyhow::Error> {
-        match self.combinations.get_mut(key) {
+        match self.combinations.get_mut(comb_key) {
             Some(comb) => comb.increment_count(group),
             None => {
                 let mut reg_map = HashMap::new();
 
-                for reg_key in &key.regions {
+                for reg_key in &comb_key.regions {
                     if !self.region_ids.contains(&reg_key.id) {
                         return Err(ReadCountError::UnexpectedRegion {
                             region: reg_key.id.clone(),
@@ -168,9 +170,9 @@ impl ObservedCombinations {
                     }
                 }
 
-                let mut comb = ObservedCombination::new(reg_map, key.sequence.clone());
+                let mut comb = ObservedCombination::new(reg_map, comb_key.sequence.clone());
                 comb.increment_count(group);
-                self.combinations.insert(key.clone(), comb);
+                self.combinations.insert(comb_key.clone(), comb);
             }
         }
 
@@ -188,25 +190,56 @@ impl ObservedCombinations {
     /// Determine if a read should be filtered
     ///
     /// Pass through to self.filtered_reads.filter_read, which Checks whether the read should
-    /// be filtered, adding it to the appropriate count if is, and returns a bool determining
-    /// if it was filtered.
-    pub fn filter_readpair(&mut self, record: &ReadPair) -> Option<FilterReason> {
-        self.filtered_reads.filter_readpair(record)
+    /// be filtered, adding it to the appropriate count if increment is true, and returns a the filter reason.
+    pub fn filter_readpair(&mut self, record: &ReadPair, increment: bool) -> Option<FilterReason> {
+        self.filtered_reads.filter_readpair(record, increment)
     }
 
     /// Determine if an alignment should be filtered
     ///
     /// Passes through to self.filtered_reads.filter_alignment, which checks if an alignment should
-    /// be filtered, adding it to the appropriate count if so, and returns a bool determining if it
-    /// was filtered
+    /// be filtered, adding it to the appropriate count if increment is true, and returns a the filter reason.
     pub fn filter_alignment(
         &mut self,
         record: &ReadPair,
         f_alignment: &Alignment,
         r_alignment: Option<&Alignment>,
+        increment: bool,
     ) -> Option<FilterReason> {
         self.filtered_reads
-            .filter_alignment(record, f_alignment, r_alignment)
+            .filter_alignment(record, f_alignment, r_alignment, increment)
+    }
+
+    /// Add a result to the cache
+    pub fn cache(&mut self, key: SeqPair, value: CacheHit) {
+        self.cache.insert(key, value);
+    }
+
+    /// Check if a read is cached and optionally increment it
+    pub fn check_cache(
+        &mut self,
+        record: &ReadPair,
+        increment: bool,
+    ) -> Result<Option<CacheHit>, anyhow::Error> {
+        let key = SeqPair::from_readpair(record);
+
+        let hit: CacheHit = match self.cache.get(&key) {
+            Some(x) => x.clone(),
+            None => return Ok(None),
+        };
+
+        if increment {
+            match hit {
+                CacheHit::Comb(ref k) => {
+                    self.add_or_increment_combination(k, record.group.clone())?;
+                }
+                CacheHit::Filter(r) => {
+                    self.update_filter_count(record, r);
+                }
+            }
+        }
+
+        Ok(Some(hit))
     }
 
     /// Compare observed combinations to those expected in a Library
@@ -540,6 +573,19 @@ impl ObservedCombinations {
         self.filtered_reads.write_filter_tsv(file, sort)?;
         Ok(())
     }
+}
+
+/// HashMap cache of observed reads and which combination they map to
+pub type ObservedReads = HashMap<SeqPair, CacheHit>;
+
+/// Options to cache for each identified read
+///
+/// The cache operates at a sequence level only, so you shouldn't cache filtering related
+/// to quality
+#[derive(Debug, Clone)]
+pub enum CacheHit {
+    Comb(CombinationKey),
+    Filter(FilterReason),
 }
 
 /// Summary counts of read types

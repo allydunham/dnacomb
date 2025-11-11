@@ -167,9 +167,6 @@ def main():
             if mode == "inframe" and lib == "pegrna":
                 continue
 
-            if nocache and not mode == "align":
-                continue
-
             # Only do library comparison for the best estimates from align
             if metric != "exact" and not (mode == "align" and not nocache and n_reads < 10000000):
                 continue

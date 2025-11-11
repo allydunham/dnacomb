@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::errors::{ReadCountError, seq_to_string_or_log};
-use crate::seqs::{ReadGroup, ReadKey, ReadPair};
+use crate::seqs::{ReadGroup, ReadPair, SeqPair};
 use crate::utils::{div_or_zero, mean_quality};
 
 /// Function filtering based on a read pair
@@ -339,7 +339,7 @@ impl Default for FilteredCounts {
 pub struct FilteredReads {
     pub config: FilterConfig,
     pub totals: FilteredCounts,
-    pub counts: HashMap<ReadKey, HashMap<ReadGroup, FilteredCounts>>,
+    pub counts: HashMap<SeqPair, HashMap<ReadGroup, FilteredCounts>>,
 }
 
 impl FilteredReads {
@@ -387,13 +387,15 @@ impl FilteredReads {
     ///
     /// Checks whether the read should be filtered, adding it to the appropriate count if so, and
     /// returns a FilterReason determining why it was filtered.
-    pub fn filter_readpair(&mut self, record: &ReadPair) -> Option<FilterReason> {
+    pub fn filter_readpair(&mut self, record: &ReadPair, increment: bool) -> Option<FilterReason> {
         let f_read = &record.forward;
         let r_read = record.reverse.as_ref();
 
         for f in READPAIR_FILTERS {
             if let Some(r) = f(f_read, r_read, &self.config) {
-                self.increment_count(record, r);
+                if increment {
+                    self.increment_count(record, r);
+                }
                 return Some(r);
             }
         }
@@ -410,10 +412,13 @@ impl FilteredReads {
         record: &ReadPair,
         f_alignment: &Alignment,
         r_alignment: Option<&Alignment>,
+        increment: bool,
     ) -> Option<FilterReason> {
         for f in ALIGNMENT_FILTERS {
             if let Some(r) = f(f_alignment, r_alignment, &self.config) {
-                self.increment_count(record, r);
+                if increment {
+                    self.increment_count(record, r);
+                }
                 return Some(r);
             }
         }
@@ -465,7 +470,7 @@ impl FilteredReads {
         let total = self.total() as f32;
 
         let mut writer = BufWriter::new(file);
-        let mut keys: Vec<(&ReadKey, u64)> = self
+        let mut keys: Vec<(&SeqPair, u64)> = self
             .counts
             .iter()
             .map(|x| (x.0, x.1.iter().map(|y| y.1.total()).sum()))
@@ -494,8 +499,8 @@ impl FilteredReads {
                     writer,
                     "{}\t{}\t{}\t{}",
                     group,
-                    seq_to_string_or_log(&key.0),
-                    match &key.1 {
+                    seq_to_string_or_log(&key.forward),
+                    match &key.reverse {
                         Some(x) => seq_to_string_or_log(x),
                         None => "".to_string(),
                     },
@@ -694,7 +699,7 @@ mod tests {
             let mut fr = FilteredReads::new(c.cfg.clone());
             let key = c.rp.key();
 
-            let got = fr.filter_readpair(&c.rp);
+            let got = fr.filter_readpair(&c.rp, true);
             assert_eq!(
                 got, c.expected,
                 "Unexpected filter output (case: {})",
@@ -791,7 +796,7 @@ mod tests {
             let mut fr = FilteredReads::new(c.cfg.clone());
             let key = rp.key();
 
-            let got = fr.filter_alignment(&rp, &c.f, c.r.as_ref());
+            let got = fr.filter_alignment(&rp, &c.f, c.r.as_ref(), true);
             assert_eq!(
                 got, c.expected,
                 "Unexpected filter output (case: {})",
