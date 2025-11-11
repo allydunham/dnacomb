@@ -10,7 +10,7 @@
 //! - Supporting constructs for CLI usage (logging, errors)
 //!
 //! The main module brings this together to define the main CLI program.
-//! The lirbary can equally be used programatically to support other workflows although it
+//! The library can equally be used programatically to support other workflows although it
 //! is designed primarily to support the CLI tool.
 //!
 //! [DNAComb]: https://github.com/allydunham/dnacomb
