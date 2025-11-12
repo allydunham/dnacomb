@@ -60,6 +60,14 @@ impl ObservedRegion {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.seq.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.seq.is_empty()
+    }
+
     /// Check if library comparison has been performed
     pub fn is_compared_to_library(&self) -> bool {
         !matches!(self.nearest_matches, RegionMatch::Uncompared)
@@ -298,5 +306,65 @@ impl RegionMatch {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+
+    fn make_region(id: &str, seq: &[u8], c: RegionCompleteness) -> ObservedRegion {
+        ObservedRegion::new(id.to_string(), seq, c)
+    }
+
+    /// Creating a Complete region should preserve id, bytes, length, and completeness.
+    #[test]
+    fn new_complete_region_holds_data() {
+        let r = make_region("barcode", b"ACGTACGT", RegionCompleteness::Complete);
+
+        assert_eq!(r.id, "barcode");
+        assert_eq!(r.seq, b"ACGTACGT");
+        assert_eq!(r.len(), 8);
+        assert!(matches!(r.completeness, RegionCompleteness::Complete));
+    }
+
+    /// Empty sequences are allowed and correctly reported.
+    #[test]
+    fn empty_sequence_is_valid() {
+        let r = make_region("empty", b"", RegionCompleteness::Complete);
+        assert_eq!(r.id, "empty");
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+        assert_eq!(r.seq, b"");
+    }
+
+    /// Byte content must be preserved exactly; no implicit normalisation should occur.
+    #[test]
+    fn preserves_bytes_verbatim() {
+        let weird = b"ACGTNN--acgt\x00\xff";
+        let r = make_region("weird", weird, RegionCompleteness::Complete);
+        assert_eq!(r.seq, weird, "region bytes changed unexpectedly");
+        assert_eq!(r.len(), weird.len());
+    }
+
+    /// Regions should not alias their input slice; subsequent mutations to the source
+    /// buffer (if any) must not affect the stored sequence.
+    #[test]
+    fn owns_its_sequence() {
+        let mut buf = b"AAAA".to_vec();
+        let r = make_region("id", &buf, RegionCompleteness::Complete);
+        buf[0] = b'T'; // mutate the source buffer
+        assert_eq!(r.seq, b"AAAA", "region leaked aliasing to input slice");
+    }
+
+    /// Extremely short and extremely long sequences should not panic.
+    #[test]
+    fn size_extremes_smoke() {
+        // Short (including 1-base)
+        let r1 = make_region("s", b"A", RegionCompleteness::Complete);
+        assert_eq!(r1.len(), 1);
+
+        // Long (1e5 bytes) – keep modest to avoid slow tests; still catches realloc issues.
+        let big = vec![b'G'; 100_000];
+        let r2 = make_region("big", &big, RegionCompleteness::Complete);
+        assert_eq!(r2.len(), 100_000);
+        // spot-check end bytes to ensure contiguous storage
+        assert_eq!(r2.seq[0], b'G');
+        assert_eq!(r2.seq[99_999], b'G');
+    }
 }

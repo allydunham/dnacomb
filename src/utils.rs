@@ -20,3 +20,30 @@ pub fn div_or_zero(x: f32, y: f32) -> f32 {
 
     x / y
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mean_quality() {
+        assert_eq!(mean_quality(b"FFFF"), 37.0);
+        assert_eq!(mean_quality(b"AAAA"), 32.0);
+        assert_eq!(mean_quality(b"!!!!"), 0.0);
+        assert_eq!(mean_quality(b"0101"), 15.5);
+        assert_eq!(mean_quality(b""), 0.0);
+    }
+
+    #[test]
+    fn test_division_by_nonzero() {
+        assert_eq!(div_or_zero(5.0, 1.0), 5.0);
+        assert_eq!(div_or_zero(10.0, 2.0), 5.0);
+        assert_eq!(div_or_zero(24.0, 3.0), 24.0 / 3.0);
+        assert_eq!(div_or_zero(13.0, 2.5), 13.0 / 2.5);
+    }
+
+    #[test]
+    fn test_division_by_zero() {
+        assert_eq!(div_or_zero(1.0, 0.0), 0.0);
+    }
+}

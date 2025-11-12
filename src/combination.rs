@@ -142,10 +142,10 @@ impl ObservedCombination {
                     match candidate_matches {
                         None => {
                             candidate_matches = Some(match_ind_union);
-                        },
+                        }
                         Some(ref mut x) => {
                             x.retain(|i| match_ind_union.contains(i));
-                        },
+                        }
                     }
                 }
             }
@@ -353,7 +353,10 @@ mod tests {
                 name: "exact_match",
                 regions: vec![("r1", b"AAAA", Complete), ("r2", b"CCCC", Complete)],
                 metric: DistanceMetric::Exact,
-                expected: Expected::Match { name: "seq2", distance: 0 },
+                expected: Expected::Match {
+                    name: "seq2",
+                    distance: 0,
+                },
             },
             TestCase {
                 name: "exact_mismatch",
@@ -378,13 +381,19 @@ mod tests {
                 name: "hamming_match",
                 regions: vec![("r1", b"ATAT", Complete), ("r2", b"GGGC", Complete)],
                 metric: DistanceMetric::Hamming,
-                expected: Expected::Match { name: "seq1", distance: 1 },
+                expected: Expected::Match {
+                    name: "seq1",
+                    distance: 1,
+                },
             },
             TestCase {
                 name: "hamming_multimatch",
                 regions: vec![("r1", b"AAAG", Complete), ("r2", b"CCCC", Complete)],
                 metric: DistanceMetric::Hamming,
-                expected: Expected::MultiMatch { inds_len: 2, distance: 1 },
+                expected: Expected::MultiMatch {
+                    inds_len: 2,
+                    distance: 1,
+                },
             },
             TestCase {
                 name: "hamming_mismatch",
@@ -409,13 +418,19 @@ mod tests {
                 name: "bounded_levenshtein_match",
                 regions: vec![("r1", b"ATT", Complete), ("r2", b"GGGC", Complete)],
                 metric: DistanceMetric::BoundedLevenshtein,
-                expected: Expected::Match { name: "seq1", distance: 2 },
+                expected: Expected::Match {
+                    name: "seq1",
+                    distance: 2,
+                },
             },
             TestCase {
                 name: "bounded_levenshtein_multimatch",
                 regions: vec![("r1", b"AAAG", Complete), ("r2", b"CCCC", Complete)],
                 metric: DistanceMetric::BoundedLevenshtein,
-                expected: Expected::MultiMatch { inds_len: 2, distance: 1 },
+                expected: Expected::MultiMatch {
+                    inds_len: 2,
+                    distance: 1,
+                },
             },
             TestCase {
                 name: "bounded_levenshtein_mismatch",
@@ -440,13 +455,19 @@ mod tests {
                 name: "levenshtein_match",
                 regions: vec![("r1", b"AAT", Complete), ("r2", b"CCTC", Complete)],
                 metric: DistanceMetric::Levenshtein,
-                expected: Expected::Match { name: "seq3", distance: 2 },
+                expected: Expected::Match {
+                    name: "seq3",
+                    distance: 2,
+                },
             },
             TestCase {
                 name: "levenshtein_multimatch",
                 regions: vec![("r1", b"AAAG", Complete), ("r2", b"CCCC", Complete)],
                 metric: DistanceMetric::Levenshtein,
-                expected: Expected::MultiMatch { inds_len: 2, distance: 1 },
+                expected: Expected::MultiMatch {
+                    inds_len: 2,
+                    distance: 1,
+                },
             },
             TestCase {
                 name: "levenshtein_mismatch",
@@ -497,12 +518,20 @@ mod tests {
 
         let mut map: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
         let ids = Some(vec![
-            "seq1".to_string(), "seq2".to_string(), "seq3".to_string()
+            "seq1".to_string(),
+            "seq2".to_string(),
+            "seq3".to_string(),
         ]);
         let region_max: HashMap<String, u64> = HashMap::new();
 
-        map.insert("r1".into(), vec![b"ATAT".to_vec(), b"AAAA".to_vec(), b"AAAT".to_vec()]);
-        map.insert("r2".into(), vec![b"GGGG".to_vec(), b"CCCC".to_vec(), b"CCCC".to_vec()]);
+        map.insert(
+            "r1".into(),
+            vec![b"ATAT".to_vec(), b"AAAA".to_vec(), b"AAAT".to_vec()],
+        );
+        map.insert(
+            "r2".into(),
+            vec![b"GGGG".to_vec(), b"CCCC".to_vec(), b"CCCC".to_vec()],
+        );
 
         // default_max_distance is only relevant for edit-distance modes; 2 is fine.
         crate::lib_spec::Library::new(map, ids, region_max, 2).expect("library builds")
@@ -536,17 +565,35 @@ mod tests {
                 let got_name = lib.get_name(ind).expect("name exists");
                 assert_eq!(got_name, *name, "[{}] matched name mismatch", tc.name);
             }
-            (Expected::MultiMatch { inds_len, distance }, CombinationMatch::MultiMatch { inds, distance: d }) => {
+            (
+                Expected::MultiMatch { inds_len, distance },
+                CombinationMatch::MultiMatch { inds, distance: d },
+            ) => {
                 assert_eq!(d, *distance, "[{}] distance mismatch", tc.name);
-                assert_eq!(inds.len(), *inds_len, "[{}] candidate set size mismatch", tc.name);
+                assert_eq!(
+                    inds.len(),
+                    *inds_len,
+                    "[{}] candidate set size mismatch",
+                    tc.name
+                );
             }
-            (Expected::Recombination { distance }, CombinationMatch::Recombination { distance: d }) => {
-                assert_eq!(d, *distance, "[{}] recombination distance mismatch", tc.name);
+            (
+                Expected::Recombination { distance },
+                CombinationMatch::Recombination { distance: d },
+            ) => {
+                assert_eq!(
+                    d, *distance,
+                    "[{}] recombination distance mismatch",
+                    tc.name
+                );
             }
             (Expected::Mismatch, CombinationMatch::Mismatch) => {}
             (Expected::Nonmatch, CombinationMatch::Nonmatch) => {}
             (exp, got_actual) => {
-                panic!("[{}] unexpected result.\n  expected: {:?}\n  got: {:?}", tc.name, exp, got_actual);
+                panic!(
+                    "[{}] unexpected result.\n  expected: {:?}\n  got: {:?}",
+                    tc.name, exp, got_actual
+                );
             }
         }
     }
