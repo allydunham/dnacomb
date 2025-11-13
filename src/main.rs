@@ -161,23 +161,23 @@ struct Cli {
     pattern_tolerance: u64,
 
     /// Match score for alignment
-    #[arg(long, default_value_t = 6, help_heading = "Alignment")]
+    #[arg(long, default_value_t = 6, allow_hyphen_values = true, help_heading = "Alignment")]
     match_score: i32,
 
     /// Match score against Ns in alignment
-    #[arg(long, default_value_t = -2, help_heading = "Alignment")]
+    #[arg(long, default_value_t = -2, allow_hyphen_values = true, help_heading = "Alignment")]
     n_match_score: i32,
 
     /// Misatch score for alignment
-    #[arg(long, default_value_t = -3, help_heading = "Alignment")]
+    #[arg(long, default_value_t = -3, allow_hyphen_values = true, help_heading = "Alignment")]
     mismatch_score: i32,
 
     /// Gap open score for alignment
-    #[arg(long, default_value_t = -10, help_heading = "Alignment")]
+    #[arg(long, default_value_t = -10, allow_hyphen_values = true, help_heading = "Alignment")]
     gap_open_score: i32,
 
     /// Gap extension score for alignment
-    #[arg(long, default_value_t = -4, help_heading = "Alignment")]
+    #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = "Alignment")]
     gap_extend_score: i32,
 
     /// Don't cache reads when in align mode, trading lower memory usage for lower speed
