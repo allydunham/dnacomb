@@ -25,11 +25,11 @@ type AlignmentFilter = fn(&Alignment, Option<&Alignment>, &FilterConfig) -> Opti
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterReason {
+    EmptyRead,
+    ShortRead,
+    LongRead,
     LowMeanQuality,
     BadAlignment,
-    LongRead,
-    ShortRead,
-    EmptyRead,
 }
 
 /// Metadata about filters
