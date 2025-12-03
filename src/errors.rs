@@ -8,7 +8,7 @@ use log::warn;
 use std::fmt;
 use std::io;
 
-use crate::containers::RegionCompleteness;
+use crate::region::RegionCompleteness;
 
 /// Convert a `Vec<u8>` Sequence to a string, logging failure but not panicing
 ///

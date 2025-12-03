@@ -15,30 +15,7 @@ use std::io::{self, BufReader};
 use std::str;
 
 use crate::errors::{FastaError, ReadPairError};
-
-pub type ReadKey = (Vec<u8>, Option<Vec<u8>>);
-
-/// Pair of linked Fastq reads
-#[derive(Debug)]
-pub struct ReadPair {
-    pub forward: fastq::Record,
-    pub reverse: Option<fastq::Record>,
-    pub group: ReadGroup,
-}
-
-impl ReadPair {
-    /// Generate a key to identify unique read types
-    pub fn key(&self) -> ReadKey {
-        if self.reverse.is_some() {
-            (
-                self.forward.seq().to_vec(),
-                Some(self.reverse.as_ref().unwrap().seq().to_vec()),
-            )
-        } else {
-            (self.forward.seq().to_vec(), None)
-        }
-    }
-}
+use crate::seqs::{ReadGroup, ReadPair};
 
 /// Parser for Fastq files
 ///
@@ -120,14 +97,6 @@ fn fasta_to_fastq(fasta_record: fasta::Record, default_quality: u8) -> fastq::Re
     let qual = vec![default_quality; seq.len()]; // Assign default quality for each base
 
     fastq::Record::with_attrs(&id, desc.as_deref(), &seq, &qual)
-}
-
-/// Group status of a read
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReadGroup {
-    Ungrouped,
-    Unmatched,
-    Match(String),
 }
 
 pub trait ReadPairProducer: Iterator<Item = Result<ReadPair, ReadPairError>> {

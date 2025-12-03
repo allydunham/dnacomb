@@ -13,19 +13,19 @@ use bio::bio_types::sequence::Sequence;
 use clap::ValueEnum;
 use itertools::izip;
 use log::{debug, info};
-use std::collections::HashMap;
 use std::iter::{repeat_with, zip};
 use std::sync::Once;
 
-use crate::containers::{
-    CombinationKey, ObservedCombination, ObservedCombinations, ObservedRegion, RegionCompleteness,
-    RegionKey,
-};
+use crate::combination::CombinationKey;
+use crate::combinations::{CacheHit, ObservedCombinations};
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
-use crate::filters::{FilterConfig, FilterReason, mean_quality};
+use crate::filters::FilterConfig;
 use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
-use crate::parsing::{ReadKey, ReadPair, ReadPairProducer, ThreadedReadPairParser};
+use crate::parsing::{ReadPairProducer, ThreadedReadPairParser};
+use crate::region::{RegionCompleteness, RegionKey};
+use crate::seqs::{ReadPair, SeqPair};
+use crate::utils::mean_quality;
 
 /// Position in an alignment where a region is found
 ///
@@ -81,7 +81,6 @@ const INFRAME_LOG_INTERVAL: u64 = 5000000;
 /// Single end raw mode message
 const RAW_START_SINGLE_MSG: &str = "Counting raw single end reads";
 /// Paired end raw mode message
-const RAW_START_PAIRED_MSG: &str = "Counting raw paired end reads";
 /// Logging interval in raw mode
 #[cfg(debug_assertions)]
 const RAW_LOG_INTERVAL: u64 = 1000;
@@ -643,18 +642,6 @@ fn join_observed_combinations(
     }
 }
 
-/// HashMap cache of observed reads and which combination they map to
-pub type ObservedReads = HashMap<ReadKey, CacheHit>;
-
-/// Options to cache for each identified read
-///
-/// The cache operates at a sequence level only, so you shouldn't cache filtering related
-/// to quality
-pub enum CacheHit {
-    Comb(CombinationKey),
-    Filter(FilterReason),
-}
-
 /// Count algorithm to apply
 #[derive(Clone, ValueEnum, Debug, Copy)]
 pub enum CountMode {
@@ -671,6 +658,7 @@ pub fn count_reads<T: ReadPairProducer>(
     reads: T,
     lib_spec: &Option<LibrarySpec>,
     mode: CountMode,
+    full_seq: bool,
     filter_config: FilterConfig,
     alignment_scorer: Option<AlignmentScorer>,
     pattern_length: Option<usize>,
@@ -702,10 +690,10 @@ pub fn count_reads<T: ReadPairProducer>(
                 }
                 .into()),
                 (false, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-                    count_single_align(reads, lib_spec, filter_config, a, cache, progress)
+                    count_single_align(reads, lib_spec, full_seq, filter_config, a, cache, progress)
                 }
                 (true, Some(lib_spec), CountMode::Align, Some(a), _, _) => {
-                    count_paired_align(reads, lib_spec, filter_config, a, cache, progress)
+                    count_paired_align(reads, lib_spec, full_seq, filter_config, a, cache, progress)
                 }
 
                 (_, _, CountMode::Pattern, _, None, _) | (_, _, CountMode::Pattern, _, _, None) => {
@@ -716,27 +704,41 @@ pub fn count_reads<T: ReadPairProducer>(
                     .into())
                 }
                 (false, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-                    count_single_pattern(reads, lib_spec, filter_config, len, tol, progress)
+                    count_single_pattern(
+                        reads,
+                        lib_spec,
+                        full_seq,
+                        filter_config,
+                        len,
+                        tol,
+                        cache,
+                        progress,
+                    )
                 }
                 (true, Some(lib_spec), CountMode::Pattern, _, Some(len), Some(tol)) => {
-                    count_paired_pattern(reads, lib_spec, filter_config, len, tol, progress)
+                    count_paired_pattern(
+                        reads,
+                        lib_spec,
+                        full_seq,
+                        filter_config,
+                        len,
+                        tol,
+                        cache,
+                        progress,
+                    )
                 }
 
                 (false, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-                    count_single_inframe(reads, lib_spec, filter_config, progress)
+                    count_single_inframe(reads, lib_spec, full_seq, filter_config, cache, progress)
                 }
                 (true, Some(lib_spec), CountMode::Inframe, _, _, _) => {
-                    count_paired_inframe(reads, lib_spec, filter_config, progress)
+                    count_paired_inframe(reads, lib_spec, full_seq, filter_config, cache, progress)
                 }
 
-                (false, Some(_), CountMode::FullRead, _, _, _) => {
-                    count_single_raw(reads, filter_config, progress)
+                (_, Some(_), CountMode::FullRead, _, _, _) => {
+                    count_raw(reads, filter_config, progress)
                 }
-                (true, Some(_), CountMode::FullRead, _, _, _) => {
-                    count_paired_raw(reads, filter_config, progress)
-                }
-                (false, None, _, _, _, _) => count_single_raw(reads, filter_config, progress),
-                (true, None, _, _, _, _) => count_paired_raw(reads, filter_config, progress),
+                (_, None, _, _, _, _) => count_raw(reads, filter_config, progress),
             }
         }
         std::cmp::Ordering::Greater => {
@@ -764,6 +766,7 @@ pub fn count_reads<T: ReadPairProducer>(
                         local_reads,
                         &lspec,
                         mode,
+                        full_seq,
                         fconf,
                         alignment_scorer,
                         pattern_length,
@@ -802,6 +805,7 @@ pub fn count_reads<T: ReadPairProducer>(
 fn count_single_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
     alignment_scorer: AlignmentScorer,
     cache: bool,
@@ -828,7 +832,6 @@ fn count_single_align<T: ReadPairProducer>(
 
     // Initialise counts
     let mut counts = ObservedCombinations::new(regions.clone(), filter_config);
-    let mut observed_reads: ObservedReads = HashMap::new();
 
     // Initialise aligner
     let scoring = alignment_scorer.get_scoring();
@@ -841,98 +844,90 @@ fn count_single_align<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
             continue;
         }
 
-        let record_key = record.key();
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
+            continue;
+        }
 
-        // Check cached reads and only realign if needed
-        if cache && observed_reads.contains_key(&record_key) {
-            let cache_hit = observed_reads
-                .get(&record_key)
-                .expect("Just checked read key is present in observed reads");
-            match cache_hit {
-                CacheHit::Comb(k) => {
-                    counts.add_or_increment_combination(k, record.group)?;
+        let read_alignment = aligner.semiglobal(record.forward.seq(), &template);
+        let alignment_path = read_alignment.path();
+
+        // Filter reads with too low scores or otherwise unmatched
+        match counts.filter_alignment(&record, &read_alignment, None, true) {
+            None => {}
+            Some(reason) => {
+                if cache {
+                    counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
-                CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, r);
-                }
+                continue;
             }
-        } else {
-            let read_alignment = aligner.semiglobal(record.forward.seq(), &template);
-            let alignment_path = read_alignment.path();
+        }
 
-            // Filter reads with too low scores or otherwise unmatched
-            match counts.filter_alignment(&record, &read_alignment, None) {
-                FilterReason::None => {}
-                other => {
-                    if cache {
-                        observed_reads.insert(record_key, CacheHit::Filter(other));
+        // Extract positions
+        let query_regions = regions_from_alignment_path(&region_positions, &alignment_path)?;
+
+        if i < 10 {
+            info!(
+                "Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
+                i + 1,
+                read_alignment.score,
+                read_alignment.cigar(false),
+                read_alignment.pretty(record.forward.seq(), &template, 100),
+                query_regions
+            );
+            debug!("{:?}", read_alignment.path())
+        }
+
+        let mut comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            Vec::with_capacity(query_regions.len()),
+        );
+
+        for (id, opt_pos) in zip(&regions, &query_regions) {
+            if let Some(pos) = opt_pos {
+                match record.forward.seq().get((pos.0 - 1)..(pos.1 - 1)) {
+                    Some(s) => {
+                        comb_key.regions.push(RegionKey::new(
+                            id.to_string(),
+                            // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
+                            s.to_vec(),
+                            pos.2,
+                        ));
                     }
-                    continue;
-                }
-            }
-
-            // Extract positions
-            let query_regions = regions_from_alignment_path(&region_positions, &alignment_path)?;
-
-            if i < 10 {
-                info!(
-                    "Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
-                    i + 1,
-                    read_alignment.score,
-                    read_alignment.cigar(false),
-                    read_alignment.pretty(record.forward.seq(), &template, 100),
-                    query_regions
-                );
-                debug!("{:?}", read_alignment.path())
-            }
-
-            let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(query_regions.len());
-            for (id, opt_pos) in zip(&regions, &query_regions) {
-                if let Some(pos) = opt_pos {
-                    match record.forward.seq().get((pos.0 - 1)..(pos.1 - 1)) {
-                        Some(s) => {
-                            comb_key_vec.push(ObservedRegion::key(
-                                id.to_string(),
-                                // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                s,
-                                pos.2,
-                            ));
+                    None => {
+                        return Err(ReadCountError::BadAlignment {
+                            alignment: Box::new(AlignmentInfo {
+                                read_id: record.forward.id().to_string(),
+                                read_number: i,
+                                pretty_alignment: read_alignment.pretty(
+                                    record.forward.seq(),
+                                    &template,
+                                    100,
+                                ),
+                                alignment: read_alignment,
+                                region_ids: regions,
+                                region_positions,
+                                mapped_positions: query_regions,
+                            }),
                         }
-                        None => {
-                            return Err(ReadCountError::BadAlignment {
-                                alignment: Box::new(AlignmentInfo {
-                                    read_id: record.forward.id().to_string(),
-                                    read_number: i,
-                                    pretty_alignment: read_alignment.pretty(
-                                        record.forward.seq(),
-                                        &template,
-                                        100,
-                                    ),
-                                    alignment: read_alignment,
-                                    region_ids: regions,
-                                    region_positions,
-                                    mapped_positions: query_regions,
-                                }),
-                            }
-                            .into());
-                        }
+                        .into());
                     }
                 }
             }
+        }
 
-            // Construct combination
-            let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
-            //eprintln!("{:?}", comb_key);
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
-            counts.add_or_increment_combination(&comb_key, record.group)?;
-
-            if cache {
-                observed_reads.insert(record_key, CacheHit::Comb(comb_key));
-            }
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
         }
         progress.inc(1);
     }
@@ -945,6 +940,7 @@ fn count_single_align<T: ReadPairProducer>(
 fn count_paired_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
     alignment_scorer: AlignmentScorer,
     cache: bool,
@@ -982,7 +978,6 @@ fn count_paired_align<T: ReadPairProducer>(
 
     // Initialise counts
     let mut counts = ObservedCombinations::new(regions.clone(), filter_config);
-    let mut observed_reads: ObservedReads = HashMap::new();
 
     // Initialise aligner
     let scoring = alignment_scorer.get_scoring();
@@ -995,234 +990,220 @@ fn count_paired_align<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
             continue;
         }
 
-        let record_key = record.key();
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
+            continue;
+        }
 
-        // Check cached reads and only realign if needed
-        if cache && observed_reads.contains_key(&record_key) {
-            let cache_hit = observed_reads
-                .get(&record_key)
-                .expect("Just checked read key is present in observed reads");
-            match cache_hit {
-                CacheHit::Comb(k) => {
-                    counts.add_or_increment_combination(k, record.group)?;
+        let f_read = record.forward.seq();
+        let r_read = match &record.reverse {
+            Some(x) => revcomp(x.seq()),
+            None => {
+                return Err(ReadCountError::Error {
+                    desc: format!("No reverse read found at read {i}"),
                 }
-                CacheHit::Filter(r) => {
-                    counts.update_filter_count(&record_key, r);
-                }
+                .into());
             }
-        } else {
-            let f_read = record.forward.seq();
-            let r_read = match &record.reverse {
-                Some(x) => revcomp(x.seq()),
-                None => {
-                    return Err(ReadCountError::Error {
-                        desc: format!("No reverse read found at read {i}"),
-                    }
-                    .into());
+        };
+
+        let f_qual = record.forward.qual();
+        let r_qual: Vec<u8> = match &record.reverse {
+            Some(x) => x.qual().iter().rev().cloned().collect(),
+            None => {
+                return Err(ReadCountError::Error {
+                    desc: format!("No reverse read found at read {i}"),
                 }
-            };
-
-            let f_qual = record.forward.qual();
-            let r_qual: Vec<u8> = match &record.reverse {
-                Some(x) => x.qual().iter().rev().cloned().collect(),
-                None => {
-                    return Err(ReadCountError::Error {
-                        desc: format!("No reverse read found at read {i}"),
-                    }
-                    .into());
-                }
-            };
-
-            // Fwd Read
-            let f_alignment = aligner.semiglobal(f_read, &template);
-            let f_path = f_alignment.path();
-
-            // Rev Read
-            let r_alignment = aligner.semiglobal(&r_read, &template);
-            let r_path = r_alignment.path();
-
-            // Filter reads with too low scores or otherwise unmatched
-            match counts.filter_alignment(&record, &f_alignment, Some(&r_alignment)) {
-                FilterReason::None => {}
-                other => {
-                    if cache {
-                        observed_reads.insert(record_key, CacheHit::Filter(other));
-                    }
-                    continue;
-                }
+                .into());
             }
+        };
 
-            // Extract regions
-            let f_regions = regions_from_alignment_path(&region_positions, &f_path)?;
-            let r_regions = regions_from_alignment_path(&region_positions, &r_path)?;
+        // Fwd Read
+        let f_alignment = aligner.semiglobal(f_read, &template);
+        let f_path = f_alignment.path();
 
-            // Print first 10 alignments
-            if i < 10 {
-                info!(
-                    "Fwd Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
-                    i + 1,
-                    f_alignment.score,
-                    f_alignment.cigar(false),
-                    f_alignment.pretty(f_read, &template, 100),
-                    f_regions
-                );
-                debug!("{:?}", f_alignment.path());
+        // Rev Read
+        let r_alignment = aligner.semiglobal(&r_read, &template);
+        let r_path = r_alignment.path();
 
-                info!(
-                    "Rev Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
-                    i + 1,
-                    r_alignment.score,
-                    r_alignment.cigar(false),
-                    r_alignment.pretty(&r_read, &template, 100),
-                    r_regions
-                );
-                debug!("{:?}", r_alignment.path());
-            }
-
-            let mut comb_key_vec: Vec<RegionKey> =
-                Vec::with_capacity(std::cmp::max(f_regions.len(), r_regions.len()));
-
-            for (id, len, f_pos, r_pos) in izip!(&regions, &region_lengths, &f_regions, &r_regions)
-            {
-                match (f_pos, r_pos) {
-                    (None, None) => continue,
-                    (None, Some(r)) => {
-                        match r_read.get((r.0 - 1)..(r.1 - 1)) {
-                            Some(s) => {
-                                comb_key_vec.push(ObservedRegion::key(
-                                    id.to_string(),
-                                    // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                    s,
-                                    r.2,
-                                ));
-                            }
-                            None => {
-                                return Err(ReadCountError::BadAlignment {
-                                    alignment: Box::new(AlignmentInfo {
-                                        read_id: record
-                                            .reverse
-                                            .expect("Read known to be present")
-                                            .id()
-                                            .to_string(),
-                                        read_number: i,
-                                        pretty_alignment: r_alignment
-                                            .pretty(&r_read, &template, 100),
-                                        alignment: r_alignment,
-                                        region_ids: regions,
-                                        region_positions,
-                                        mapped_positions: r_regions,
-                                    }),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                    (Some(f), None) => {
-                        match f_read.get((f.0 - 1)..(f.1 - 1)) {
-                            Some(s) => {
-                                comb_key_vec.push(ObservedRegion::key(
-                                    id.to_string(),
-                                    // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                    s,
-                                    f.2,
-                                ));
-                            }
-                            None => {
-                                return Err(ReadCountError::BadAlignment {
-                                    alignment: Box::new(AlignmentInfo {
-                                        read_id: record.forward.id().to_string(),
-                                        read_number: i,
-                                        pretty_alignment: f_alignment
-                                            .pretty(f_read, &template, 100),
-                                        alignment: f_alignment,
-                                        region_ids: regions,
-                                        region_positions,
-                                        mapped_positions: f_regions,
-                                    }),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                    (Some(f), Some(r)) => {
-                        let f_reg_seq = match f_read.get((f.0 - 1)..(f.1 - 1)) {
-                            Some(s) => s,
-                            None => {
-                                return Err(ReadCountError::BadAlignment {
-                                    alignment: Box::new(AlignmentInfo {
-                                        read_id: record.forward.id().to_string(),
-                                        read_number: i,
-                                        pretty_alignment: f_alignment
-                                            .pretty(f_read, &template, 100),
-                                        alignment: f_alignment,
-                                        region_ids: regions,
-                                        region_positions,
-                                        mapped_positions: f_regions,
-                                    }),
-                                }
-                                .into());
-                            }
-                        };
-
-                        let f_reg_qual = f_qual
-                            .get((f.0 - 1)..(f.1 - 1))
-                            .expect("If seq extracted then qual should be too as the same length");
-
-                        let r_reg_seq = match r_read.get((r.0 - 1)..(r.1 - 1)) {
-                            Some(s) => s,
-                            None => {
-                                return Err(ReadCountError::BadAlignment {
-                                    alignment: Box::new(AlignmentInfo {
-                                        read_id: record
-                                            .reverse
-                                            .expect("Read known to be present")
-                                            .id()
-                                            .to_string(),
-                                        read_number: i,
-                                        pretty_alignment: r_alignment
-                                            .pretty(&r_read, &template, 100),
-                                        alignment: r_alignment,
-                                        region_ids: regions,
-                                        region_positions,
-                                        mapped_positions: r_regions,
-                                    }),
-                                }
-                                .into());
-                            }
-                        };
-
-                        let r_reg_qual = r_qual
-                            .get((r.0 - 1)..(r.1 - 1))
-                            .expect("If seq extracted then qual should be too as the same length");
-
-                        match merge_seqs(
-                            Some((f_reg_seq.to_vec(), f_reg_qual.to_vec(), f.2)),
-                            Some((r_reg_seq.to_vec(), r_reg_qual.to_vec(), r.2)),
-                            *len,
-                        )? {
-                            Some((seq, comp)) => {
-                                comb_key_vec.push(ObservedRegion::key(id.clone(), &seq, comp))
-                            }
-                            None => continue,
-                        };
-                    }
+        // Filter reads with too low scores or otherwise unmatched
+        match counts.filter_alignment(&record, &f_alignment, Some(&r_alignment), true) {
+            None => {}
+            Some(reason) => {
+                if cache {
+                    counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
-            }
-
-            // Construct combination
-            let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
-            //eprintln!("{:?}", comb_key);
-
-            counts.add_or_increment_combination(&comb_key, record.group)?;
-
-            if cache {
-                observed_reads.insert(record_key, CacheHit::Comb(comb_key));
+                continue;
             }
         }
+
+        // Extract regions
+        let f_regions = regions_from_alignment_path(&region_positions, &f_path)?;
+        let r_regions = regions_from_alignment_path(&region_positions, &r_path)?;
+
+        // Print first 10 alignments
+        if i < 10 {
+            info!(
+                "Fwd Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
+                i + 1,
+                f_alignment.score,
+                f_alignment.cigar(false),
+                f_alignment.pretty(f_read, &template, 100),
+                f_regions
+            );
+            debug!("{:?}", f_alignment.path());
+
+            info!(
+                "Rev Alignment {}:\nScore: {}, Cigar: {}\n{}\nExtracted regions: {:?}",
+                i + 1,
+                r_alignment.score,
+                r_alignment.cigar(false),
+                r_alignment.pretty(&r_read, &template, 100),
+                r_regions
+            );
+            debug!("{:?}", r_alignment.path());
+        }
+
+        let mut comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            Vec::with_capacity(std::cmp::max(f_regions.len(), r_regions.len())),
+        );
+
+        for (id, len, f_pos, r_pos) in izip!(&regions, &region_lengths, &f_regions, &r_regions) {
+            match (f_pos, r_pos) {
+                (None, None) => continue,
+                (None, Some(r)) => {
+                    match r_read.get((r.0 - 1)..(r.1 - 1)) {
+                        Some(s) => {
+                            comb_key.regions.push(RegionKey::new(
+                                id.to_string(),
+                                // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
+                                s.to_vec(),
+                                r.2,
+                            ));
+                        }
+                        None => {
+                            return Err(ReadCountError::BadAlignment {
+                                alignment: Box::new(AlignmentInfo {
+                                    read_id: record
+                                        .reverse
+                                        .expect("Read known to be present")
+                                        .id()
+                                        .to_string(),
+                                    read_number: i,
+                                    pretty_alignment: r_alignment.pretty(&r_read, &template, 100),
+                                    alignment: r_alignment,
+                                    region_ids: regions,
+                                    region_positions,
+                                    mapped_positions: r_regions,
+                                }),
+                            }
+                            .into());
+                        }
+                    }
+                }
+                (Some(f), None) => {
+                    match f_read.get((f.0 - 1)..(f.1 - 1)) {
+                        Some(s) => {
+                            comb_key.regions.push(RegionKey::new(
+                                id.to_string(),
+                                // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
+                                s.to_vec(),
+                                f.2,
+                            ));
+                        }
+                        None => {
+                            return Err(ReadCountError::BadAlignment {
+                                alignment: Box::new(AlignmentInfo {
+                                    read_id: record.forward.id().to_string(),
+                                    read_number: i,
+                                    pretty_alignment: f_alignment.pretty(f_read, &template, 100),
+                                    alignment: f_alignment,
+                                    region_ids: regions,
+                                    region_positions,
+                                    mapped_positions: f_regions,
+                                }),
+                            }
+                            .into());
+                        }
+                    }
+                }
+                (Some(f), Some(r)) => {
+                    let f_reg_seq = match f_read.get((f.0 - 1)..(f.1 - 1)) {
+                        Some(s) => s,
+                        None => {
+                            return Err(ReadCountError::BadAlignment {
+                                alignment: Box::new(AlignmentInfo {
+                                    read_id: record.forward.id().to_string(),
+                                    read_number: i,
+                                    pretty_alignment: f_alignment.pretty(f_read, &template, 100),
+                                    alignment: f_alignment,
+                                    region_ids: regions,
+                                    region_positions,
+                                    mapped_positions: f_regions,
+                                }),
+                            }
+                            .into());
+                        }
+                    };
+
+                    let f_reg_qual = f_qual
+                        .get((f.0 - 1)..(f.1 - 1))
+                        .expect("If seq extracted then qual should be too as the same length");
+
+                    let r_reg_seq = match r_read.get((r.0 - 1)..(r.1 - 1)) {
+                        Some(s) => s,
+                        None => {
+                            return Err(ReadCountError::BadAlignment {
+                                alignment: Box::new(AlignmentInfo {
+                                    read_id: record
+                                        .reverse
+                                        .expect("Read known to be present")
+                                        .id()
+                                        .to_string(),
+                                    read_number: i,
+                                    pretty_alignment: r_alignment.pretty(&r_read, &template, 100),
+                                    alignment: r_alignment,
+                                    region_ids: regions,
+                                    region_positions,
+                                    mapped_positions: r_regions,
+                                }),
+                            }
+                            .into());
+                        }
+                    };
+
+                    let r_reg_qual = r_qual
+                        .get((r.0 - 1)..(r.1 - 1))
+                        .expect("If seq extracted then qual should be too as the same length");
+
+                    match merge_seqs(
+                        Some((f_reg_seq.to_vec(), f_reg_qual.to_vec(), f.2)),
+                        Some((r_reg_seq.to_vec(), r_reg_qual.to_vec(), r.2)),
+                        *len,
+                    )? {
+                        Some((seq, comp)) => {
+                            comb_key.regions.push(RegionKey::new(id.clone(), seq, comp))
+                        }
+                        None => continue,
+                    };
+                }
+            }
+        }
+
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
+        }
+
         progress.inc(1);
     }
     progress.finish();
@@ -1234,9 +1215,11 @@ fn count_paired_align<T: ReadPairProducer>(
 fn count_single_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
     pattern_length: usize,
     pattern_tolerance: u64,
+    cache: bool,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", PATTERN_START_SINGLE_MSG);
@@ -1268,7 +1251,12 @@ fn count_single_pattern<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
+            continue;
+        }
+
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
             continue;
         }
 
@@ -1279,16 +1267,26 @@ fn count_single_pattern<T: ReadPairProducer>(
             pattern_tolerance,
         )?;
 
-        let comb_key_vec: Vec<RegionKey> = zip(&regions, region_matches)
-            .filter_map(|(id, reg)| match reg {
-                Some(r) => Some((id.clone(), r.0, r.2)),
-                None => None,
-            })
-            .collect();
+        let comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            zip(&regions, region_matches)
+                .filter_map(|(id, reg)| match reg {
+                    Some(r) => Some(RegionKey::new(id.clone(), r.0, r.2)),
+                    None => None,
+                })
+                .collect(),
+        );
 
-        let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
+        }
+
         progress.inc(1);
     }
     progress.finish();
@@ -1300,9 +1298,11 @@ fn count_single_pattern<T: ReadPairProducer>(
 fn count_paired_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
     pattern_length: usize,
     pattern_tolerance: u64,
+    cache: bool,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", PATTERN_START_PAIRED_MSG);
@@ -1345,7 +1345,12 @@ fn count_paired_pattern<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
+            continue;
+        }
+
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
             continue;
         }
 
@@ -1375,17 +1380,29 @@ fn count_paired_pattern<T: ReadPairProducer>(
 
         let r_matches = match_flank_patterns(&r_seq, &r_qual, &flank_regions, pattern_tolerance)?;
 
-        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(n_regions);
+        let mut comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            Vec::with_capacity(n_regions),
+        );
 
         for (id, len, fwd, rev) in izip!(&regions, &region_lengths, f_matches, r_matches) {
             if let Some(merged) = merge_seqs(fwd, rev, *len)? {
-                comb_key_vec.push(ObservedRegion::key(id.clone(), &merged.0, merged.1));
+                comb_key
+                    .regions
+                    .push(RegionKey::new(id.clone(), merged.0, merged.1));
             }
         }
 
-        let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
+        }
+
         progress.inc(1);
     }
     progress.finish();
@@ -1397,7 +1414,9 @@ fn count_paired_pattern<T: ReadPairProducer>(
 fn count_single_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
+    cache: bool,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", INFRAME_START_SINGLE_MSG);
@@ -1440,11 +1459,24 @@ fn count_single_inframe<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
             continue;
         }
 
-        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(regions.len());
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
+            continue;
+        }
+
+        let mut comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            Vec::with_capacity(regions.len()),
+        );
+
         let seq_len = record.forward.seq().len();
 
         for (id, pos) in zip(&regions, &region_positions) {
@@ -1475,12 +1507,17 @@ fn count_single_inframe<T: ReadPairProducer>(
                 break;
             }
 
-            comb_key_vec.push(ObservedRegion::key(id.clone(), &reg_seq, complete));
+            comb_key
+                .regions
+                .push(RegionKey::new(id.clone(), reg_seq, complete));
         }
 
-        let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
+        }
+
         progress.inc(1);
     }
     progress.finish();
@@ -1492,7 +1529,9 @@ fn count_single_inframe<T: ReadPairProducer>(
 fn count_paired_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
+    full_seq: bool,
     filter_config: FilterConfig,
+    cache: bool,
     progress_style: &ProgressStyle,
 ) -> Result<ObservedCombinations, anyhow::Error> {
     info!("{}", INFRAME_START_PAIRED_MSG);
@@ -1567,11 +1606,23 @@ fn count_paired_inframe<T: ReadPairProducer>(
         let record: ReadPair = result?;
 
         // Check if read needs to be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
             continue;
         }
 
-        let mut comb_key_vec: Vec<RegionKey> = Vec::with_capacity(regions.len());
+        // Check if the read has been cached
+        if cache && counts.check_cache(&record, true)?.is_some() {
+            continue;
+        }
+
+        let mut comb_key: CombinationKey = CombinationKey::new(
+            if full_seq {
+                Some(SeqPair::from_readpair(&record))
+            } else {
+                None
+            },
+            Vec::with_capacity(regions.len()),
+        );
 
         let f_read = record.forward.seq();
         let r_read = match &record.reverse {
@@ -1667,14 +1718,17 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
             // Determine which read to use
             match merge_seqs(fwd, rev, *len)? {
-                Some((seq, comp)) => comb_key_vec.push(ObservedRegion::key(id.clone(), &seq, comp)),
+                Some((seq, comp)) => comb_key.regions.push(RegionKey::new(id.clone(), seq, comp)),
                 None => continue,
             }
         }
 
-        let comb_key: CombinationKey = ObservedCombination::key(comb_key_vec);
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        if cache {
+            counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
+        }
+
         progress.inc(1);
     }
     progress.finish();
@@ -1683,7 +1737,7 @@ fn count_paired_inframe<T: ReadPairProducer>(
 }
 
 /// Count entire single end reads
-fn count_single_raw<T: ReadPairProducer>(
+fn count_raw<T: ReadPairProducer>(
     reads: T,
     filter_config: FilterConfig,
     progress_style: &ProgressStyle,
@@ -1693,73 +1747,18 @@ fn count_single_raw<T: ReadPairProducer>(
     let mut progress: Progress =
         Progress::from_style(progress_style, PROG_MSG, FINAL_MSG, None, RAW_LOG_INTERVAL);
 
-    let mut counts = ObservedCombinations::new(vec!["seq".to_string()], filter_config);
+    let mut counts = ObservedCombinations::new(vec![], filter_config);
 
     for result in reads {
         let record: ReadPair = result?;
 
         // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
+        if counts.filter_readpair(&record, true).is_some() {
             continue;
         }
 
-        let reg_key: RegionKey = ObservedRegion::key(
-            "seq".to_string(),
-            record.forward.seq(),
-            RegionCompleteness::Complete,
-        );
-        let comb_key: CombinationKey = ObservedCombination::key(vec![reg_key]);
-
-        counts.add_or_increment_combination(&comb_key, record.group)?;
-        progress.inc(1);
-    }
-    progress.finish();
-
-    Ok(counts)
-}
-
-/// Count entire paired end reads
-fn count_paired_raw<T: ReadPairProducer>(
-    reads: T,
-    filter_config: FilterConfig,
-    progress_style: &ProgressStyle,
-) -> Result<ObservedCombinations, anyhow::Error> {
-    info!("{}", RAW_START_PAIRED_MSG);
-
-    let mut progress: Progress =
-        Progress::from_style(progress_style, PROG_MSG, FINAL_MSG, None, RAW_LOG_INTERVAL);
-
-    let mut counts =
-        ObservedCombinations::new(vec!["fwd".to_string(), "rev".to_string()], filter_config);
-
-    for result in reads {
-        let record: ReadPair = result?;
-
-        // Check if read should be filtered
-        if !matches!(counts.filter_readpair(&record), FilterReason::None) {
-            continue;
-        }
-
-        let fwd_key: RegionKey = ObservedRegion::key(
-            "fwd".to_string(),
-            record.forward.seq(),
-            RegionCompleteness::Complete,
-        );
-
-        // Add check for reverse read
-        let rev_key: RegionKey = match &record.reverse {
-            Some(rev) => {
-                ObservedRegion::key("rev".to_string(), rev.seq(), RegionCompleteness::Complete)
-            }
-            None => {
-                return Err(ReadCountError::Error {
-                    desc: "No reverse read found in paired raw mode".to_string(),
-                }
-                .into());
-            }
-        };
-
-        let comb_key: CombinationKey = ObservedCombination::key(vec![fwd_key, rev_key]);
+        let comb_key: CombinationKey =
+            CombinationKey::new(Some(SeqPair::from_readpair(&record)), vec![]);
 
         counts.add_or_increment_combination(&comb_key, record.group)?;
         progress.inc(1);
@@ -1772,8 +1771,8 @@ fn count_paired_raw<T: ReadPairProducer>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::containers::RegionCompleteness;
     use crate::lib_spec::FlankingSequences;
+    use crate::region::RegionCompleteness;
 
     #[test]
     fn test_perfect_flank_matching() {

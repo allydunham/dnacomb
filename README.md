@@ -137,6 +137,8 @@ DNAComb produces up to three outputs, depending on configuration, which detail t
 This TSV file contains the full count data in the following columns:
 
 * `group` - The read group reads have been assigned to, for instance cell barcodes in single cell experiments.
+* `forward` - The forward read sequence, if counting full reads alone or as well as the region breakdown.
+* `reverse` - The reverse read sequence if present and if counting full reads alone or as well as the region breakdown.
 * For each region of interest:
   * `{id}` - The observed region sequence. ^ indicates potential truncation at either end.
   * `{id}_nearest` - The closest match from the library, if any. Equivalent matches are listed as a comma separated list.
@@ -188,6 +190,7 @@ It contains the following columns:
 Finally, the filtered counts TSV gives the count and proportion of filtered reads for each filter reason.
 It contains the following columns:
 
+* `group` - The read group the filtered read came from, if any
 * `forward` - The forward sequence
 * `reverse` - The reverse sequence (if any)
 * `count` - The total number of reads filtered
