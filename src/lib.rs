@@ -21,6 +21,7 @@ pub mod combinations;
 pub mod counting;
 pub mod errors;
 pub mod filters;
+pub mod interning;
 pub mod lib_spec;
 pub mod library_combination;
 pub mod logging;

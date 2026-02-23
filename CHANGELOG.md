@@ -2,6 +2,10 @@
 
 This file contains a record of the major changes between versions.
 
+## v0.6.0 Interning & combinatorial libraries
+
+* Added interning of Sequences, Groups and Region IDs to reduce duplication, reduce memory usage and speed up performance
+
 ## v0.5.0 Deeper tracking, refined config and performance improvements
 
 * Removed superfluous length field from fixed length regions in LibSpec - now the sequence is the core data.

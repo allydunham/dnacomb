@@ -1,6 +1,6 @@
 [package]
 name = "dnacomb"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Alistair Dunham", "Eric Hidari"]
 description = "Count the occurances of structured sequence reads and compare to an expected library"
@@ -29,6 +29,10 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+default = ["interning"]
+interning = ["dep:once_cell", "dep:parking_lot", "dep:dashmap", "dep:ahash", "dep:lasso"]
+
 [dependencies]
 clap = { version = "4.3.19", features = ["derive", "wrap_help"] }
 serde = { version = "1.0.218", features = ["derive"] }
@@ -42,6 +46,11 @@ log = { version = "0.4", features = ["max_level_trace", "release_max_level_info"
 env_logger = "0.11.6"
 itertools = "0.14.0"
 crossbeam = "0.8.4"
+once_cell   = { version = "1", optional = true }
+parking_lot = { version = "0.12", optional = true }
+dashmap     = { version = "6", optional = true }
+ahash       = { version = "0.8", optional = true }
+lasso       = { version = "0.7", optional = true, features = ["multi-threaded"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
