@@ -63,6 +63,5 @@
             "seq": "GTTTGGATCCAATTCT",
             "seq_type": "Fixed"
         }
-    ],
-    "library": "config/pegrna.tsv"
+    ]
 }

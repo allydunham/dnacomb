@@ -90,23 +90,22 @@ def main():
     print("\nRunning main tests:")
     # Basic function
     run_test("Basic function", f_file=f"{root}/perfect_grna.fq", output="basic", mode="full-read",
-             verbose=True, sort=True, library_counts=False, rm_output=True, critical=True)
+             verbose=True, sort=True, library=None, rm_output=True, critical=True)
 
     run_test("With IDs", f_file=f"{root}/perfect_grna.fq", lib_spec="config/grna.json",
              output="ids", mode="inframe", metric="hamming", critical=True,
-             verbose=True, sort=True, rm_output=True)
-
+             verbose=True, sort=True, rm_output=True, library=["config/grna.tsv"])
     run_test("Without IDs", f_file=f"{root}/perfect_grna.fq", lib_spec="config/grna_no_id.json",
              output="no_ids", mode="inframe", metric="hamming", critical=True,
-             verbose=True, sort=True, rm_output=True)
+             verbose=True, sort=True, rm_output=True, library=["config/grna_no_id.tsv"])
 
     # Full read counts
     run_test("Total counts", f_file=f"{root}/perfect_grna.fq",
              output=f"{root}/total_counts", mode="full-read",
-             verbose=True, sort=True, library_counts=False, rm_output=False)
+             verbose=True, sort=True, library=None, rm_output=False)
     run_test("Paired total counts", f_file=f"{root}/perfect_grna_forward.fq",
              r_file=f"{root}/perfect_grna_reverse.fq", output=f"{root}/total_pairs",
-             mode="full-read", verbose=True, sort=True, library_counts=False,
+             mode="full-read", verbose=True, sort=True, library=None,
              rm_output=False)
 
     # Combination of different params
@@ -128,25 +127,26 @@ def main():
     for (mode, dist, lib) in param_combs:
         expected_code = 1 if mode == "inframe" and lib in ["mutant_pegrna", "messy_pegrna"] else 0
         spec = f"config/{lib_specs[lib]}.json"
+        lib = f"config/{lib_specs[lib]}.tsv"
 
         run_test(f"{mode} {dist} {lib} single end", f_file=f"{root}/{lib}.fq",
                  output=f"{root}/params:{mode}:{dist}:{lib}:single:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
-                 lib_spec=spec,
+                 lib_spec=spec, library=[lib],
                  expected_code=expected_code)
 
         run_test(f"{mode} {dist} {lib} paired end", f_file=f"{root}/{lib}_forward.fq",
                  r_file=f"{root}/{lib}_reverse.fq",
                  output=f"{root}/params:{mode}:{dist}:{lib}:paired:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
-                 lib_spec=spec,
+                 lib_spec=spec, library=[lib],
                  expected_code=expected_code)
 
     for threads in [2, 4, 6]:
         run_test(f"{threads} Threads", f_file=f"{root}/mutant_pegrna.fq",
                  output=f"{root}/threads:align:bounded-levenshtein:mutant_pegrna:single:{threads}",
                  mode="align", metric="bounded-levenshtein", verbose=True, sort=True,
-                 lib_spec="config/pegrna.json",
+                 lib_spec="config/pegrna.json", library=["config/pegrna.tsv"],
                  expected_code=0, additional_args=["--threads", str(threads)])
 
     # Filtering
@@ -154,7 +154,7 @@ def main():
                    "--alignment-tolerance", "0.9", "--mean-quality-threshold", "38"]
     run_test("Filtering", f_file=f"{root}/mutant_pegrna.fq",
              output=f"{root}/filtering", mode="align", metric="bounded-levenshtein",
-             verbose=True, sort=True, lib_spec="config/pegrna.json",
+             verbose=True, sort=True, lib_spec="config/pegrna.json", library=["config/pegrna.tsv"],
              expected_code=0, additional_args=filter_args)
 
     print(f"\nTesting complete {sum(results)}/{len(results)} passed")

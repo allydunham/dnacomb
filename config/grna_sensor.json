@@ -51,6 +51,5 @@
             "seq": "GTTTGGATCCAATTCT",
             "seq_type": "Fixed"
         }
-    ],
-    "library": "config/grna_sensor.tsv"
+    ]
 }

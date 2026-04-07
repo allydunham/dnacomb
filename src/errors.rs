@@ -183,6 +183,9 @@ pub enum LibraryError {
     /// Generic Library error
     Library { desc: String },
 
+    /// Duplicate regions in sub-library
+    DuplicateSubLibraryRegion { id: String },
+
     /// Duplicate regions in library
     DuplicateRegion { id: String },
 
@@ -196,6 +199,9 @@ pub enum LibraryError {
 impl fmt::Display for LibraryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            LibraryError::DuplicateSubLibraryRegion { id } => {
+                write!(f, "Region id {} is found in multiple Libraries", id)
+            }
             LibraryError::DuplicateRegion { id } => {
                 write!(f, "Duplicated region id {} in Library", id)
             }

@@ -306,10 +306,6 @@ def generate_library(lib_spec, n, path=None):
                     seqs.append(library[r][i])
                 print(*seqs, sep="\t", file=file)
 
-        with open(f"{path}.json", "w") as file:
-            lib_spec["library"] = f"{path}.tsv"
-            json.dump(lib_spec, file)
-
     return library
 
 def main():

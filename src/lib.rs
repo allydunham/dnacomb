@@ -29,8 +29,10 @@ pub mod parsing;
 pub mod region;
 pub mod seqs;
 pub mod utils;
+pub mod library;
 
 // Re-Exports
 pub use combinations::ObservedCombinations;
 pub use counting::{CountMode, count_reads};
-pub use lib_spec::{Library, LibrarySpec};
+pub use lib_spec::{LibrarySpec};
+pub use library::{SubLibrary};

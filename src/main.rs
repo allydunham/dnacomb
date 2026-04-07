@@ -58,6 +58,22 @@ struct Cli {
     #[arg(short = 'z', long, value_enum, default_value_t = Compression::Auto, help_heading = "Input")]
     compression: Compression,
 
+    /// Override fordard start region
+    #[arg(long, help_heading = "Input")]
+    forward_start: Option<String>,
+
+    /// Override fordard read length
+    #[arg(long, help_heading = "Input")]
+    forward_length: Option<u32>,
+
+    /// Override reverse start region
+    #[arg(long, help_heading = "Input")]
+    reverse_start: Option<String>,
+
+    /// Override reverse read length
+    #[arg(long, help_heading = "Input")]
+    reverse_length: Option<u32>,
+
     /// Prefix for output TSV files
     #[arg(
         short = 'o',
@@ -97,9 +113,9 @@ struct Cli {
     #[arg(short = 'g', long, help_heading = "Counting")]
     group: Option<String>,
 
-    /// Calculate similarity to oligo library and output an additional table of library counts
-    #[arg(short = 'c', long, action, help_heading = "Library Comparison")]
-    library_counts: bool,
+    /// Calculate similarity to oligo library(s) and output an additional table of library counts
+    #[arg(short = 'c', long, help_heading = "Library Comparison")]
+    library: Option<Vec<String>>,
 
     /// Distance metric to use for library comparison. Hamming counts the number of mismatches
     /// and levenshtein the number of subs/insertion/deletions required to go from A to B.
@@ -291,7 +307,7 @@ fn run(args: Cli) -> Result<(), Error> {
 
     // Load library specification
     let lib_spec: Option<LibrarySpec> = match &args.library_spec {
-        Some(lib_spec) => Some(LibrarySpec::from_file(lib_spec)?),
+        Some(lib_spec) => Some(LibrarySpec::from_file(lib_spec, args.forward_start, args.forward_length, args.reverse_start, args.reverse_length)?),
         None => None,
     };
 
@@ -310,18 +326,19 @@ fn run(args: Cli) -> Result<(), Error> {
 
     // Compare observed combinations to library
     let library: Option<Library>;
-    match (args.library_counts, &lib_spec) {
-        (false, _) => {
+    match (args.library, &lib_spec) {
+        (None, _) => {
             library = None;
-            info!("No library counts requested, library ignored");
+            info!("No library counts requested");
         }
-        (true, None) => {
+        (Some(_), None) => {
             library = None;
-            warn!(
-                "Library counts requested but no library path in LibSpec, skipping library counts"
+            error!(
+                "Library TSV(s) supplied but no LibSpec, which is required for library counts. Exiting"
             );
+            exit(1)
         }
-        (true, Some(spec)) => {
+        (Some(libs), Some(spec)) => {
             library = Library::from_lib_spec(spec, args.max_distance)?;
             info!("Compiled library {:?}", spec.library.as_ref().unwrap());
         }

@@ -191,7 +191,7 @@ def main():
                               f_file=f"{inroot}_{lib}_{lib_size}_forward.fq",
                               r_file=f"{inroot}_{lib}_{lib_size}_reverse.fq",
                               lib_spec=f"{inroot}_{lib}_{lib_size}.json",
-                              mode=mode, metric=metric, library_counts=True, no_cache=nocache,
+                              mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache,
                               threads=args.threads, additional_args=["--max-reads", str(n_reads)],
                               path=args.path)
             else:
@@ -199,7 +199,7 @@ def main():
                               outname=f"{outname}_{name}", outfile=file,
                               f_file=f"{inroot}_{lib}_{lib_size}.fq",
                               lib_spec=f"{inroot}_{lib}_{lib_size}.json",
-                              mode=mode, metric=metric, library_counts=True, no_cache=nocache,
+                              mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache,
                               threads=args.threads, additional_args=["--max-reads", str(n_reads)],
                               path=args.path)
 
