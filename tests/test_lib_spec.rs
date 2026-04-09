@@ -6,7 +6,7 @@ use dnacomb::lib_spec;
 fn load_lib_spec() {
     let path = "config/grna_sensor.json";
 
-    let ls = lib_spec::LibrarySpec::from_file(path);
+    let ls = lib_spec::LibrarySpec::from_file(path, None, None, None, None);
 
     assert!(!ls.is_err());
 }

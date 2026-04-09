@@ -43,13 +43,15 @@ def main():
     print("Generating test data")
     if not os.path.exists(f"{root}/perfect_grna.fq"):
         print("    Perfect gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/grna.json", libraries=["config/grna.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/perfect_grna")
         print("done")
 
     if not os.path.exists(f"{root}/mutant_grna_sensor.fq"):
         print("    Mutant sensor gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/grna_sensor.json", libraries=["config/grna_sensor.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/mutant_grna_sensor", contamination_rate=0,
                            recombination_rate=0, mismatch_rate=0,
                            sub_rate=0.01, indel_rate=0)
@@ -57,7 +59,8 @@ def main():
 
     if not os.path.exists(f"{root}/indel_grna_sensor.fq"):
         print("    Indel sensor gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/grna_sensor.json", libraries=["config/grna_sensor.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/indel_grna_sensor", contamination_rate=0,
                            recombination_rate=0, mismatch_rate=0,
                            sub_rate=0, indel_rate=0.01)
@@ -65,7 +68,8 @@ def main():
 
     if not os.path.exists(f"{root}/recombined_grna_sensor.fq"):
         print("    Recombined sensor gRNA library... ", end="")
-        generate_test_data(lib_spec="config/grna_sensor.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/grna_sensor.json", libraries=["config/grna_sensor.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/recombined_grna_sensor", contamination_rate=0,
                            recombination_rate=0.05, mismatch_rate=0,
                            sub_rate=0, indel_rate=0)
@@ -73,7 +77,8 @@ def main():
 
     if not os.path.exists(f"{root}/mutant_pegrna.fq"):
         print("    Mutant pegRNA library... ", end="")
-        generate_test_data(lib_spec="config/pegrna.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/pegrna.json", libraries=["config/pegrna.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/mutant_pegrna", contamination_rate=0,
                            recombination_rate=0, mismatch_rate=0,
                            sub_rate=0.01, indel_rate=0)
@@ -81,10 +86,31 @@ def main():
 
     if not os.path.exists(f"{root}/messy_pegrna.fq"):
         print("    Fully mutated pegRNA library... ", end="")
-        generate_test_data(lib_spec="config/pegrna.json", number=1000, library_size=100,
+        generate_test_data(lib_spec="config/pegrna.json", libraries=["config/pegrna.tsv"],
+                           number=1000, library_size=100,
                            output=f"{root}/messy_pegrna", contamination_rate=0.05,
                            recombination_rate=0.05, mismatch_rate=0.05,
                            sub_rate=0.01, indel_rate=0.001)
+        print("done")
+
+    if not os.path.exists(f"{root}/comb_pegrna.fq"):
+        print("    Combinatorial pegRNA library... ", end="")
+        generate_test_data(lib_spec="config/pegrna.json",
+                           libraries=["config/pegrna_spacer.tsv", "config/pegrna_target.tsv"],
+                           number=1000, library_size=200,
+                           output=f"{root}/comb_pegrna", contamination_rate=0,
+                           recombination_rate=0, mismatch_rate=0,
+                           sub_rate=0, indel_rate=0)
+        print("done")
+
+    if not os.path.exists(f"{root}/mutant_comb_pegrna.fq"):
+        print("    Mutated combinatorial pegRNA library... ", end="")
+        generate_test_data(lib_spec="config/pegrna.json",
+                           libraries=["config/pegrna_spacer.tsv", "config/pegrna_target.tsv"],
+                           number=1000, library_size=200,
+                           output=f"{root}/mutant_comb_pegrna", contamination_rate=0.05,
+                           recombination_rate=0, mismatch_rate=0.01,
+                           sub_rate=0.01, indel_rate=0)
         print("done")
 
     print("\nRunning main tests:")
@@ -113,8 +139,10 @@ def main():
         ["inframe", "pattern", "align"],
         ["exact", "hamming", "bounded-levenshtein", "levenshtein"],
         ["perfect_grna", "mutant_grna_sensor", "indel_grna_sensor", "indel_grna_sensor",
-         "recombined_grna_sensor", "mutant_pegrna", "messy_pegrna"]
+         "recombined_grna_sensor", "mutant_pegrna", "messy_pegrna", "comb_pegrna",
+         "mutant_comb_pegrna"]
     )
+
     lib_specs = {
         "perfect_grna": "grna",
         "mutant_grna_sensor": "grna_sensor",
@@ -122,24 +150,41 @@ def main():
         "indel_grna_sensor": "grna_sensor",
          "recombined_grna_sensor": "grna_sensor",
          "mutant_pegrna": "pegrna",
-         "messy_pegrna": "pegrna"
+         "messy_pegrna": "pegrna",
+         "comb_pegrna": "pegrna",
+         "mutant_comb_pegrna": "pegrna"
     }
+
+    libs = {
+        "perfect_grna": ["config/grna.tsv"],
+        "mutant_grna_sensor": ["config/grna_sensor.tsv"],
+        "indel_grna_sensor": ["config/grna_sensor.tsv"],
+        "indel_grna_sensor": ["config/grna_sensor.tsv"],
+         "recombined_grna_sensor": ["config/grna_sensor.tsv"],
+         "mutant_pegrna": ["config/pegrna.tsv"],
+         "messy_pegrna": ["config/pegrna.tsv"],
+         "comb_pegrna": ["config/pegrna_spacer.tsv", "config/pegrna_target.tsv"],
+         "mutant_comb_pegrna": ["config/pegrna_spacer.tsv", "config/pegrna_target.tsv"]
+    }
+
+    exp_errors_inframe = ["mutant_pegrna", "messy_pegrna", "comb_pegrna", "mutant_comb_pegrna"]
+
     for (mode, dist, lib) in param_combs:
-        expected_code = 1 if mode == "inframe" and lib in ["mutant_pegrna", "messy_pegrna"] else 0
+        expected_code = 1 if mode == "inframe" and lib in exp_errors_inframe else 0
         spec = f"config/{lib_specs[lib]}.json"
-        lib = f"config/{lib_specs[lib]}.tsv"
+        lib_tsvs = libs[lib]
 
         run_test(f"{mode} {dist} {lib} single end", f_file=f"{root}/{lib}.fq",
                  output=f"{root}/params:{mode}:{dist}:{lib}:single:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
-                 lib_spec=spec, library=[lib],
+                 lib_spec=spec, library=lib_tsvs,
                  expected_code=expected_code)
 
         run_test(f"{mode} {dist} {lib} paired end", f_file=f"{root}/{lib}_forward.fq",
                  r_file=f"{root}/{lib}_reverse.fq",
                  output=f"{root}/params:{mode}:{dist}:{lib}:paired:1",
                  mode=mode, metric=dist, verbose=True, sort=True,
-                 lib_spec=spec, library=[lib],
+                 lib_spec=spec, library=lib_tsvs,
                  expected_code=expected_code)
 
     for threads in [2, 4, 6]:

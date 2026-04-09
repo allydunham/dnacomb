@@ -37,7 +37,7 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
         args.append("--overwrite")
 
     if library is not None:
-        args.append("--library-counts")
+        args.append("--library")
         args.extend(library)
 
     if group is not None:
@@ -50,6 +50,9 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
 
     if additional_args is not None:
         args.extend(additional_args)
+
+    # Add this to make sure F/R are properly identified
+    args.append("--")
 
     args.append(f_file)
     if r_file is not None:

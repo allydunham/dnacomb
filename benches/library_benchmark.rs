@@ -1,11 +1,11 @@
 //! Benchmark LibSpec/Library lookup performance
 use bio::bio_types::sequence::Sequence;
 use criterion::{Criterion, criterion_group, criterion_main};
-use dnacomb::lib_spec;
+use dnacomb::library;
 use std::collections::HashMap;
 
 fn bench_lookup(c: &mut Criterion) {
-    let lib = lib_spec::Library::from_file("config/pegrna.tsv", HashMap::new(), 3)
+    let lib = library::SubLibrary::from_file("config/pegrna.tsv", HashMap::new(), 3)
         .expect("Expect library to load correctly");
 
     let exact_match: Sequence = vec![
@@ -23,8 +23,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &exact_match,
-                lib_spec::DistanceMetric::Hamming,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::Hamming,
+                library::PartialMatching::Full,
             );
         });
     });
@@ -34,8 +34,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &exact_match,
-                lib_spec::DistanceMetric::Levenshtein,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::Levenshtein,
+                library::PartialMatching::Full,
             );
         });
     });
@@ -45,8 +45,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &exact_match,
-                lib_spec::DistanceMetric::BoundedLevenshtein,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::BoundedLevenshtein,
+                library::PartialMatching::Full,
             );
         });
     });
@@ -56,8 +56,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &partial_match,
-                lib_spec::DistanceMetric::Hamming,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::Hamming,
+                library::PartialMatching::Full,
             );
         });
     });
@@ -67,8 +67,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &partial_match,
-                lib_spec::DistanceMetric::Levenshtein,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::Levenshtein,
+                library::PartialMatching::Full,
             );
         });
     });
@@ -78,8 +78,8 @@ fn bench_lookup(c: &mut Criterion) {
             let _ = lib.lookup(
                 "extension",
                 &partial_match,
-                lib_spec::DistanceMetric::BoundedLevenshtein,
-                lib_spec::PartialMatching::Full,
+                library::DistanceMetric::BoundedLevenshtein,
+                library::PartialMatching::Full,
             );
         });
     });

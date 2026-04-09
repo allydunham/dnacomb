@@ -6,7 +6,7 @@ use bio::bio_types::sequence::Sequence;
 use std::sync::Arc;
 
 use crate::errors::seq_to_string_or_log;
-use crate::lib_spec::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
+use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 
 /// Key identifying an observed Region
 ///

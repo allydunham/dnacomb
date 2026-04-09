@@ -67,7 +67,7 @@ test_pair <- function(observed, expected) {
       bind_rows(all_obs, .)
   }
   
-  all_obs
+  mutate(all_obs, combination_status = replace_na(combination_status, "missed"))
 }
 quiet_test <- purrr::quietly(test_pair)
 
@@ -83,7 +83,8 @@ category_colours <- c(
   "match" = "green", "exact_match" = "green", "nearest_match" = "darkgreen",
   "mismatch" = "orange", "nonmatch" = "red", 
   "recombination" = "blue", "exact_recombination" = "blue", "nearest_recombination" = "darkblue",
-  "low_mean_quality" = "brown", "bad_alignment" = "grey", "multimatch" = "purple"
+  "low_mean_quality" = "brown", "bad_alignment" = "grey", "multimatch" = "purple",
+  "missed" = "black"
 )
 
 p_all_scatter <- filter(test_counts, split == "all_regions", threads == 1) %>%

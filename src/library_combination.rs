@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::combination::CombinationMatch;
 use crate::errors::LibraryError;
-use crate::lib_spec::Library;
+use crate::library::Library;
 use crate::region::RegionMatch;
 use crate::seqs::ReadGroup;
 

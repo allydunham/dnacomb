@@ -11,7 +11,8 @@ use std::str;
 use dnacomb::ObservedCombinations;
 use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
-use dnacomb::lib_spec::{DistanceMetric, Library, LibrarySpec};
+use dnacomb::lib_spec::LibrarySpec;
+use dnacomb::library::{DistanceMetric, Library};
 use dnacomb::logging::ProgressStyle;
 use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat, SeqPath};
 
@@ -114,7 +115,7 @@ struct Cli {
     group: Option<String>,
 
     /// Calculate similarity to oligo library(s) and output an additional table of library counts
-    #[arg(short = 'c', long, help_heading = "Library Comparison")]
+    #[arg(short = 'c', long, num_args = 1.., value_delimiter = ' ', help_heading = "Library Comparison")]
     library: Option<Vec<String>>,
 
     /// Distance metric to use for library comparison. Hamming counts the number of mismatches
@@ -177,7 +178,12 @@ struct Cli {
     pattern_tolerance: u64,
 
     /// Match score for alignment
-    #[arg(long, default_value_t = 6, allow_hyphen_values = true, help_heading = "Alignment")]
+    #[arg(
+        long,
+        default_value_t = 6,
+        allow_hyphen_values = true,
+        help_heading = "Alignment"
+    )]
     match_score: i32,
 
     /// Match score against Ns in alignment
@@ -307,7 +313,13 @@ fn run(args: Cli) -> Result<(), Error> {
 
     // Load library specification
     let lib_spec: Option<LibrarySpec> = match &args.library_spec {
-        Some(lib_spec) => Some(LibrarySpec::from_file(lib_spec, args.forward_start, args.forward_length, args.reverse_start, args.reverse_length)?),
+        Some(lib_spec) => Some(LibrarySpec::from_file(
+            lib_spec,
+            args.forward_start,
+            args.forward_length,
+            args.reverse_start,
+            args.reverse_length,
+        )?),
         None => None,
     };
 
@@ -332,15 +344,14 @@ fn run(args: Cli) -> Result<(), Error> {
             info!("No library counts requested");
         }
         (Some(_), None) => {
-            library = None;
             error!(
                 "Library TSV(s) supplied but no LibSpec, which is required for library counts. Exiting"
             );
             exit(1)
         }
         (Some(libs), Some(spec)) => {
-            library = Library::from_lib_spec(spec, args.max_distance)?;
-            info!("Compiled library {:?}", spec.library.as_ref().unwrap());
+            library = Some(Library::from_files(&libs, spec, args.max_distance)?);
+            info!("Compiled library from files: {:?}", libs.join(", "));
         }
     };
 
@@ -404,13 +415,6 @@ fn run(args: Cli) -> Result<(), Error> {
 
     if counts.is_empty() && counts.total_filtered() > 0 {
         warn!("All reads filtered. Check input files and filter settings.");
-    }
-
-    if args.library_counts && library.is_none() {
-        warn!(
-            "Can't calculate library counts without a library specification that includes a \
-             library file. Skipping library comparison."
-        )
     }
 
     match library {

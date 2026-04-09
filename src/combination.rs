@@ -87,7 +87,8 @@ impl ObservedCombination {
         max_matches: usize,
     ) -> CombinationMatch {
         let mut comb_dist: u64 = 0;
-        let mut candidate_matches: Option<HashSet<usize>> = None;
+        let mut candidate_matches: Vec<Option<HashSet<usize>>> =
+            vec![None; library.sublibraries.len()];
 
         for reg_id in region_ids {
             let reg = match self.regions.get(reg_id) {
@@ -103,6 +104,11 @@ impl ObservedCombination {
                 }
             };
 
+            let sublib = match library.get_sublibrary_index(reg_id) {
+                Ok(x) => x,
+                Err(_) => continue, // If region doesn't match a sublib can skip it,
+            };
+
             match &reg.nearest_matches {
                 RegionMatch::Uncompared => panic!("Region uncompared despite just comparing"),
                 RegionMatch::Unmatched | RegionMatch::Overmatched { .. } => {
@@ -116,9 +122,9 @@ impl ObservedCombination {
                     distance,
                 } => {
                     comb_dist += distance;
-                    match candidate_matches {
+                    match candidate_matches[sublib] {
                         // If this is the first region, candidates are all it's inds
-                        None => candidate_matches = Some(seq_match.inds.clone()),
+                        None => candidate_matches[sublib] = Some(seq_match.inds.clone()),
 
                         // Otherwise remove any inds it doesn't overlap to narrow down
                         Some(ref mut x) => {
@@ -139,9 +145,9 @@ impl ObservedCombination {
                     }
 
                     // Set as the search space or remove anything not overlapping it
-                    match candidate_matches {
+                    match candidate_matches[sublib] {
                         None => {
-                            candidate_matches = Some(match_ind_union);
+                            candidate_matches[sublib] = Some(match_ind_union);
                         }
                         Some(ref mut x) => {
                             x.retain(|i| match_ind_union.contains(i));
@@ -151,26 +157,40 @@ impl ObservedCombination {
             }
         }
 
-        match candidate_matches {
-            None => CombinationMatch::Nonmatch, // Only occurs if no regions (e.g. empty reads)
-            Some(x) => {
-                if x.len() == 1 {
-                    CombinationMatch::Match {
-                        // Can unwrap because we know x.len() == 1
-                        ind: *x.iter().next().unwrap(),
-                        distance: comb_dist,
-                    }
-                } else if x.is_empty() {
-                    CombinationMatch::Recombination {
-                        distance: comb_dist,
-                    }
-                } else {
-                    CombinationMatch::MultiMatch {
-                        inds: x,
-                        distance: comb_dist,
-                    }
-                }
-            }
+        // If all sublibs haven't matched (e.g. empty read) is a nonmatch
+        if candidate_matches.iter().all(|x| x.is_none()) {
+            return CombinationMatch::Nonmatch;
+        }
+
+        // If any of the matched libraries have no remaining indeces must be a recombination
+        if candidate_matches.iter().any(|x| match x {
+            Some(x) => x.is_empty(),
+            None => false,
+        }) {
+            return CombinationMatch::Recombination {
+                distance: comb_dist,
+            };
+        }
+
+        // If all None (e.g. no regions from that lib) or length 1 then a full match
+        if candidate_matches.iter().all(|x| match x {
+            Some(x) => x.len() == 1,
+            None => true,
+        }) {
+            return CombinationMatch::Match {
+                // Can unwrap because we know x.len() == 1
+                inds: candidate_matches
+                    .iter()
+                    .map(|x| x.as_ref().map(|x| *x.iter().next().unwrap()))
+                    .collect(),
+                distance: comb_dist,
+            };
+        }
+
+        // Only remaining case is a multi-match with a mix of match lengths
+        CombinationMatch::MultiMatch {
+            inds: candidate_matches,
+            distance: comb_dist,
         }
     }
 
@@ -182,7 +202,7 @@ impl ObservedCombination {
         library: Option<&Library>,
     ) -> Result<String, LibraryError> {
         // Line has \t separated format:
-        // group forward reverse[{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
+        // group forward reverse [{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
 
         let mut output = String::with_capacity(100 * self.counts.len());
 
@@ -237,11 +257,17 @@ pub enum CombinationMatch {
     /// Comparison hasn't occured
     Uncompared,
 
-    /// Full match with a specific library member and the distance
-    Match { ind: usize, distance: u64 },
+    /// Full match with a specific library member/combination of sub-library members. None means that sublibrary
+    Match {
+        inds: Vec<Option<usize>>,
+        distance: u64,
+    },
 
-    /// Fully matches multiple library members and the distance
-    MultiMatch { inds: HashSet<usize>, distance: u64 },
+    /// Fully matches multiple library members for at least one sublibrary
+    MultiMatch {
+        inds: Vec<Option<HashSet<usize>>>,
+        distance: u64,
+    },
 
     /// Partially matches multiple library members and the total distance
     Recombination { distance: u64 },
@@ -254,35 +280,66 @@ pub enum CombinationMatch {
 }
 
 impl CombinationMatch {
+    /// Extract the relevant ID string from the match
+    fn id_string(&self, library: &Library) -> Result<String, LibraryError> {
+        Ok(match self {
+            CombinationMatch::Match { inds, .. } => inds
+                .iter()
+                .enumerate()
+                .map(|(sublib, ind)| match ind {
+                    Some(ind) => library.get_name_index(sublib, *ind),
+                    None => Ok("".to_string()),
+                })
+                .collect::<Result<Vec<String>, LibraryError>>()?
+                .join("/"),
+
+            CombinationMatch::MultiMatch { inds, .. } => {
+                let mut names = Vec::with_capacity(inds.len());
+
+                for (sublib, inds) in inds.iter().enumerate() {
+                    names.push(match inds {
+                        Some(inds) => inds
+                            .iter()
+                            .map(|ind| library.get_name_index(sublib, *ind))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .join(","),
+                        None => "".to_string(),
+                    });
+                }
+
+                names.join("/")
+            }
+            _ => "".to_string(),
+        })
+    }
+
     /// Output a TSV chunk for the combination match status
     ///
     /// Has the \t separated format:
     /// status combination_distance combinations_in_library combination_indexes
     fn to_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
+        let lib = match library {
+            Some(x) => x,
+            None => return Ok("uncompared\t\t\t\t".to_string()), // No library means must be uncompared
+        };
+
+        let name = self.id_string(lib)?;
+
         Ok(match self {
             CombinationMatch::Uncompared => "uncompared\t\t\t\t".to_string(),
-            CombinationMatch::Match { ind, distance } => {
-                let name = match library {
-                    None => ind.to_string(),
-                    Some(l) => l.get_name(*ind)?,
-                };
-                format!("match\t{distance}\t1\t{name}\t",)
-            }
+            CombinationMatch::Match { distance, .. } => format!("match\t{distance}\t1\t{name}\t"),
             CombinationMatch::MultiMatch { inds, distance } => {
-                let names = match library {
-                    None => inds
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    Some(l) => inds
-                        .iter()
-                        .map(|x| l.get_name(*x))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(","),
-                };
+                // Number of matches is the product of sub-library matches as all combinations possible
+                let n_matches = inds
+                    .iter()
+                    .map(|x| match x {
+                        Some(x) => x.len(),
+                        None => 1,
+                    })
+                    .reduce(|x, y| x * y)
+                    .unwrap_or(0);
 
-                format!("match\t{}\t{}\t{}\t", distance, inds.len(), names)
+                format!("match\t{}\t{}\t{}\t", distance, n_matches, name)
             }
             CombinationMatch::Recombination { distance } => {
                 format!("recombination\t{distance}\t0\t\t",)
@@ -297,33 +354,32 @@ impl CombinationMatch {
     /// Has the \t separated format:
     /// status combinations_in_library combination_indexes
     pub fn to_summary_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
+        let lib = match library {
+            Some(x) => x,
+            None => return Ok("uncompared\t\t\t".to_string()), // No library means must be uncompared
+        };
+
+        let name = self.id_string(lib)?;
+
         Ok(match self {
             CombinationMatch::Uncompared => "uncompared\t\t\t".to_string(),
-            CombinationMatch::Match { ind, .. } => {
-                let name = match library {
-                    None => ind.to_string(),
-                    Some(l) => l.get_name(*ind)?,
-                };
-
-                format!("match\t1\t{name}\t",)
-            }
+            CombinationMatch::Match { .. } => format!("match\t1\t{name}\t"),
             CombinationMatch::MultiMatch { inds, .. } => {
-                let names = match library {
-                    None => inds
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    Some(l) => inds
-                        .iter()
-                        .map(|x| l.get_name(*x))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(","),
-                };
+                // Number of matches is the product of sub-library matches as all combinations possible
+                let n_matches = inds
+                    .iter()
+                    .map(|x| match x {
+                        Some(x) => x.len(),
+                        None => 1,
+                    })
+                    .reduce(|x, y| x * y)
+                    .unwrap_or(0);
 
-                format!("match\t{}\t{}\t", inds.len(), names)
+                format!("match\t{}\t{}\t", n_matches, name)
             }
-            CombinationMatch::Recombination { .. } => "recombination\t0\t\t".to_string(),
+            CombinationMatch::Recombination { .. } => {
+                "recombination\t0\t\t".to_string()
+            }
             CombinationMatch::Mismatch => "mismatch\t0\t\t".to_string(),
             CombinationMatch::Nonmatch => "nonmatch\t0\t\t".to_string(),
         })
@@ -336,6 +392,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    use crate::SubLibrary;
     use crate::region::RegionCompleteness;
 
     // Library members
@@ -513,7 +570,7 @@ mod tests {
     }
 
     /// Construct a library to compare to
-    fn make_library() -> crate::lib_spec::Library {
+    fn make_library() -> Library {
         use std::collections::HashMap;
 
         let mut map: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
@@ -534,7 +591,9 @@ mod tests {
         );
 
         // default_max_distance is only relevant for edit-distance modes; 2 is fine.
-        crate::lib_spec::Library::new(map, ids, region_max, 2).expect("library builds")
+        let sublib = SubLibrary::new(map, ids, region_max, 2);
+
+        Library::new(vec![sublib.expect("Sublib failed")]).expect("library builds")
     }
 
     /// Generate observed combination
@@ -559,10 +618,10 @@ mod tests {
 
         let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3);
 
-        match (&tc.expected, got) {
-            (Expected::Match { name, distance }, CombinationMatch::Match { ind, distance: d }) => {
+        match (&tc.expected, got.clone()) {
+            (Expected::Match { name, distance }, CombinationMatch::Match { distance: d, .. }) => {
                 assert_eq!(d, *distance, "[{}] distance mismatch", tc.name);
-                let got_name = lib.get_name(ind).expect("name exists");
+                let got_name = got.id_string(&lib).expect("name exists");
                 assert_eq!(got_name, *name, "[{}] matched name mismatch", tc.name);
             }
             (
@@ -571,7 +630,13 @@ mod tests {
             ) => {
                 assert_eq!(d, *distance, "[{}] distance mismatch", tc.name);
                 assert_eq!(
-                    inds.len(),
+                    inds.iter()
+                        .map(|x| match x {
+                            Some(x) => x.len(),
+                            None => 1,
+                        })
+                        .reduce(|x, y| x * y)
+                        .unwrap_or(0),
                     *inds_len,
                     "[{}] candidate set size mismatch",
                     tc.name

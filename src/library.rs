@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::lib_spec::LibrarySpec;
 use crate::errors::LibraryError;
+use crate::lib_spec::LibrarySpec;
 
 /// A compiled sequence library
 ///
@@ -32,19 +32,16 @@ impl Library {
             let new_regions = lib.regions();
 
             for r in new_regions {
-                match regions.insert(r.to_string(), i) {
-                    Some(_) => return Err(LibraryError::DuplicateSubLibraryRegion { id: r.to_string() }),
-                    None => {},
+                if regions.insert(r.to_string(), i).is_some() {
+                    return Err(LibraryError::DuplicateSubLibraryRegion { id: r.to_string() });
                 }
             }
         }
 
-        Ok(
-            Self {
-                regions,
-                sublibraries,
-            }
-        )
+        Ok(Self {
+            regions,
+            sublibraries,
+        })
     }
 
     #[allow(dead_code)]
@@ -53,14 +50,25 @@ impl Library {
         self.sublibraries.is_empty()
     }
 
-    /// Get the ID associated with an index for a given region
-    pub fn get_name(&self, region: &str, ind: usize) -> Result<String, LibraryError> {
-        let reg_ind = match self.regions.get(region) {
-            Some(x) => x,
-            None => return Err(LibraryError::MissingRegion { id: region.to_string() }),
-        };
+    pub fn get_sublibrary_index(&self, region: &str) -> Result<usize, LibraryError> {
+        match self.regions.get(region) {
+            Some(x) => Ok(*x),
+            None => {
+                Err(LibraryError::MissingRegion {
+                    id: region.to_string(),
+                })
+            }
+        }
+    }
 
-        self.sublibraries[*reg_ind].get_name(ind)
+    /// Get the ID associated with an index for a given region
+    pub fn get_name_region(&self, region: &str, ind: usize) -> Result<String, LibraryError> {
+        self.sublibraries[self.get_sublibrary_index(region)?].get_name(ind)
+    }
+
+    /// Get the ID associated with an index for a given sublibrary index
+    pub fn get_name_index(&self, sublib_index: usize, ind: usize) -> Result<String, LibraryError> {
+        self.sublibraries[sublib_index].get_name(ind)
     }
 
     /// Compare an observed sequence to the library
@@ -73,21 +81,19 @@ impl Library {
         metric: DistanceMetric,
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
-        let ind = match self.regions.get(region) {
-            Some(x) => x,
-            None => return Err(LibraryError::MissingRegion { id: region.to_string() }),
-        };
-
-        self.sublibraries[*ind].lookup(region, seq, metric, partial)
+        self.sublibraries[self.get_sublibrary_index(region)?].lookup(region, seq, metric, partial)
     }
 
     /// Import a Library from a series of TSV files
     pub fn from_files(
-        paths: &[&str],
-        lib_spec: LibrarySpec,
+        paths: &[String],
+        lib_spec: &LibrarySpec,
         default_max_distance: u64,
     ) -> Result<Library, LibraryError> {
-        let libs: Result<Vec<SubLibrary>, LibraryError> = paths.iter().map(|x| SubLibrary::from_file_with_lib_spec(x, &lib_spec, default_max_distance)).collect();
+        let libs: Result<Vec<SubLibrary>, LibraryError> = paths
+            .iter()
+            .map(|x| SubLibrary::from_file_with_lib_spec(x, lib_spec, default_max_distance))
+            .collect();
 
         Library::new(libs?)
     }
@@ -816,7 +822,8 @@ impl SubLibrary {
             });
         }
 
-        let lib: SubLibrary = SubLibrary::from_file(path, region_max_distance, default_max_distance)?;
+        let lib: SubLibrary =
+            SubLibrary::from_file(path, region_max_distance, default_max_distance)?;
 
         if !lib.library.keys().all(|x| spec_regions.contains(x)) {
             return Err(LibraryError::Library {

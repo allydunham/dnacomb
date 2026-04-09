@@ -13,7 +13,7 @@ use std::thread::scope;
 use crate::combination::{CombinationKey, CombinationMatch, ObservedCombination};
 use crate::errors::{LibraryError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
-use crate::lib_spec::{DistanceMetric, Library};
+use crate::library::{DistanceMetric, Library};
 use crate::library_combination::{LibraryCombination, LibraryCombinationKey};
 use crate::logging::{Progress, ProgressStyle};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
@@ -402,8 +402,8 @@ impl ObservedCombinations {
                         HashMap::from_iter(key.regions.clone()),
                         match &comb.library_matches {
                             CombinationMatch::Uncompared => CombinationMatch::Uncompared,
-                            CombinationMatch::Match { ind, .. } => CombinationMatch::Match {
-                                ind: *ind,
+                            CombinationMatch::Match { inds, .. } => CombinationMatch::Match {
+                                inds: inds.clone(),
                                 distance: 0,
                             },
                             CombinationMatch::MultiMatch { inds, .. } => {

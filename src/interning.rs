@@ -124,14 +124,14 @@ mod enabled {
                 let mut rev = self.reverse.write();
                 let pos = idx0 as usize;
 
-                if rev.len() == pos {
-                    rev.push(arc.clone());
-                } else if rev.len() < pos {
-                    // Extremely rare; keep safe
-                    rev.resize_with(pos, || Arc::<[u8]>::from(&b""[..]));
-                    rev.push(arc.clone());
-                } else {
-                    rev[pos] = arc.clone();
+                match rev.len().cmp(&pos) {
+                    std::cmp::Ordering::Less => {
+                        // Extremely rare; keep safe
+                        rev.resize_with(pos, || Arc::<[u8]>::from(&b""[..]));
+                        rev.push(arc.clone())
+                    },
+                    std::cmp::Ordering::Equal => rev.push(arc.clone()),
+                    std::cmp::Ordering::Greater => rev[pos] = arc.clone(),
                 }
             }
 
@@ -265,7 +265,7 @@ pub use disabled::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap};
+    use std::collections::HashMap;
 
     // Common tests for interning and non-interning backends
 
@@ -317,12 +317,18 @@ mod tests {
         fn seq_dedup_same_bytes_get_same_handle() {
             let a1 = seq_from_bytes(b"ACGT");
             let a2 = seq_from_bytes(b"ACGT");
-            assert_eq!(a1, a2, "interning enabled: identical bytes should dedupe to same handle");
+            assert_eq!(
+                a1, a2,
+                "interning enabled: identical bytes should dedupe to same handle"
+            );
 
             // Optional stronger check: resolve pointers are identical (same Arc allocation)
             let p1 = Arc::as_ptr(&seq_to_bytes(a1));
             let p2 = Arc::as_ptr(&seq_to_bytes(a2));
-            assert_eq!(p1, p2, "interning enabled: resolved Arc should be same allocation");
+            assert_eq!(
+                p1, p2,
+                "interning enabled: resolved Arc should be same allocation"
+            );
         }
 
         /// Test Groups get the same handle
@@ -330,7 +336,10 @@ mod tests {
         fn group_dedup_same_str_get_same_handle() {
             let g1 = group_from_str("x");
             let g2 = group_from_str("x");
-            assert_eq!(g1, g2, "interning enabled: identical group string should dedupe");
+            assert_eq!(
+                g1, g2,
+                "interning enabled: identical group string should dedupe"
+            );
         }
 
         /// Test regions get the same handle
@@ -338,7 +347,10 @@ mod tests {
         fn region_dedup_same_str_get_same_handle() {
             let r1 = region_from_str("r");
             let r2 = region_from_str("r");
-            assert_eq!(r1, r2, "interning enabled: identical region string should dedupe");
+            assert_eq!(
+                r1, r2,
+                "interning enabled: identical region string should dedupe"
+            );
         }
 
         /// Test SeqHandle niche optimisation is working
@@ -365,10 +377,7 @@ mod tests {
                 .map(|_| {
                     let inputs = inputs.clone();
                     thread::spawn(move || {
-                        inputs
-                            .iter()
-                            .map(|s| seq_from_bytes(s))
-                            .collect::<Vec<_>>()
+                        inputs.iter().map(|s| seq_from_bytes(s)).collect::<Vec<_>>()
                     })
                 })
                 .map(|j| j.join().unwrap())
@@ -378,8 +387,7 @@ mod tests {
             for t in 1..n_threads {
                 for i in 0..inputs.len() {
                     assert_eq!(
-                        handles_per_thread[0][i],
-                        handles_per_thread[t][i],
+                        handles_per_thread[0][i], handles_per_thread[t][i],
                         "enabled mode: same bytes should yield same handle across threads"
                     );
                 }
@@ -412,7 +420,10 @@ mod tests {
             // This test checks the semantic we rely on: identical sequences compare equal (important for HashMap keys).
             let a1 = seq_from_bytes(b"ACGT");
             let a2 = seq_from_bytes(b"ACGT");
-            assert_eq!(a1, a2, "disabled mode: identical bytes should still compare equal");
+            assert_eq!(
+                a1, a2,
+                "disabled mode: identical bytes should still compare equal"
+            );
         }
 
         /// Check ownership over round trip

@@ -23,16 +23,16 @@ pub mod errors;
 pub mod filters;
 pub mod interning;
 pub mod lib_spec;
+pub mod library;
 pub mod library_combination;
 pub mod logging;
 pub mod parsing;
 pub mod region;
 pub mod seqs;
 pub mod utils;
-pub mod library;
 
 // Re-Exports
 pub use combinations::ObservedCombinations;
 pub use counting::{CountMode, count_reads};
-pub use lib_spec::{LibrarySpec};
-pub use library::{SubLibrary};
+pub use lib_spec::LibrarySpec;
+pub use library::SubLibrary;

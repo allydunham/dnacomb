@@ -146,7 +146,13 @@ pub struct LibrarySpec {
 
 impl LibrarySpec {
     /// Read a LibrarySpec from a JSON file
-    pub fn from_file(path: &str, forward_start: Option<String>, forward_length: Option<u32>, reverse_start: Option<String>, reverse_length: Option<u32>) -> Result<LibrarySpec, LibSpecError> {
+    pub fn from_file(
+        path: &str,
+        forward_start: Option<String>,
+        forward_length: Option<u32>,
+        reverse_start: Option<String>,
+        reverse_length: Option<u32>,
+    ) -> Result<LibrarySpec, LibSpecError> {
         let json_str: String = read_to_string(path)?;
         let mut lib_spec: LibrarySpec = LibrarySpec::from_str(&json_str)?;
 

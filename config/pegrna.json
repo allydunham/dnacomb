@@ -1,9 +1,9 @@
 {
     "id": "pegRNA",
     "forward_start_region": "primer_f",
-    "forward_read_length": 150,
+    "forward_read_length": 200,
     "reverse_start_region": "primer_r",
-    "reverse_read_length": 150,
+    "reverse_read_length": 200,
     "regions": [
         {
             "id": "primer_f",

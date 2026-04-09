@@ -56,5 +56,5 @@ lasso       = { version = "0.7", optional = true, features = ["multi-threaded"] 
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
-name = "libspec_benchmark"
+name = "library_benchmark"
 harness = false
