@@ -5,7 +5,7 @@
 //! to these constructs, with lookup capabilities.
 use bio::alphabets::dna::revcomp;
 use bio::bio_types::sequence::Sequence;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -13,6 +13,23 @@ use std::fs::read_to_string;
 use std::str::FromStr;
 
 use crate::errors::{LibSpecError, seq_to_string_or_log};
+use crate::interning::{RegionID, region_id_from_str, region_id_to_str};
+
+fn serialize_region_id<S>(id: &RegionID, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let s = region_id_to_str(*id);
+    s.serialize(serializer)
+}
+
+fn deserialize_region_id<'de, D>(deserializer: D) -> Result<RegionID, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(region_id_from_str(&s))
+}
 
 /// LibSpec region types
 ///
@@ -29,7 +46,11 @@ pub enum Region {
     /// max_distance: maximum number of mismatches for an observed sequence to be considered
     /// a library match
     Library {
-        id: String,
+        #[serde(
+            deserialize_with = "deserialize_region_id",
+            serialize_with = "serialize_region_id"
+        )]
+        id: RegionID,
         min_length: usize,
         max_length: usize,
         max_distance: Option<u64>,
@@ -39,12 +60,19 @@ pub enum Region {
     ///
     /// id: region id
     /// seq: expected sequence
-    Fixed { id: String, seq: String },
+    Fixed {
+        #[serde(
+            deserialize_with = "deserialize_region_id",
+            serialize_with = "serialize_region_id"
+        )]
+        id: RegionID,
+        seq: String,
+    },
 }
 
 impl Region {
     /// Get the region ID
-    pub fn id(&self) -> &String {
+    pub fn id(&self) -> &RegionID {
         match self {
             Region::Library { id, .. } => id,
             Region::Fixed { id, .. } => id,
@@ -80,7 +108,7 @@ impl Region {
             } => {
                 if min_length > max_length {
                     return Err(LibSpecError::MinGreaterThanMax {
-                        id: id.clone(),
+                        id: *id,
                         min: *min_length,
                         max: *max_length,
                     });
@@ -129,13 +157,21 @@ pub struct LibrarySpec {
     pub id: String,
 
     /// Id of the region forward reads start from
-    pub forward_start_region: String,
+    #[serde(
+        deserialize_with = "deserialize_region_id",
+        serialize_with = "serialize_region_id"
+    )]
+    pub forward_start_region: RegionID,
 
     /// Length of forward reads
     pub forward_read_length: u32,
 
     /// Region reverse reads start in
-    pub reverse_start_region: String,
+    #[serde(
+        deserialize_with = "deserialize_region_id",
+        serialize_with = "serialize_region_id"
+    )]
+    pub reverse_start_region: RegionID,
 
     /// Reverse read length
     pub reverse_read_length: u32,
@@ -158,7 +194,7 @@ impl LibrarySpec {
 
         // Optionally override read structure
         if let Some(x) = forward_start {
-            lib_spec.forward_start_region = x
+            lib_spec.forward_start_region = region_id_from_str(&x)
         }
 
         if let Some(x) = forward_length {
@@ -166,7 +202,7 @@ impl LibrarySpec {
         }
 
         if let Some(x) = reverse_start {
-            lib_spec.reverse_start_region = x
+            lib_spec.reverse_start_region = region_id_from_str(&x)
         }
 
         if let Some(x) = reverse_length {
@@ -179,18 +215,18 @@ impl LibrarySpec {
     }
 
     /// Fetch a specified region
-    pub fn get_region(&self, id: &str) -> Result<&Region, LibSpecError> {
+    pub fn get_region(&self, id: &RegionID) -> Result<&Region, LibSpecError> {
         for r in &self.regions {
             if r.id() == id {
                 return Ok(r);
             }
         }
 
-        Err(LibSpecError::MissingRegion { id: id.to_string() })
+        Err(LibSpecError::MissingRegion { id: *id })
     }
 
     /// Get a HashMap of max_distances per region
-    pub fn get_max_distances(&self) -> HashMap<String, u64> {
+    pub fn get_max_distances(&self) -> HashMap<RegionID, u64> {
         let mut max_dists = HashMap::new();
 
         for r in &self.regions {
@@ -201,7 +237,7 @@ impl LibrarySpec {
                 } => match max_distance {
                     None => (),
                     Some(x) => {
-                        max_dists.insert(id.clone(), *x);
+                        max_dists.insert(*id, *x);
                     }
                 },
             }
@@ -229,19 +265,17 @@ impl LibrarySpec {
             Err(err) => errors.push(format!("{}", err)),
         }
 
-        let mut observed_regions: HashSet<String> = HashSet::new();
+        let mut observed_regions: HashSet<RegionID> = HashSet::new();
 
         // Validate each region
         for region in &self.regions {
             if observed_regions.contains(region.id()) {
                 errors.push(format!(
                     "{}",
-                    LibSpecError::DuplicateRegion {
-                        id: region.id().to_string()
-                    }
+                    LibSpecError::DuplicateRegion { id: *region.id() }
                 ))
             }
-            observed_regions.insert(region.id().clone());
+            observed_regions.insert(*region.id());
 
             match region.validate() {
                 Ok(_) => {}
@@ -256,9 +290,7 @@ impl LibrarySpec {
                 if last_variable {
                     errors.push(format!(
                         "{}",
-                        LibSpecError::NeighbouringVariable {
-                            id: region.id().to_string()
-                        }
+                        LibSpecError::NeighbouringVariable { id: *region.id() }
                     ))
                 }
                 last_variable = true;
@@ -378,7 +410,7 @@ impl LibrarySpec {
     ///
     /// This function returns a tuple of the start/end indeces of the passed region, as a half
     /// open interval [a, b) as used for rust vector slices.
-    pub fn template_position(&self, region: &str) -> Result<(usize, usize), LibSpecError> {
+    pub fn template_position(&self, region: &RegionID) -> Result<(usize, usize), LibSpecError> {
         let mut start: usize = 0;
 
         for r in &self.regions {
@@ -388,17 +420,15 @@ impl LibrarySpec {
             start += r.len()
         }
 
-        Err(LibSpecError::MissingRegion {
-            id: region.to_string(),
-        })
+        Err(LibSpecError::MissingRegion { id: *region })
     }
 
     /// Identify the variable regions in the library
-    pub fn variable_regions(&self) -> Vec<String> {
+    pub fn variable_regions(&self) -> Vec<RegionID> {
         self.regions
             .iter()
             .filter(|x| x.is_variable())
-            .map(|x| x.id().clone())
+            .map(|x| *x.id())
             .collect()
     }
 
@@ -460,7 +490,7 @@ impl LibrarySpec {
     /// it is `Some<vec<u8>>` up to len long (less if a variable region or the end is reached).
     pub fn flanking_regions(
         &self,
-        region: &str,
+        region: &RegionID,
         len: usize,
     ) -> Result<FlankingSequences, LibSpecError> {
         let reg_ind = self

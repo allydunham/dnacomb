@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::combination::CombinationMatch;
 use crate::errors::LibraryError;
+use crate::interning::RegionID;
 use crate::region::RegionMatch;
 use crate::seqs::ReadGroup;
 
@@ -13,11 +14,11 @@ use crate::seqs::ReadGroup;
 /// Contains a subset of library match information for use as a hash key
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct LibraryCombinationKey {
-    pub regions: Vec<(String, RegionMatch)>,
+    pub regions: Vec<(RegionID, RegionMatch)>,
 }
 
 impl LibraryCombinationKey {
-    pub fn new(regions: Vec<(String, RegionMatch)>) -> Self {
+    pub fn new(regions: Vec<(RegionID, RegionMatch)>) -> Self {
         Self { regions }
     }
 }
@@ -32,14 +33,14 @@ pub struct LibraryCombination {
     counts: HashMap<ReadGroup, u32>,
 
     /// RegionMatches determine the connection to the library
-    regions: HashMap<String, RegionMatch>,
+    regions: HashMap<RegionID, RegionMatch>,
 
     /// Status and result of comparison with the expected library of sequences
     library_matches: CombinationMatch,
 }
 
 impl LibraryCombination {
-    pub fn new(regions: HashMap<String, RegionMatch>, library_matches: CombinationMatch) -> Self {
+    pub fn new(regions: HashMap<RegionID, RegionMatch>, library_matches: CombinationMatch) -> Self {
         Self {
             counts: HashMap::new(),
             regions,
@@ -64,7 +65,7 @@ impl LibraryCombination {
 
     /// Generate tsv line(s) corresponding to this combination. Each read group
     /// the combination is observed is given a separate line
-    pub fn to_tsv(&self, region_ids: &Vec<String>) -> Result<String, LibraryError> {
+    pub fn to_tsv(&self, region_ids: &Vec<RegionID>) -> Result<String, LibraryError> {
         // Line has \t separated format:
         // group [{region} for each region] status combinations_in_library combination_indexes count
 

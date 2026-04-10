@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::errors::LibraryError;
-use crate::interning::{LibraryID, library_id_from_str};
+use crate::interning::{LibraryID, RegionID, library_id_from_str, region_id_from_str};
 use crate::lib_spec::LibrarySpec;
 
 /// A compiled sequence library
@@ -21,7 +21,7 @@ use crate::lib_spec::LibrarySpec;
 /// Dispatces to sub-libraries for matching each subset of regions
 #[derive(Debug)]
 pub struct Library {
-    pub regions: HashMap<String, usize>,
+    pub regions: HashMap<RegionID, usize>,
     pub sublibraries: Vec<SubLibrary>,
 }
 
@@ -33,8 +33,8 @@ impl Library {
             let new_regions = lib.regions();
 
             for r in new_regions {
-                if regions.insert(r.to_string(), i).is_some() {
-                    return Err(LibraryError::DuplicateSubLibraryRegion { id: r.to_string() });
+                if regions.insert(*r, i).is_some() {
+                    return Err(LibraryError::DuplicateSubLibraryRegion { id: *r });
                 }
             }
         }
@@ -51,12 +51,10 @@ impl Library {
         self.sublibraries.is_empty()
     }
 
-    pub fn get_sublibrary_index(&self, region: &str) -> Result<usize, LibraryError> {
+    pub fn get_sublibrary_index(&self, region: &RegionID) -> Result<usize, LibraryError> {
         match self.regions.get(region) {
             Some(x) => Ok(*x),
-            None => Err(LibraryError::MissingRegion {
-                id: region.to_string(),
-            }),
+            None => Err(LibraryError::MissingRegion { id: *region }),
         }
     }
 
@@ -65,7 +63,7 @@ impl Library {
     /// Itentify the subpool a candidate is from and dispatch to the appropriate SubLibrary
     pub fn lookup(
         &self,
-        region: &str,
+        region: &RegionID,
         seq: &[u8],
         metric: DistanceMetric,
         partial: PartialMatching,
@@ -103,21 +101,21 @@ impl Library {
 pub struct SubLibrary {
     /// Full sequences for each member of the library, divided into region vectors. The full nth
     /// sequence contains the nth sequence from each region vector
-    pub library: HashMap<String, Vec<Arc<LibraryRegion>>>,
+    pub library: HashMap<RegionID, Vec<Arc<LibraryRegion>>>,
 
     /// Unique sequences for each region, mapping back to which full combinations they are part
     /// of by index
-    pub regions: HashMap<String, Vec<Arc<LibraryRegion>>>,
+    pub regions: HashMap<RegionID, Vec<Arc<LibraryRegion>>>,
 
     /// Library member IDs
     pub ids: Vec<LibraryID>,
 
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
-    exact_matches: HashMap<String, HashMap<Sequence, Arc<LibraryRegion>>>,
+    exact_matches: HashMap<RegionID, HashMap<Sequence, Arc<LibraryRegion>>>,
 
     /// Max distance to consider for each region
-    region_max_distance: HashMap<String, u64>,
+    region_max_distance: HashMap<RegionID, u64>,
 
     /// Default max distance to consider
     default_max_distance: u64,
@@ -182,9 +180,9 @@ pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option
 
 impl SubLibrary {
     pub fn new(
-        library: HashMap<String, Vec<Sequence>>,
+        library: HashMap<RegionID, Vec<Sequence>>,
         ids: Option<Vec<String>>,
-        region_max_distance: HashMap<String, u64>,
+        region_max_distance: HashMap<RegionID, u64>,
         default_max_distance: u64,
         default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
@@ -256,7 +254,7 @@ impl SubLibrary {
 
             if regions
                 .insert(
-                    key.clone(),
+                    *key,
                     Vec::from_iter(reg_map.into_iter().map(|x| {
                         Arc::new(LibraryRegion {
                             sequence: x.0,
@@ -267,16 +265,14 @@ impl SubLibrary {
                 )
                 .is_some()
             {
-                return Err(LibraryError::DuplicateRegion {
-                    id: key.to_string(),
-                });
+                return Err(LibraryError::DuplicateRegion { id: *key });
             }
         }
 
         // Compile Exact matches HashMap
         let mut exact_matches = HashMap::new();
         for key in regions.keys() {
-            exact_matches.insert(key.clone(), HashMap::new());
+            exact_matches.insert(*key, HashMap::new());
             for reg in regions
                 .get(key)
                 .expect("Key known to be in regions HashMap")
@@ -304,7 +300,7 @@ impl SubLibrary {
             }
 
             library_compiled.insert(
-                key.clone(),
+                key,
                 rc_vec.into_iter().map(
                     |x| x.expect("All library members should have been assigned Some(Arc<LibraryRegion>) by construction")).collect()
             );
@@ -341,7 +337,7 @@ impl SubLibrary {
     }
 
     /// Get the names of regions in the sublibrary
-    pub fn regions(&self) -> Vec<&String> {
+    pub fn regions(&self) -> Vec<&RegionID> {
         self.regions.keys().collect()
     }
 
@@ -365,7 +361,7 @@ impl SubLibrary {
     /// Levenshtein but both options are available in case of edge cases.
     pub fn lookup(
         &self,
-        region: &str,
+        region: &RegionID,
         seq: &[u8],
         metric: DistanceMetric,
         partial: PartialMatching,
@@ -384,9 +380,7 @@ impl SubLibrary {
         let regions: &Vec<Arc<LibraryRegion>> = match self.regions.get(region) {
             Some(x) => x,
             None => {
-                return Err(LibraryError::MissingRegion {
-                    id: region.to_string(),
-                });
+                return Err(LibraryError::MissingRegion { id: *region });
             }
         };
 
@@ -824,9 +818,12 @@ impl SubLibrary {
         let spec_regions = lib_spec.variable_regions();
         let region_max_distance = lib_spec.get_max_distances();
 
-        if lib_spec.variable_regions().contains(&"_id".to_string()) {
+        if lib_spec
+            .variable_regions()
+            .contains(&region_id_from_str("_id"))
+        {
             return Err(LibraryError::Library {
-                desc: "Region named '_id'. This is reserved for element name when doing library comparison".to_string(),
+                desc: "Region named '_id'. This is reserved for element names when doing library comparison".to_string(),
             });
         }
 
@@ -845,7 +842,7 @@ impl SubLibrary {
     /// Import a Library from a TSV file
     pub fn from_file(
         path: &str,
-        region_max_distance: HashMap<String, u64>,
+        region_max_distance: HashMap<RegionID, u64>,
         default_max_distance: u64,
         default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
@@ -858,12 +855,12 @@ impl SubLibrary {
         // Prepare a HashMap to store column name to values
         let names = reader.headers()?.clone();
         let mut id_vec: Vec<String> = Vec::new();
-        let mut regions: HashMap<String, Vec<Sequence>> = HashMap::new();
+        let mut regions: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
 
         // Initialize empty Vec<Sequence> for each column
         for name in names.iter() {
             if name != "_id" {
-                regions.insert(name.to_string(), Vec::new());
+                regions.insert(region_id_from_str(name), Vec::new());
             }
         }
 
@@ -876,10 +873,10 @@ impl SubLibrary {
                     continue;
                 }
 
-                match regions.get_mut(name) {
+                match regions.get_mut(&region_id_from_str(name)) {
                     None => {
                         return Err(LibraryError::MissingRegion {
-                            id: name.to_string(),
+                            id: region_id_from_str(name),
                         });
                     }
                     Some(v) => v.push(val.as_bytes().to_vec()),

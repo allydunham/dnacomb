@@ -8,6 +8,8 @@ use log::warn;
 use std::fmt;
 use std::io;
 
+use crate::interning::RegionID;
+use crate::interning::region_id_to_str;
 use crate::region::RegionCompleteness;
 
 /// Convert a `Vec<u8>` Sequence to a string, logging failure but not panicing
@@ -35,7 +37,7 @@ pub fn seq_to_string_or_log(seq: &Sequence) -> String {
 /// UnexpectedRegionError is included for ergonomics and clarity.
 #[derive(Debug)]
 pub enum ReadCountError {
-    UnexpectedRegion { region: String },
+    UnexpectedRegion { region: RegionID },
     FilterConfigError { desc: String },
     BadAlignment { alignment: Box<AlignmentInfo> },
     Error { desc: String },
@@ -47,7 +49,7 @@ pub struct AlignmentInfo {
     pub read_number: usize,
     pub pretty_alignment: String,
     pub alignment: Alignment,
-    pub region_ids: Vec<String>,
+    pub region_ids: Vec<RegionID>,
     pub region_positions: Vec<(usize, usize)>,
     pub mapped_positions: Vec<Option<(usize, usize, RegionCompleteness)>>,
 }
@@ -59,7 +61,7 @@ impl fmt::Display for ReadCountError {
                 write!(
                     f,
                     "Added combination contains an unexpected region: {}",
-                    region
+                    region_id_to_str(*region)
                 )
             }
             ReadCountError::BadAlignment { alignment } => {
@@ -108,16 +110,20 @@ pub enum LibSpecError {
     InvalidLibSpec { errs: Vec<String> },
 
     /// A region has min length greater than max length
-    MinGreaterThanMax { id: String, min: usize, max: usize },
+    MinGreaterThanMax {
+        id: RegionID,
+        min: usize,
+        max: usize,
+    },
 
     /// Duplicate regions in library
-    DuplicateRegion { id: String },
+    DuplicateRegion { id: RegionID },
 
     /// Required region missing
-    MissingRegion { id: String },
+    MissingRegion { id: RegionID },
 
     /// Required region missing
-    NeighbouringVariable { id: String },
+    NeighbouringVariable { id: RegionID },
 
     /// IO errors
     IOError(io::Error),
@@ -140,18 +146,32 @@ impl fmt::Display for LibSpecError {
                 write!(
                     f,
                     "Region {}: min_length ({}) cannot be greater than max_length ({})",
-                    id, min, max
+                    region_id_to_str(*id),
+                    min,
+                    max
                 )
             }
             LibSpecError::DuplicateRegion { id } => {
-                write!(f, "Duplciated region id {} in LibSpec", id)
+                write!(
+                    f,
+                    "Duplciated region id {} in LibSpec",
+                    region_id_to_str(*id)
+                )
             }
             LibSpecError::MissingRegion { id } => {
-                write!(f, "{} not found in LibSpec Region list", id)
+                write!(
+                    f,
+                    "{} not found in LibSpec Region list",
+                    region_id_to_str(*id)
+                )
             }
             LibSpecError::LibSpec { desc } => write!(f, "{}", desc),
             LibSpecError::NeighbouringVariable { id } => {
-                write!(f, "Variable region {} follows another variable region", id)
+                write!(
+                    f,
+                    "Variable region {} follows another variable region",
+                    region_id_to_str(*id)
+                )
             }
             LibSpecError::IOError(e) => write!(f, "Error reading LibSpec JSON file: {}", e),
             LibSpecError::ParsingError(e) => write!(f, "Error parsing LibSpec JSON: {}", e),
@@ -184,13 +204,13 @@ pub enum LibraryError {
     Library { desc: String },
 
     /// Duplicate regions in sub-library
-    DuplicateSubLibraryRegion { id: String },
+    DuplicateSubLibraryRegion { id: RegionID },
 
     /// Duplicate regions in library
-    DuplicateRegion { id: String },
+    DuplicateRegion { id: RegionID },
 
     /// Required region missing
-    MissingRegion { id: String },
+    MissingRegion { id: RegionID },
 
     /// IO errors
     IOError(csv::Error),
@@ -200,13 +220,25 @@ impl fmt::Display for LibraryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LibraryError::DuplicateSubLibraryRegion { id } => {
-                write!(f, "Region id {} is found in multiple Libraries", id)
+                write!(
+                    f,
+                    "Region id {} is found in multiple Libraries",
+                    region_id_to_str(*id)
+                )
             }
             LibraryError::DuplicateRegion { id } => {
-                write!(f, "Duplicated region id {} in Library", id)
+                write!(
+                    f,
+                    "Duplicated region id {} in Library",
+                    region_id_to_str(*id)
+                )
             }
             LibraryError::MissingRegion { id } => {
-                write!(f, "{} not found in Library Region list", id)
+                write!(
+                    f,
+                    "{} not found in Library Region list",
+                    region_id_to_str(*id)
+                )
             }
             LibraryError::Library { desc } => write!(f, "{}", desc),
             LibraryError::IOError(e) => write!(f, "Error reading Library TSV file: {}", e),

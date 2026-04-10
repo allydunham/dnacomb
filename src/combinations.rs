@@ -13,6 +13,7 @@ use std::thread::scope;
 use crate::combination::{CombinationKey, CombinationMatch, ObservedCombination};
 use crate::errors::{LibraryError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
+use crate::interning::{RegionID, region_id_to_str};
 use crate::library::{DistanceMetric, Library};
 use crate::library_combination::{LibraryCombination, LibraryCombinationKey};
 use crate::logging::{Progress, ProgressStyle};
@@ -29,7 +30,7 @@ use crate::utils::div_or_zero;
 /// is run. It also carries the region ids to be considered in order.
 #[derive(Debug)]
 pub struct ObservedCombinations {
-    region_ids: Vec<String>,
+    region_ids: Vec<RegionID>,
     regions: HashMap<RegionKey, Arc<Mutex<ObservedRegion>>>,
     combinations: HashMap<CombinationKey, ObservedCombination>,
     library: Option<Library>,
@@ -39,7 +40,7 @@ pub struct ObservedCombinations {
 }
 
 impl ObservedCombinations {
-    pub fn new(region_ids: Vec<String>, filter_config: FilterConfig) -> Self {
+    pub fn new(region_ids: Vec<RegionID>, filter_config: FilterConfig) -> Self {
         Self {
             region_ids,
             regions: HashMap::new(),
@@ -109,7 +110,7 @@ impl ObservedCombinations {
                             }),
                         };
 
-                        new_comb.regions.insert(reg_key.id.clone(), arc.clone());
+                        new_comb.regions.insert(reg_key.id, arc.clone());
                     }
 
                     self.combinations.insert(comb_key, new_comb);
@@ -148,24 +149,21 @@ impl ObservedCombinations {
 
                 for reg_key in &comb_key.regions {
                     if !self.region_ids.contains(&reg_key.id) {
-                        return Err(ReadCountError::UnexpectedRegion {
-                            region: reg_key.id.clone(),
-                        }
-                        .into());
+                        return Err(ReadCountError::UnexpectedRegion { region: reg_key.id }.into());
                     }
 
                     match self.regions.get(reg_key) {
                         None => {
                             let new_reg = Arc::new(Mutex::new(ObservedRegion::new(
-                                reg_key.id.clone(),
+                                reg_key.id,
                                 &reg_key.sequence,
                                 reg_key.completeness,
                             )));
                             self.regions.insert(reg_key.clone(), new_reg.clone());
-                            reg_map.insert(reg_key.id.clone(), new_reg.clone());
+                            reg_map.insert(reg_key.id, new_reg.clone());
                         }
                         Some(r) => {
-                            reg_map.insert(reg_key.id.clone(), r.clone());
+                            reg_map.insert(reg_key.id, r.clone());
                         }
                     }
                 }
@@ -360,11 +358,11 @@ impl ObservedCombinations {
                 // match count, etc. to summarise the library and store NoLibrary
                 // region seqs to capture e.g. barcodes.
                 match comb.regions.get(reg) {
-                    None => key.regions.push((reg.to_string(), RegionMatch::Unmatched)),
+                    None => key.regions.push((*reg, RegionMatch::Unmatched)),
                     Some(x) => {
                         let or = x.lock().unwrap();
                         key.regions.push((
-                            reg.to_string(),
+                            *reg,
                             match &or.nearest_matches {
                                 RegionMatch::Unmatched => RegionMatch::Unmatched,
                                 RegionMatch::Overmatched { .. } => RegionMatch::Overmatched {
@@ -495,10 +493,11 @@ impl ObservedCombinations {
         // Write header
         write!(count_writer, "group\tforward\treverse\t")?;
         for r in &self.region_ids {
+            let s = region_id_to_str(*r);
             write!(
                 count_writer,
                 "{}\t{}_nearest\t{}_distance\t{}_n_matches\t",
-                r, r, r, r
+                s, s, s, s
             )?;
         }
         writeln!(
@@ -542,7 +541,7 @@ impl ObservedCombinations {
         // Write
         write!(writer, "group\t")?;
         for r in &self.region_ids {
-            write!(writer, "{}\t", r)?;
+            write!(writer, "{}\t", region_id_to_str(*r))?;
         }
         writeln!(
             writer,

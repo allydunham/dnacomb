@@ -6,6 +6,7 @@ use bio::bio_types::sequence::Sequence;
 use std::sync::Arc;
 
 use crate::errors::seq_to_string_or_log;
+use crate::interning::RegionID;
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 
 /// Key identifying an observed Region
@@ -13,13 +14,13 @@ use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, me
 /// Contains a subset of the region information to be used as a hash key
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct RegionKey {
-    pub id: String,
+    pub id: RegionID,
     pub sequence: Sequence,
     pub completeness: RegionCompleteness,
 }
 
 impl RegionKey {
-    pub fn new(id: String, sequence: Sequence, completeness: RegionCompleteness) -> Self {
+    pub fn new(id: RegionID, sequence: Sequence, completeness: RegionCompleteness) -> Self {
         Self {
             id,
             sequence,
@@ -37,7 +38,7 @@ impl RegionKey {
 #[derive(Debug)]
 pub struct ObservedRegion {
     /// Name of the region from LibSpec
-    pub id: String,
+    pub id: RegionID,
 
     /// Observed Sequence
     pub seq: Sequence,
@@ -51,7 +52,7 @@ pub struct ObservedRegion {
 
 impl ObservedRegion {
     /// Create a new ObservedRegion
-    pub fn new(id: String, seq: &[u8], complete: RegionCompleteness) -> Self {
+    pub fn new(id: RegionID, seq: &[u8], complete: RegionCompleteness) -> Self {
         Self {
             id,
             seq: seq.to_vec(),
@@ -306,10 +307,12 @@ impl RegionMatch {
 
 #[cfg(test)]
 mod tests {
+    use crate::interning::{region_id_from_str, region_id_to_str};
+
     use super::*;
 
     fn make_region(id: &str, seq: &[u8], c: RegionCompleteness) -> ObservedRegion {
-        ObservedRegion::new(id.to_string(), seq, c)
+        ObservedRegion::new(region_id_from_str(id), seq, c)
     }
 
     /// Creating a Complete region should preserve id, bytes, length, and completeness.
@@ -317,7 +320,7 @@ mod tests {
     fn new_complete_region_holds_data() {
         let r = make_region("barcode", b"ACGTACGT", RegionCompleteness::Complete);
 
-        assert_eq!(r.id, "barcode");
+        assert_eq!(region_id_to_str(r.id).to_string(), "barcode");
         assert_eq!(r.seq, b"ACGTACGT");
         assert_eq!(r.len(), 8);
         assert!(matches!(r.completeness, RegionCompleteness::Complete));
@@ -327,7 +330,7 @@ mod tests {
     #[test]
     fn empty_sequence_is_valid() {
         let r = make_region("empty", b"", RegionCompleteness::Complete);
-        assert_eq!(r.id, "empty");
+        assert_eq!(region_id_to_str(r.id).to_string(), "empty");
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());
         assert_eq!(r.seq, b"");

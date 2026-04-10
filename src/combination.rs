@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::errors::{LibraryError, seq_to_string_or_log};
-use crate::interning::{LibraryID, library_id_to_str};
+use crate::interning::{LibraryID, RegionID, library_id_to_str};
 use crate::library::{DistanceMetric, Library};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
 use crate::seqs::ReadGroup;
@@ -41,7 +41,7 @@ pub struct ObservedCombination {
 
     /// ObservedRegions defining the sequence form. References to ObservedRegion which
     /// should be stored in the parent ObservedCombinations object.
-    pub regions: HashMap<String, Arc<Mutex<ObservedRegion>>>,
+    pub regions: HashMap<RegionID, Arc<Mutex<ObservedRegion>>>,
 
     /// Status and result of comparison with the expected library of sequences
     pub library_matches: CombinationMatch,
@@ -49,7 +49,7 @@ pub struct ObservedCombination {
 
 impl ObservedCombination {
     pub fn new(
-        regions: HashMap<String, Arc<Mutex<ObservedRegion>>>,
+        regions: HashMap<RegionID, Arc<Mutex<ObservedRegion>>>,
         sequence: Option<SeqPair>,
     ) -> Self {
         Self {
@@ -82,7 +82,7 @@ impl ObservedCombination {
     /// combinations are possible overall matches.
     pub fn compare_to_library(
         &self,
-        region_ids: &Vec<String>,
+        region_ids: &Vec<RegionID>,
         library: &Library,
         distance_metric: DistanceMetric,
         max_matches: usize,
@@ -197,7 +197,7 @@ impl ObservedCombination {
 
     /// Generate tsv line(s) corresponding to this combination. Each read group
     /// the combination is observed is given a separate line
-    pub fn to_tsv(&self, region_ids: &Vec<String>) -> Result<String, LibraryError> {
+    pub fn to_tsv(&self, region_ids: &Vec<RegionID>) -> Result<String, LibraryError> {
         // Line has \t separated format:
         // group forward reverse [{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
 
@@ -377,6 +377,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::SubLibrary;
+    use crate::interning::{RegionID, region_id_from_str};
     use crate::region::RegionCompleteness;
 
     // Library members
@@ -557,20 +558,20 @@ mod tests {
     fn make_library() -> Library {
         use std::collections::HashMap;
 
-        let mut map: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        let mut map: HashMap<RegionID, Vec<Vec<u8>>> = HashMap::new();
         let ids = Some(vec![
             "seq1".to_string(),
             "seq2".to_string(),
             "seq3".to_string(),
         ]);
-        let region_max: HashMap<String, u64> = HashMap::new();
+        let region_max: HashMap<RegionID, u64> = HashMap::new();
 
         map.insert(
-            "r1".into(),
+            region_id_from_str("r1"),
             vec![b"ATAT".to_vec(), b"AAAA".to_vec(), b"AAAT".to_vec()],
         );
         map.insert(
-            "r2".into(),
+            region_id_from_str("r2"),
             vec![b"GGGG".to_vec(), b"CCCC".to_vec(), b"CCCC".to_vec()],
         );
 
@@ -584,11 +585,15 @@ mod tests {
     fn make_combination(
         regs: &[(&'static str, &'static [u8], RegionCompleteness)],
     ) -> ObservedCombination {
-        let mut map: HashMap<String, Arc<Mutex<ObservedRegion>>> = HashMap::new();
+        let mut map: HashMap<RegionID, Arc<Mutex<ObservedRegion>>> = HashMap::new();
         for (id, seq, comp) in regs.iter().copied() {
             map.insert(
-                id.to_string(),
-                Arc::new(Mutex::new(ObservedRegion::new(id.to_string(), seq, comp))),
+                region_id_from_str(id),
+                Arc::new(Mutex::new(ObservedRegion::new(
+                    region_id_from_str(id),
+                    seq,
+                    comp,
+                ))),
             );
         }
         ObservedCombination::new(map, None)
@@ -598,7 +603,7 @@ mod tests {
     fn run_row(tc: &TestCase) {
         let lib = make_library();
         let comb = make_combination(&tc.regions);
-        let region_ids: Vec<String> = vec!["r1".to_string(), "r2".to_string()];
+        let region_ids: Vec<RegionID> = vec![region_id_from_str("r1"), region_id_from_str("r2")];
 
         let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3);
 

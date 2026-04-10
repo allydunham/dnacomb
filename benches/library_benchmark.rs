@@ -1,7 +1,7 @@
 //! Benchmark LibSpec/Library lookup performance
 use bio::bio_types::sequence::Sequence;
 use criterion::{Criterion, criterion_group, criterion_main};
-use dnacomb::library;
+use dnacomb::{interning::region_id_from_str, library};
 use std::collections::HashMap;
 
 fn bench_lookup(c: &mut Criterion) {
@@ -18,10 +18,12 @@ fn bench_lookup(c: &mut Criterion) {
         b'T', b'T', b'A', b'A', b'G', b'C', b'C', b'G', b'A', b'A',
     ];
 
+    let region = region_id_from_str("extension");
+
     c.bench_function("lookup_hamming_exact", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &exact_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
@@ -32,7 +34,7 @@ fn bench_lookup(c: &mut Criterion) {
     c.bench_function("lookup_levenshtein_exact", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &exact_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
@@ -43,7 +45,7 @@ fn bench_lookup(c: &mut Criterion) {
     c.bench_function("lookup_bounded_levenshtein_exact", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &exact_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,
@@ -54,7 +56,7 @@ fn bench_lookup(c: &mut Criterion) {
     c.bench_function("lookup_hamming_mismatch", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &partial_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
@@ -65,7 +67,7 @@ fn bench_lookup(c: &mut Criterion) {
     c.bench_function("lookup_levenshtein_mismatch", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &partial_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
@@ -76,7 +78,7 @@ fn bench_lookup(c: &mut Criterion) {
     c.bench_function("lookup_bounded_levenshtein_mismatch", |b| {
         b.iter(|| {
             let _ = lib.lookup(
-                "extension",
+                &region,
                 &partial_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,

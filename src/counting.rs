@@ -896,7 +896,7 @@ fn count_single_align<T: ReadPairProducer>(
                 match record.forward.seq().get((pos.0 - 1)..(pos.1 - 1)) {
                     Some(s) => {
                         comb_key.regions.push(RegionKey::new(
-                            id.to_string(),
+                            *id,
                             // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
                             s.to_vec(),
                             pos.2,
@@ -1083,7 +1083,7 @@ fn count_paired_align<T: ReadPairProducer>(
                     match r_read.get((r.0 - 1)..(r.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                id.to_string(),
+                                *id,
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
                                 s.to_vec(),
                                 r.2,
@@ -1113,7 +1113,7 @@ fn count_paired_align<T: ReadPairProducer>(
                     match f_read.get((f.0 - 1)..(f.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                id.to_string(),
+                                *id,
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
                                 s.to_vec(),
                                 f.2,
@@ -1189,9 +1189,7 @@ fn count_paired_align<T: ReadPairProducer>(
                         Some((r_reg_seq.to_vec(), r_reg_qual.to_vec(), r.2)),
                         *len,
                     )? {
-                        Some((seq, comp)) => {
-                            comb_key.regions.push(RegionKey::new(id.clone(), seq, comp))
-                        }
+                        Some((seq, comp)) => comb_key.regions.push(RegionKey::new(*id, seq, comp)),
                         None => continue,
                     };
                 }
@@ -1275,7 +1273,7 @@ fn count_single_pattern<T: ReadPairProducer>(
             },
             zip(&regions, region_matches)
                 .filter_map(|(id, reg)| match reg {
-                    Some(r) => Some(RegionKey::new(id.clone(), r.0, r.2)),
+                    Some(r) => Some(RegionKey::new(*id, r.0, r.2)),
                     None => None,
                 })
                 .collect(),
@@ -1393,7 +1391,7 @@ fn count_paired_pattern<T: ReadPairProducer>(
             if let Some(merged) = merge_seqs(fwd, rev, *len)? {
                 comb_key
                     .regions
-                    .push(RegionKey::new(id.clone(), merged.0, merged.1));
+                    .push(RegionKey::new(*id, merged.0, merged.1));
             }
         }
 
@@ -1509,7 +1507,7 @@ fn count_single_inframe<T: ReadPairProducer>(
 
             comb_key
                 .regions
-                .push(RegionKey::new(id.clone(), reg_seq, complete));
+                .push(RegionKey::new(*id, reg_seq, complete));
         }
 
         counts.add_or_increment_combination(&comb_key, record.group.clone())?;
@@ -1718,7 +1716,7 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
             // Determine which read to use
             match merge_seqs(fwd, rev, *len)? {
-                Some((seq, comp)) => comb_key.regions.push(RegionKey::new(id.clone(), seq, comp)),
+                Some((seq, comp)) => comb_key.regions.push(RegionKey::new(*id, seq, comp)),
                 None => continue,
             }
         }
