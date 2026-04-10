@@ -15,7 +15,8 @@
 //!   - GroupHandle, group_from_str(),   group_str()
 //!   - RegionHandle, region_from_str(), region_str()
 //!
-//! Since Groups and Regions are both strings they use ThreadedRodeo
+//! Since Groups, IDs and Regions are both strings they use ThreadedRodeo but are separated to allow
+//! different tuning since they have different access patterns
 
 use std::sync::Arc;
 
@@ -129,7 +130,7 @@ mod enabled {
                         // Extremely rare; keep safe
                         rev.resize_with(pos, || Arc::<[u8]>::from(&b""[..]));
                         rev.push(arc.clone())
-                    },
+                    }
                     std::cmp::Ordering::Equal => rev.push(arc.clone()),
                     std::cmp::Ordering::Greater => rev[pos] = arc.clone(),
                 }
@@ -154,24 +155,45 @@ mod enabled {
     }
 
     // Group IDs (Str)
-    /// Shared unique interner instance storing Groups
+    /// Shared unique interner instance storing Group names
     static GROUPS: Lazy<lasso::ThreadedRodeo> = Lazy::new(lasso::ThreadedRodeo::default);
 
     /// Global interned group ID
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct GroupHandle(lasso::Spur);
+    pub struct Group(lasso::Spur);
 
     /// Get a GroupHandle for a Group ID, interning it if it's new
     #[inline]
-    pub fn group_from_str(s: &str) -> GroupHandle {
-        GroupHandle(GROUPS.get_or_intern(s))
+    pub fn group_from_str(s: &str) -> Group {
+        Group(GROUPS.get_or_intern(s))
     }
 
     /// Resolve group handle to owned string (Arc<str>)
     #[inline]
-    pub fn group_to_str(id: GroupHandle) -> Arc<str> {
+    pub fn group_to_str(id: Group) -> Arc<str> {
         Arc::<str>::from(GROUPS.resolve(&id.0))
+    }
+
+    // Group IDs (Str)
+    /// Shared unique interner instance storing Group names
+    static LIB_IDS: Lazy<lasso::ThreadedRodeo> = Lazy::new(lasso::ThreadedRodeo::default);
+
+    /// Global interned Library ID
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct LibraryID(lasso::Spur);
+
+    /// Get a LibraryID for a Group ID, interning it if it's new
+    #[inline]
+    pub fn library_id_from_str(s: &str) -> LibraryID {
+        LibraryID(LIB_IDS.get_or_intern(s))
+    }
+
+    /// Resolve Library ID to owned string (Arc<str>)
+    #[inline]
+    pub fn library_id_to_str(id: LibraryID) -> Arc<str> {
+        Arc::<str>::from(LIB_IDS.resolve(&id.0))
     }
 
     // Region IDs (Str)
@@ -181,17 +203,17 @@ mod enabled {
     /// Global interned region ID
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct RegionHandle(lasso::Spur);
+    pub struct RegionID(lasso::Spur);
 
     /// Get a RegionHandle for a region ID, interning it if it's new
     #[inline]
-    pub fn region_from_str(s: &str) -> RegionHandle {
-        RegionHandle(REGIONS.get_or_intern(s))
+    pub fn region_id_from_str(s: &str) -> RegionID {
+        RegionID(REGIONS.get_or_intern(s))
     }
 
     /// Resolve region handle to owned string (Arc<str>).
     #[inline]
-    pub fn region_to_str(id: RegionHandle) -> Arc<str> {
+    pub fn region_id_to_str(id: RegionID) -> Arc<str> {
         Arc::<str>::from(REGIONS.resolve(&id.0))
     }
 }
@@ -223,34 +245,51 @@ mod disabled {
     // Group IDs (Str)
     /// Non-interning handle to access Group IDs
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct GroupHandle(pub Arc<str>);
+    pub struct Group(pub Arc<str>);
 
     /// Get a GroupHandle for a Group ID (non-interning)
     #[inline]
-    pub fn group_from_str(s: &str) -> GroupHandle {
-        GroupHandle(Arc::<str>::from(s))
+    pub fn group_from_str(s: &str) -> Group {
+        Group(Arc::<str>::from(s))
     }
 
     /// Resolve non-interning group handle to owned string
     #[inline]
-    pub fn group_to_str(h: GroupHandle) -> Arc<str> {
+    pub fn group_to_str(h: Group) -> Arc<str> {
+        h.0
+    }
+
+    // Library IDs (Str)
+    /// Non-interning handle to access Group IDs
+    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct LibraryID(pub Arc<str>);
+
+    /// Get a GroupHandle for a Group ID (non-interning)
+    #[inline]
+    pub fn library_id_from_str(s: &str) -> LibraryID {
+        LibraryID(Arc::<str>::from(s))
+    }
+
+    /// Resolve non-interning group handle to owned string
+    #[inline]
+    pub fn library_id_to_str(h: LibraryID) -> Arc<str> {
         h.0
     }
 
     // Region IDs (Str)
     /// Non-interning handle to access Region IDs
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct RegionHandle(pub Arc<str>);
+    pub struct RegionID(pub Arc<str>);
 
     /// Get a RegionHandle for a region ID (non-interning)
     #[inline]
-    pub fn region_from_str(s: &str) -> RegionHandle {
-        RegionHandle(Arc::<str>::from(s))
+    pub fn region_id_from_str(s: &str) -> RegionID {
+        RegionID(Arc::<str>::from(s))
     }
 
     /// Resolve non-interning region handles to owned string (Arc<str>)
     #[inline]
-    pub fn region_to_str(h: RegionHandle) -> Arc<str> {
+    pub fn region_id_to_str(h: RegionID) -> Arc<str> {
         h.0
     }
 }
@@ -285,11 +324,19 @@ mod tests {
         assert_eq!(&*s, "groupA");
     }
 
+    /// Test Library round trip
+    #[test]
+    fn library_round_trip_str() {
+        let l = library_id_from_str("seqA");
+        let s = library_id_to_str(l);
+        assert_eq!(&*s, "seqA");
+    }
+
     /// Test Region round trip
     #[test]
     fn region_round_trip_str() {
-        let r = region_from_str("Reg1");
-        let s = region_to_str(r);
+        let r = region_id_from_str("Reg1");
+        let s = region_id_to_str(r);
         assert_eq!(&*s, "Reg1");
     }
 
@@ -345,8 +392,8 @@ mod tests {
         /// Test regions get the same handle
         #[test]
         fn region_dedup_same_str_get_same_handle() {
-            let r1 = region_from_str("r");
-            let r2 = region_from_str("r");
+            let r1 = region_id_from_str("r");
+            let r2 = region_id_from_str("r");
             assert_eq!(
                 r1, r2,
                 "interning enabled: identical region string should dedupe"
@@ -428,11 +475,14 @@ mod tests {
 
         /// Check ownership over round trip
         #[test]
-        fn group_and_region_are_owned_and_round_trip() {
+        fn are_owned_and_round_trip() {
             let g = group_from_str("hello");
-            let r = region_from_str("regionX");
+            let r = region_id_from_str("regionX");
+            let l = library_id_from_str("seqX");
+
             assert_eq!(&*group_to_str(g), "hello");
-            assert_eq!(&*region_to_str(r), "regionX");
+            assert_eq!(&*region_id_to_str(r), "regionX");
+            assert_eq!(&*library_id_to_str(l), "seqX");
         }
     }
 }

@@ -5,7 +5,6 @@ use std::collections::HashMap;
 
 use crate::combination::CombinationMatch;
 use crate::errors::LibraryError;
-use crate::library::Library;
 use crate::region::RegionMatch;
 use crate::seqs::ReadGroup;
 
@@ -65,11 +64,7 @@ impl LibraryCombination {
 
     /// Generate tsv line(s) corresponding to this combination. Each read group
     /// the combination is observed is given a separate line
-    pub fn to_tsv(
-        &self,
-        region_ids: &Vec<String>,
-        library: Option<&Library>,
-    ) -> Result<String, LibraryError> {
+    pub fn to_tsv(&self, region_ids: &Vec<String>) -> Result<String, LibraryError> {
         // Line has \t separated format:
         // group [{region} for each region] status combinations_in_library combination_indexes count
 
@@ -99,7 +94,7 @@ impl LibraryCombination {
                 }
             }
 
-            output.push_str(&self.library_matches.to_summary_tsv_chunk(library)?);
+            output.push_str(&self.library_matches.to_summary_tsv_chunk()?);
             output.push_str(&count.to_string());
             output.push('\n');
         }

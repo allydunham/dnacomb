@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::errors::LibraryError;
+use crate::interning::{LibraryID, library_id_from_str};
 use crate::lib_spec::LibrarySpec;
 
 /// A compiled sequence library
@@ -53,22 +54,10 @@ impl Library {
     pub fn get_sublibrary_index(&self, region: &str) -> Result<usize, LibraryError> {
         match self.regions.get(region) {
             Some(x) => Ok(*x),
-            None => {
-                Err(LibraryError::MissingRegion {
-                    id: region.to_string(),
-                })
-            }
+            None => Err(LibraryError::MissingRegion {
+                id: region.to_string(),
+            }),
         }
-    }
-
-    /// Get the ID associated with an index for a given region
-    pub fn get_name_region(&self, region: &str, ind: usize) -> Result<String, LibraryError> {
-        self.sublibraries[self.get_sublibrary_index(region)?].get_name(ind)
-    }
-
-    /// Get the ID associated with an index for a given sublibrary index
-    pub fn get_name_index(&self, sublib_index: usize, ind: usize) -> Result<String, LibraryError> {
-        self.sublibraries[sublib_index].get_name(ind)
     }
 
     /// Compare an observed sequence to the library
@@ -92,7 +81,15 @@ impl Library {
     ) -> Result<Library, LibraryError> {
         let libs: Result<Vec<SubLibrary>, LibraryError> = paths
             .iter()
-            .map(|x| SubLibrary::from_file_with_lib_spec(x, lib_spec, default_max_distance))
+            .enumerate()
+            .map(|(i, x)| {
+                SubLibrary::from_file_with_lib_spec(
+                    x,
+                    lib_spec,
+                    default_max_distance,
+                    Some(format!("lib{i}")),
+                )
+            })
             .collect();
 
         Library::new(libs?)
@@ -113,7 +110,7 @@ pub struct SubLibrary {
     pub regions: HashMap<String, Vec<Arc<LibraryRegion>>>,
 
     /// Library member IDs
-    ids: Option<Vec<String>>,
+    pub ids: Vec<LibraryID>,
 
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
@@ -132,8 +129,11 @@ pub struct LibraryRegion {
     /// The `Vec<u8>` sequence
     pub sequence: Sequence,
 
-    /// The library members that contain this sequence
+    /// The indeces of library members that contain this sequence
     pub inds: HashSet<usize>,
+
+    /// The library members that contain this sequence
+    pub ids: HashSet<LibraryID>,
 }
 
 impl Hash for LibraryRegion {
@@ -186,16 +186,20 @@ impl SubLibrary {
         ids: Option<Vec<String>>,
         region_max_distance: HashMap<String, u64>,
         default_max_distance: u64,
+        default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
         let mut regions = HashMap::new();
 
+        let mut exp_len: usize = 0;
+
         // This allows an empty library
-        if library.len() > 1 {
-            let exp_len: usize = library
+        if !library.is_empty() {
+            exp_len = library
                 .values()
                 .next()
-                .expect("Just checked library has at least 2 elements")
+                .expect("Just checked library has at least 1 elements")
                 .len();
+
             if !library.values().all(|x| x.len() == exp_len) {
                 return Err(LibraryError::Library {
                     desc: "Library must contain the same number of sequences for each region"
@@ -210,6 +214,21 @@ impl SubLibrary {
                     });
                 }
             }
+        }
+
+        let baseid = default_id.unwrap_or("seq".to_string());
+        let lib_ids: Vec<LibraryID> = match ids {
+            Some(ids) => ids.iter().map(|x| library_id_from_str(x)).collect(),
+            None => (0..exp_len)
+                .map(|x| library_id_from_str(&format!("{baseid}_{x}")))
+                .collect(),
+        };
+
+        // Check if Libary IDs are unique
+        if lib_ids.iter().collect::<HashSet<_>>().len() != exp_len {
+            return Err(LibraryError::Library {
+                desc: "Library IDs are not unique".to_string(),
+            });
         }
 
         for key in library.keys() {
@@ -241,6 +260,7 @@ impl SubLibrary {
                     Vec::from_iter(reg_map.into_iter().map(|x| {
                         Arc::new(LibraryRegion {
                             sequence: x.0,
+                            ids: x.1.iter().map(|x| lib_ids[*x]).collect(),
                             inds: x.1,
                         })
                     })),
@@ -293,7 +313,7 @@ impl SubLibrary {
         Ok(SubLibrary {
             library: library_compiled,
             regions,
-            ids,
+            ids: lib_ids,
             exact_matches,
             region_max_distance,
             default_max_distance,
@@ -318,19 +338,6 @@ impl SubLibrary {
     /// Check is the library is empty
     pub fn is_empty(&self) -> bool {
         self.library.is_empty()
-    }
-
-    /// Get the ID associated with an index
-    pub fn get_name(&self, ind: usize) -> Result<String, LibraryError> {
-        match &self.ids {
-            None => Ok(ind.to_string()),
-            Some(v) => match v.get(ind) {
-                Some(x) => Ok(x.clone()),
-                None => Err(LibraryError::Library {
-                    desc: "Ind out of bounds when attempting to fetch library ID".to_string(),
-                }),
-            },
-        }
     }
 
     /// Get the names of regions in the sublibrary
@@ -812,6 +819,7 @@ impl SubLibrary {
         path: &str,
         lib_spec: &LibrarySpec,
         default_max_distance: u64,
+        default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
         let spec_regions = lib_spec.variable_regions();
         let region_max_distance = lib_spec.get_max_distances();
@@ -823,7 +831,7 @@ impl SubLibrary {
         }
 
         let lib: SubLibrary =
-            SubLibrary::from_file(path, region_max_distance, default_max_distance)?;
+            SubLibrary::from_file(path, region_max_distance, default_max_distance, default_id)?;
 
         if !lib.library.keys().all(|x| spec_regions.contains(x)) {
             return Err(LibraryError::Library {
@@ -839,6 +847,7 @@ impl SubLibrary {
         path: &str,
         region_max_distance: HashMap<String, u64>,
         default_max_distance: u64,
+        default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
         let mut reader = ReaderBuilder::new()
             .delimiter(b'\t')
@@ -884,7 +893,13 @@ impl SubLibrary {
             None
         };
 
-        SubLibrary::new(regions, ids, region_max_distance, default_max_distance)
+        SubLibrary::new(
+            regions,
+            ids,
+            region_max_distance,
+            default_max_distance,
+            default_id,
+        )
     }
 }
 

@@ -5,7 +5,7 @@ use dnacomb::library;
 use std::collections::HashMap;
 
 fn bench_lookup(c: &mut Criterion) {
-    let lib = library::SubLibrary::from_file("config/pegrna.tsv", HashMap::new(), 3)
+    let lib = library::SubLibrary::from_file("config/pegrna.tsv", HashMap::new(), 3, None)
         .expect("Expect library to load correctly");
 
     let exact_match: Sequence = vec![

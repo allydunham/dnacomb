@@ -510,11 +510,7 @@ impl ObservedCombinations {
             let combination = self.combinations.get(key).expect(
                 "Combination key from extracted key list missing from ObservedCombinations",
             );
-            write!(
-                count_writer,
-                "{}",
-                combination.to_tsv(&self.region_ids, self.library.as_ref())?
-            )?;
+            write!(count_writer, "{}", combination.to_tsv(&self.region_ids)?)?;
         }
 
         count_writer.flush()?;
@@ -557,11 +553,7 @@ impl ObservedCombinations {
             let combination = combs.get(key).expect(
                 "Combination key from extracted key list missing from ObservedCombinations",
             );
-            write!(
-                writer,
-                "{}",
-                combination.to_tsv(&self.region_ids, self.library.as_ref())?
-            )?;
+            write!(writer, "{}", combination.to_tsv(&self.region_ids)?)?;
         }
 
         writer.flush()?;
