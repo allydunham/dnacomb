@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use crate::combination::CombinationMatch;
 use crate::errors::LibraryError;
+use crate::groups::ReadGroup;
 use crate::interning::RegionID;
 use crate::region::RegionMatch;
-use crate::seqs::ReadGroup;
 
 /// Key identifying a particular library match
 ///
@@ -58,7 +58,7 @@ impl LibraryCombination {
         match self.counts.get_mut(group) {
             Some(x) => *x += n,
             None => {
-                self.counts.insert(group.clone(), n);
+                self.counts.insert(*group, n);
             }
         }
     }
@@ -73,14 +73,8 @@ impl LibraryCombination {
 
         for (group, count) in self.counts.iter() {
             // Read group
-            match group {
-                ReadGroup::Ungrouped => output.push('\t'),
-                ReadGroup::Unmatched => output.push_str("_unmatched_\t"),
-                ReadGroup::Match(x) => {
-                    output.push_str(x);
-                    output.push('\t');
-                }
-            };
+            output.push_str(&group.to_string());
+            output.push('\t');
 
             // Region seq
             for reg_id in region_ids {

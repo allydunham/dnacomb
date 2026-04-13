@@ -21,6 +21,7 @@ pub mod combinations;
 pub mod counting;
 pub mod errors;
 pub mod filters;
+pub mod groups;
 pub mod interning;
 pub mod lib_spec;
 pub mod library;
@@ -36,3 +37,8 @@ pub use combinations::ObservedCombinations;
 pub use counting::{CountMode, count_reads};
 pub use lib_spec::LibrarySpec;
 pub use library::SubLibrary;
+
+#[cfg(not(any(target_pointer_width = "64", target_pointer_width = "32")))]
+compile_error!(
+    "Only 32bit and 64 bit targets are supported as usize is assumed to be >= u32 in various places"
+);

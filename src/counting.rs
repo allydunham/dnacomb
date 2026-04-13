@@ -924,7 +924,7 @@ fn count_single_align<T: ReadPairProducer>(
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1196,7 +1196,7 @@ fn count_paired_align<T: ReadPairProducer>(
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1279,7 +1279,7 @@ fn count_single_pattern<T: ReadPairProducer>(
                 .collect(),
         );
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1395,7 +1395,7 @@ fn count_paired_pattern<T: ReadPairProducer>(
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1510,7 +1510,7 @@ fn count_single_inframe<T: ReadPairProducer>(
                 .push(RegionKey::new(*id, reg_seq, complete));
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1721,7 +1721,7 @@ fn count_paired_inframe<T: ReadPairProducer>(
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
+        counts.add_or_increment_combination(&comb_key, record.group)?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));

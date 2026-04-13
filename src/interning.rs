@@ -28,6 +28,7 @@ mod enabled {
 
     use ahash::RandomState;
     use dashmap::DashMap;
+    use lasso::{Key, Spur, ThreadedRodeo};
     use once_cell::sync::Lazy;
     use parking_lot::RwLock;
 
@@ -154,35 +155,67 @@ mod enabled {
         }
     }
 
+    // GroupKey reserving 2 bits for None, Unmatched and Ungrouped
+    #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+    struct GroupKey(NonZeroU32);
+
+    // Implement Lasso::Key for group Key
+    unsafe impl Key for GroupKey {
+        fn into_usize(self) -> usize {
+            // Can do this as we add 0b100 previously
+            (self.0.get() - 0b100) as usize
+        }
+
+        fn try_from_usize(int: usize) -> Option<Self> {
+            // Reject values outside the niche range - Lasso starts at 0 so at 0b100 e.g.
+            // the first bit we accept as outside the niche
+            Some(Self(
+                NonZeroU32::new(int.checked_add(0b100)? as u32).expect("Checked > 0b11"),
+            ))
+        }
+    }
+
     // Group IDs (Str)
     /// Shared unique interner instance storing Group names
-    static GROUPS: Lazy<lasso::ThreadedRodeo> = Lazy::new(lasso::ThreadedRodeo::default);
+    static GROUP_IDS: Lazy<ThreadedRodeo<GroupKey>> = Lazy::new(ThreadedRodeo::<GroupKey>::new);
 
     /// Global interned group ID
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct Group(lasso::Spur);
+    pub struct GroupID(GroupKey);
 
-    /// Get a GroupHandle for a Group ID, interning it if it's new
+    /// Get a GroupID for a Group ID, interning it if it's new
     #[inline]
-    pub fn group_from_str(s: &str) -> Group {
-        Group(GROUPS.get_or_intern(s))
+    pub fn group_id_from_str(s: &str) -> GroupID {
+        GroupID(GROUP_IDS.get_or_intern(s))
     }
 
-    /// Resolve group handle to owned string (Arc<str>)
+    /// Resolve GroupID to owned string (Arc<str>)
     #[inline]
-    pub fn group_to_str(id: Group) -> Arc<str> {
-        Arc::<str>::from(GROUPS.resolve(&id.0))
+    pub fn group_id_to_str(id: GroupID) -> Arc<str> {
+        Arc::<str>::from(GROUP_IDS.resolve(&id.0))
+    }
+
+    /// Get a GroupID from a raw int
+    #[inline]
+    pub fn group_id_from_raw(i: NonZeroU32) -> GroupID {
+        GroupID(GroupKey(i))
+    }
+
+    /// Resolve GroupID to raw in
+    #[inline]
+    pub fn group_id_to_raw(id: GroupID) -> NonZeroU32 {
+        id.0.0
     }
 
     // Group IDs (Str)
     /// Shared unique interner instance storing Group names
-    static LIB_IDS: Lazy<lasso::ThreadedRodeo> = Lazy::new(lasso::ThreadedRodeo::default);
+    static LIB_IDS: Lazy<ThreadedRodeo> = Lazy::new(ThreadedRodeo::default);
 
     /// Global interned Library ID
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct LibraryID(lasso::Spur);
+    pub struct LibraryID(Spur);
 
     /// Get a LibraryID for a Group ID, interning it if it's new
     #[inline]
@@ -198,12 +231,12 @@ mod enabled {
 
     // Region IDs (Str)
     /// Shared unique interner instance storing Region IDs
-    static REGIONS: Lazy<lasso::ThreadedRodeo> = Lazy::new(lasso::ThreadedRodeo::default);
+    static REGIONS: Lazy<ThreadedRodeo> = Lazy::new(ThreadedRodeo::default);
 
     /// Global interned region ID
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct RegionID(lasso::Spur);
+    pub struct RegionID(Spur);
 
     /// Get a RegionHandle for a region ID, interning it if it's new
     #[inline]
@@ -245,17 +278,17 @@ mod disabled {
     // Group IDs (Str)
     /// Non-interning handle to access Group IDs
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct Group(pub Arc<str>);
+    pub struct GroupID(pub Arc<str>);
 
     /// Get a GroupHandle for a Group ID (non-interning)
     #[inline]
-    pub fn group_from_str(s: &str) -> Group {
-        Group(Arc::<str>::from(s))
+    pub fn group_id_from_str(s: &str) -> GroupID {
+        GroupID(Arc::<str>::from(s))
     }
 
     /// Resolve non-interning group handle to owned string
     #[inline]
-    pub fn group_to_str(h: Group) -> Arc<str> {
+    pub fn group_id_to_str(h: GroupID) -> Arc<str> {
         h.0
     }
 
@@ -319,8 +352,8 @@ mod tests {
     /// Test Group round trip
     #[test]
     fn group_round_trip_str() {
-        let g = group_from_str("groupA");
-        let s = group_to_str(g);
+        let g = group_id_from_str("groupA");
+        let s = group_id_to_str(g);
         assert_eq!(&*s, "groupA");
     }
 
@@ -381,8 +414,8 @@ mod tests {
         /// Test Groups get the same handle
         #[test]
         fn group_dedup_same_str_get_same_handle() {
-            let g1 = group_from_str("x");
-            let g2 = group_from_str("x");
+            let g1 = group_id_from_str("x");
+            let g2 = group_id_from_str("x");
             assert_eq!(
                 g1, g2,
                 "interning enabled: identical group string should dedupe"
@@ -476,11 +509,11 @@ mod tests {
         /// Check ownership over round trip
         #[test]
         fn are_owned_and_round_trip() {
-            let g = group_from_str("hello");
+            let g = group_id_from_str("hello");
             let r = region_id_from_str("regionX");
             let l = library_id_from_str("seqX");
 
-            assert_eq!(&*group_to_str(g), "hello");
+            assert_eq!(&*group_id_to_str(g), "hello");
             assert_eq!(&*region_id_to_str(r), "regionX");
             assert_eq!(&*library_id_to_str(l), "seqX");
         }

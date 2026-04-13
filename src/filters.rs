@@ -12,7 +12,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use crate::errors::{ReadCountError, seq_to_string_or_log};
-use crate::seqs::{ReadGroup, ReadPair, SeqPair};
+use crate::groups::ReadGroup;
+use crate::seqs::{ReadPair, SeqPair};
 use crate::utils::{div_or_zero, mean_quality};
 
 /// Function filtering based on a read pair
@@ -368,7 +369,7 @@ impl FilteredReads {
                     let mut new_counts = FilteredCounts::new();
                     new_counts.increment_count(reason);
 
-                    groups.insert(group.clone(), new_counts);
+                    groups.insert(*group, new_counts);
                 }
             },
             None => {
@@ -376,7 +377,7 @@ impl FilteredReads {
                 new_counts.increment_count(reason);
 
                 let mut new_groups = HashMap::new();
-                new_groups.insert(group.clone(), new_counts);
+                new_groups.insert(*group, new_counts);
 
                 self.counts.insert(key.clone(), new_groups);
             }
@@ -547,7 +548,7 @@ impl FilteredReads {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seqs::{ReadGroup, ReadPair};
+    use crate::seqs::ReadPair;
     use bio::bio_types::alignment::Alignment;
 
     /// Generate a read pair
@@ -564,7 +565,7 @@ mod tests {
         ReadPair {
             forward: f,
             reverse: r,
-            group: ReadGroup::Ungrouped,
+            group: ReadGroup::ungrouped(),
         }
     }
 
@@ -717,7 +718,7 @@ mod tests {
                     );
                     let read = fr.counts.get(&key).expect("Missing per-read counts");
                     let grp = read
-                        .get(&ReadGroup::Ungrouped)
+                        .get(&ReadGroup::ungrouped())
                         .expect("Missing group counts");
                     assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }
@@ -813,7 +814,7 @@ mod tests {
                     );
                     let read = fr.counts.get(&key).expect("Missing per-read counts");
                     let grp = read
-                        .get(&ReadGroup::Ungrouped)
+                        .get(&ReadGroup::ungrouped())
                         .expect("Missing group counts");
                     assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }

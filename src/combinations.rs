@@ -13,13 +13,14 @@ use std::thread::scope;
 use crate::combination::{CombinationKey, CombinationMatch, ObservedCombination};
 use crate::errors::{LibraryError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
+use crate::groups::ReadGroup;
 use crate::interning::{RegionID, region_id_to_str};
 use crate::library::{DistanceMetric, Library};
 use crate::library_combination::{LibraryCombination, LibraryCombinationKey};
 use crate::logging::{Progress, ProgressStyle};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
 use crate::seqs::ReadPair;
-use crate::seqs::{ReadGroup, SeqPair};
+use crate::seqs::SeqPair;
 use crate::utils::div_or_zero;
 
 /// Container for ObservedCombination objects
@@ -90,7 +91,7 @@ impl ObservedCombinations {
                         match old_comb.counts.get_mut(group) {
                             Some(old_count) => *old_count += new_count,
                             None => {
-                                old_comb.counts.insert(group.clone(), *new_count);
+                                old_comb.counts.insert(*group, *new_count);
                             }
                         }
                     }
@@ -229,7 +230,7 @@ impl ObservedCombinations {
         if increment {
             match hit {
                 CacheHit::Comb(ref k) => {
-                    self.add_or_increment_combination(k, record.group.clone())?;
+                    self.add_or_increment_combination(k, record.group)?;
                 }
                 CacheHit::Filter(r) => {
                     self.update_filter_count(record, r);

@@ -1,8 +1,8 @@
 //! Core data structures for DNA sequence objects
 //!
 //! Provides various core data objects needed across the library for DNA sequences.
+use crate::groups::ReadGroup;
 use bio::{bio_types::sequence::Sequence, io::fastq};
-use std::fmt;
 
 /// Pair of sequences
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
@@ -46,24 +46,6 @@ impl ReadPair {
     }
 }
 
-/// Group status of a read
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum ReadGroup {
-    Ungrouped,
-    Unmatched,
-    Match(String),
-}
-
-impl fmt::Display for ReadGroup {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ReadGroup::Ungrouped => write!(f, ""),
-            ReadGroup::Unmatched => write!(f, "_unmatched_"),
-            ReadGroup::Match(x) => write!(f, "{}", x),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,7 +68,7 @@ mod tests {
     /// Single-end: ReadPair::key() should match SeqPair::new with the same bytes.
     #[test]
     fn single_end_key_matches_constructor() {
-        let rp = make_readpair(b"ACGTACGT", None, ReadGroup::Ungrouped);
+        let rp = make_readpair(b"ACGTACGT", None, ReadGroup::ungrouped());
         let key = rp.key();
 
         let constructed = SeqPair::new(b"ACGTACGT".to_vec(), None);
@@ -102,7 +84,7 @@ mod tests {
     /// Paired-end: reverse read must be part of the key and preserved byte-for-byte.
     #[test]
     fn paired_end_key_includes_reverse() {
-        let rp = make_readpair(b"AAAA", Some(b"TTTT"), ReadGroup::Match("g1".into()));
+        let rp = make_readpair(b"AAAA", Some(b"TTTT"), ReadGroup::grouped("g1".into()));
         let key = rp.key();
 
         assert_eq!(key.forward.as_slice(), b"AAAA");
@@ -138,19 +120,11 @@ mod tests {
         assert_eq!(set.len(), 3);
     }
 
-    /// ReadGroup Display: verify string forms are stable (UX-facing).
-    #[test]
-    fn readgroup_display_variants() {
-        assert_eq!(ReadGroup::Ungrouped.to_string(), "");
-        assert_eq!(ReadGroup::Unmatched.to_string(), "_unmatched_");
-        assert_eq!(ReadGroup::Match("poolA".into()).to_string(), "poolA");
-    }
-
     /// Reverse presence alone must change the key (single-end vs paired-end with same forward).
     #[test]
     fn reverse_presence_changes_key() {
-        let rp_single = make_readpair(b"GGGG", None, ReadGroup::Ungrouped);
-        let rp_paired = make_readpair(b"GGGG", Some(b"A"), ReadGroup::Ungrouped);
+        let rp_single = make_readpair(b"GGGG", None, ReadGroup::ungrouped());
+        let rp_paired = make_readpair(b"GGGG", Some(b"A"), ReadGroup::ungrouped());
 
         let k_single = rp_single.key();
         let k_paired = rp_paired.key();
@@ -168,7 +142,7 @@ mod tests {
     /// Determinism: repeated calls to ReadPair::key() must be stable.
     #[test]
     fn readpair_key_is_deterministic() {
-        let rp = make_readpair(b"TACT", Some(b"AGGA"), ReadGroup::Match("g2".into()));
+        let rp = make_readpair(b"TACT", Some(b"AGGA"), ReadGroup::grouped("g2".into()));
         let k1 = rp.key();
         let k2 = rp.key();
         assert_eq!(k1, k2, "key generation must be deterministic");
@@ -177,8 +151,8 @@ mod tests {
     /// Smoke test: very short reads (including empty reverse) should still produce valid keys.
     #[test]
     fn tiny_reads_smoke() {
-        let rp1 = make_readpair(b"A", None, ReadGroup::Ungrouped);
-        let rp2 = make_readpair(b"A", Some(b""), ReadGroup::Ungrouped);
+        let rp1 = make_readpair(b"A", None, ReadGroup::ungrouped());
+        let rp2 = make_readpair(b"A", Some(b""), ReadGroup::ungrouped());
 
         let k1 = rp1.key();
         let k2 = rp2.key();

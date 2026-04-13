@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::errors::{LibraryError, seq_to_string_or_log};
+use crate::groups::ReadGroup;
 use crate::interning::{LibraryID, RegionID, library_id_to_str};
 use crate::library::{DistanceMetric, Library};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
-use crate::seqs::ReadGroup;
 use crate::seqs::SeqPair;
 
 /// Key identifying an observed combination

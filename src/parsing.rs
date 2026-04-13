@@ -15,7 +15,8 @@ use std::io::{self, BufReader};
 use std::str;
 
 use crate::errors::{FastaError, ReadPairError};
-use crate::seqs::{ReadGroup, ReadPair};
+use crate::groups::ReadGroup;
+use crate::seqs::ReadPair;
 
 /// Parser for Fastq files
 ///
@@ -171,7 +172,7 @@ impl ReadPairParser {
     /// Extract read group from a record
     fn read_group(&mut self, f_record: &fastq::Record) -> ReadGroup {
         let re = match &self.group {
-            None => return ReadGroup::Ungrouped,
+            None => return ReadGroup::ungrouped(),
             Some(x) => x,
         };
 
@@ -186,10 +187,10 @@ impl ReadPairParser {
         }
 
         match re.captures(&self.group_haystack) {
-            None => ReadGroup::Unmatched,
+            None => ReadGroup::unmatched(),
             Some(cap) => match cap.get(1) {
-                None => ReadGroup::Unmatched,
-                Some(x) => ReadGroup::Match(x.as_str().to_string()),
+                None => ReadGroup::unmatched(),
+                Some(x) => ReadGroup::grouped(x.as_str()),
             },
         }
     }
