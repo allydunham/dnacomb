@@ -8,5 +8,5 @@ fn load_lib_spec() {
 
     let ls = lib_spec::LibrarySpec::from_file(path, None, None, None, None);
 
-    assert!(!ls.is_err());
+    assert!(!ls.is_err(), "Error: {:?}", ls);
 }

@@ -5,6 +5,7 @@
 //! to these constructs, with lookup capabilities.
 use bio::alphabets::dna::revcomp;
 use bio::bio_types::sequence::Sequence;
+use serde::ser::Error as SerError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -29,6 +30,24 @@ where
 {
     let s = String::deserialize(deserializer)?;
     Ok(region_id_from_str(&s))
+}
+
+fn serialize_sequence<S>(seq: &Sequence, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match std::str::from_utf8(seq) {
+        Ok(i) => i.serialize(serializer),
+        Err(e) => Err(S::Error::custom(e)),
+    }
+}
+
+fn deserialize_sequence<'de, D>(deserializer: D) -> Result<Sequence, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(s.into_bytes())
 }
 
 /// LibSpec region types
@@ -66,7 +85,11 @@ pub enum Region {
             serialize_with = "serialize_region_id"
         )]
         id: RegionID,
-        seq: String,
+        #[serde(
+            deserialize_with = "deserialize_sequence",
+            serialize_with = "serialize_sequence"
+        )]
+        seq: Sequence,
     },
 }
 
@@ -329,7 +352,7 @@ impl LibrarySpec {
                         template.push(b'N')
                     }
                 }
-                Region::Fixed { seq, .. } => template.extend_from_slice(&seq.clone().into_bytes()),
+                Region::Fixed { seq, .. } => template.extend_from_slice(seq),
             }
         }
 
@@ -358,7 +381,7 @@ impl LibrarySpec {
                         template.push(b'N')
                     }
                 }
-                Region::Fixed { seq, .. } => template.extend_from_slice(&seq.clone().into_bytes()),
+                Region::Fixed { seq, .. } => template.extend_from_slice(seq),
             }
 
             // Add regions until exhausted or longer than the expected read length
@@ -392,9 +415,7 @@ impl LibrarySpec {
                         template.push(b'N')
                     }
                 }
-                Region::Fixed { seq, .. } => {
-                    template.extend_from_slice(&revcomp(seq.clone().into_bytes()))
-                }
+                Region::Fixed { seq, .. } => template.extend_from_slice(&revcomp(seq)),
             }
 
             // Add regions until exhausted or longer than the expected read length
@@ -513,7 +534,7 @@ impl LibrarySpec {
 
                 let seq = match &self.regions[i] {
                     Region::Library { .. } => break,
-                    Region::Fixed { seq, .. } => seq.as_bytes(),
+                    Region::Fixed { seq, .. } => seq,
                 };
 
                 // Extend before with up to len_needed in reverse
@@ -541,7 +562,7 @@ impl LibrarySpec {
 
                 let seq = match &self.regions[i] {
                     Region::Library { .. } => break,
-                    Region::Fixed { seq, .. } => seq.as_bytes(),
+                    Region::Fixed { seq, .. } => seq,
                 };
 
                 // Extend with up to len_needed
