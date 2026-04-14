@@ -13,7 +13,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::errors::LibraryError;
-use crate::interning::{LibraryID, RegionID, library_id_from_str, region_id_from_str};
+use crate::interning::{
+    LibraryID, RegionID, SeqHandle, library_id_from_str, region_id_from_str, seq_from_bytes,
+    seq_to_bytes,
+};
 use crate::lib_spec::LibrarySpec;
 
 /// A compiled sequence library
@@ -64,7 +67,7 @@ impl Library {
     pub fn lookup(
         &self,
         region: &RegionID,
-        seq: &[u8],
+        seq: SeqHandle,
         metric: DistanceMetric,
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
@@ -104,15 +107,15 @@ pub struct SubLibrary {
     pub library: HashMap<RegionID, Vec<Arc<LibraryRegion>>>,
 
     /// Unique sequences for each region, mapping back to which full combinations they are part
-    /// of by index
-    pub regions: HashMap<RegionID, Vec<Arc<LibraryRegion>>>,
+    /// of by index plus a copy of the real sequence to avoid hitting hte interning during the hot loop
+    regions: HashMap<RegionID, Vec<LibrarySequence>>,
 
     /// Library member IDs
     pub ids: Vec<LibraryID>,
 
     /// HashMap of exact hits to Library regions for quick initial lookup and
     /// exact matching
-    exact_matches: HashMap<RegionID, HashMap<Sequence, Arc<LibraryRegion>>>,
+    exact_matches: HashMap<RegionID, HashMap<SeqHandle, Arc<LibraryRegion>>>,
 
     /// Max distance to consider for each region
     region_max_distance: HashMap<RegionID, u64>,
@@ -121,11 +124,29 @@ pub struct SubLibrary {
     default_max_distance: u64,
 }
 
+/// A LibraryRegion and it's paired real sequence
+///
+/// Storing the sequence raw avoids hitting the interner during the hot loop
+#[derive(Debug, Eq, PartialEq, Clone)]
+struct LibrarySequence {
+    region: Arc<LibraryRegion>,
+    sequence: Sequence,
+}
+
+impl LibrarySequence {
+    fn from_region(region: Arc<LibraryRegion>) -> Self {
+        Self {
+            sequence: seq_to_bytes(region.sequence).to_vec(),
+            region,
+        }
+    }
+}
+
 /// A sequence region from a compiled library
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LibraryRegion {
-    /// The `Vec<u8>` sequence
-    pub sequence: Sequence,
+    /// The sequence
+    pub sequence: SeqHandle,
 
     /// The indeces of library members that contain this sequence
     pub inds: HashSet<usize>,
@@ -186,7 +207,7 @@ impl SubLibrary {
         default_max_distance: u64,
         default_id: Option<String>,
     ) -> Result<SubLibrary, LibraryError> {
-        let mut regions = HashMap::new();
+        let mut regions: HashMap<RegionID, Vec<LibrarySequence>> = HashMap::new();
 
         let mut exp_len: usize = 0;
 
@@ -230,7 +251,7 @@ impl SubLibrary {
         }
 
         for key in library.keys() {
-            let mut reg_map: HashMap<Sequence, HashSet<usize>> = HashMap::new();
+            let mut reg_map: HashMap<SeqHandle, HashSet<usize>> = HashMap::new();
             let seqs = match library.get(key) {
                 Some(x) => x,
                 None => {
@@ -242,12 +263,12 @@ impl SubLibrary {
             };
 
             for (ind, seq) in seqs.iter().enumerate() {
-                match reg_map.get_mut(seq) {
+                match reg_map.get_mut(&seq_from_bytes(seq)) {
                     Some(x) => {
                         x.insert(ind);
                     }
                     None => {
-                        reg_map.insert(seq.clone(), HashSet::from([ind]));
+                        reg_map.insert(seq_from_bytes(seq), HashSet::from([ind]));
                     }
                 }
             }
@@ -256,11 +277,11 @@ impl SubLibrary {
                 .insert(
                     *key,
                     Vec::from_iter(reg_map.into_iter().map(|x| {
-                        Arc::new(LibraryRegion {
+                        LibrarySequence::from_region(Arc::new(LibraryRegion {
                             sequence: x.0,
                             ids: x.1.iter().map(|x| lib_ids[*x]).collect(),
                             inds: x.1,
-                        })
+                        }))
                     })),
                 )
                 .is_some()
@@ -270,7 +291,8 @@ impl SubLibrary {
         }
 
         // Compile Exact matches HashMap
-        let mut exact_matches = HashMap::new();
+        let mut exact_matches: HashMap<RegionID, HashMap<SeqHandle, Arc<LibraryRegion>>> =
+            HashMap::new();
         for key in regions.keys() {
             exact_matches.insert(*key, HashMap::new());
             for reg in regions
@@ -280,7 +302,7 @@ impl SubLibrary {
                 exact_matches
                     .get_mut(key)
                     .expect("Key just added to exact_matchs")
-                    .insert(reg.sequence.clone(), reg.clone());
+                    .insert(reg.region.sequence, reg.region.clone());
             }
         }
 
@@ -294,8 +316,8 @@ impl SubLibrary {
                 .get(&key)
                 .expect("regions should contain key as just inserted")
             {
-                for ind in &reg.inds {
-                    rc_vec[*ind] = Some(reg.clone());
+                for ind in &reg.region.inds {
+                    rc_vec[*ind] = Some(reg.region.clone());
                 }
             }
 
@@ -356,19 +378,19 @@ impl SubLibrary {
     /// levenshtein is only available as a SIMD implementation with fallback so we rely on
     /// the Rust Bio and editdistancek authors for the check.
     ///
-    /// The max distance is used as the upper bound for bounded Levenshteinso this give identical
+    /// The max distance is used as the upper bound for bounded Levenshtein so this gives identical
     /// results to Levenshtein in less time. Therefore generally bounded should be prefered to
     /// Levenshtein but both options are available in case of edge cases.
     pub fn lookup(
         &self,
         region: &RegionID,
-        seq: &[u8],
+        seq: SeqHandle,
         metric: DistanceMetric,
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
         // Try exact matching first - short circuit if we find the region
         if let Some(exact) = self.exact_matches.get(region) {
-            if let Some(hit) = exact.get(seq) {
+            if let Some(hit) = exact.get(&seq) {
                 return Ok(Some(LibraryMatch {
                     matches: vec![hit.clone()],
                     distance: 0,
@@ -377,7 +399,7 @@ impl SubLibrary {
         }
 
         // Else try lookup
-        let regions: &Vec<Arc<LibraryRegion>> = match self.regions.get(region) {
+        let regions: &Vec<LibrarySequence> = match self.regions.get(region) {
             Some(x) => x,
             None => {
                 return Err(LibraryError::MissingRegion { id: *region });
@@ -396,41 +418,61 @@ impl SubLibrary {
             }
             (DistanceMetric::Exact, PartialMatching::FivePrimeOnly) => {
                 // Exact FivePrimeOnly is the same as Hamming lookup on 5' end with 0 dist
-                Self::lookup_hamming_5prime(seq, regions, 0)
+                Self::lookup_hamming_5prime(seq_to_bytes(seq).as_ref(), regions, 0)
             }
             (DistanceMetric::Exact, PartialMatching::ThreePrimeOnly) => {
                 // Exact ThreePrimeOnly is the same as Hamming lookup on 3' end with 0 dist
-                Self::lookup_hamming_3prime(seq, regions, 0)
+                Self::lookup_hamming_3prime(seq_to_bytes(seq).as_ref(), regions, 0)
             }
 
             (DistanceMetric::Hamming, PartialMatching::Full) => {
-                Self::lookup_hamming(seq, regions, max_dist)
+                Self::lookup_hamming(seq_to_bytes(seq).as_ref(), regions, max_dist)
             }
             (DistanceMetric::Hamming, PartialMatching::FivePrimeOnly) => {
-                Self::lookup_hamming_5prime(seq, regions, max_dist)
+                Self::lookup_hamming_5prime(seq_to_bytes(seq).as_ref(), regions, max_dist)
             }
             (DistanceMetric::Hamming, PartialMatching::ThreePrimeOnly) => {
-                Self::lookup_hamming_3prime(seq, regions, max_dist)
+                Self::lookup_hamming_3prime(seq_to_bytes(seq).as_ref(), regions, max_dist)
             }
 
             (DistanceMetric::Levenshtein, PartialMatching::Full) => {
-                Self::lookup_levenshtein(seq, regions, max_dist as u32)
+                Self::lookup_levenshtein(seq_to_bytes(seq).as_ref(), regions, max_dist as u32)
             }
             (DistanceMetric::Levenshtein, PartialMatching::FivePrimeOnly) => {
-                Self::lookup_levenshtein_5prime(seq, regions, max_dist as u32)
+                Self::lookup_levenshtein_5prime(
+                    seq_to_bytes(seq).as_ref(),
+                    regions,
+                    max_dist as u32,
+                )
             }
             (DistanceMetric::Levenshtein, PartialMatching::ThreePrimeOnly) => {
-                Self::lookup_levenshtein_3prime(seq, regions, max_dist as u32)
+                Self::lookup_levenshtein_3prime(
+                    seq_to_bytes(seq).as_ref(),
+                    regions,
+                    max_dist as u32,
+                )
             }
 
             (DistanceMetric::BoundedLevenshtein, PartialMatching::Full) => {
-                Self::lookup_bounded_levenshtein(seq, regions, max_dist as u32)
+                Self::lookup_bounded_levenshtein(
+                    seq_to_bytes(seq).as_ref(),
+                    regions,
+                    max_dist as u32,
+                )
             }
             (DistanceMetric::BoundedLevenshtein, PartialMatching::FivePrimeOnly) => {
-                Self::lookup_bounded_levenshtein_5prime(seq, regions, max_dist as u32)
+                Self::lookup_bounded_levenshtein_5prime(
+                    seq_to_bytes(seq).as_ref(),
+                    regions,
+                    max_dist as u32,
+                )
             }
             (DistanceMetric::BoundedLevenshtein, PartialMatching::ThreePrimeOnly) => {
-                Self::lookup_bounded_levenshtein_3prime(seq, regions, max_dist as u32)
+                Self::lookup_bounded_levenshtein_3prime(
+                    seq_to_bytes(seq).as_ref(),
+                    regions,
+                    max_dist as u32,
+                )
             }
         };
 
@@ -447,7 +489,7 @@ impl SubLibrary {
     /// Compare an observed sequence to the library via Hamming distance
     fn lookup_hamming(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u64,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
@@ -475,10 +517,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
 
             if best_dist == 0 {
@@ -493,7 +535,7 @@ impl SubLibrary {
     /// 5 prime end
     fn lookup_hamming_5prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u64,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
@@ -522,10 +564,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
         }
 
@@ -536,7 +578,7 @@ impl SubLibrary {
     /// 3 prime end
     fn lookup_hamming_3prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u64,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u64;
@@ -568,10 +610,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
         }
 
@@ -581,7 +623,7 @@ impl SubLibrary {
     /// Compare an observed sequence to the library via Levenshtein distance
     fn lookup_levenshtein(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
@@ -603,10 +645,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
 
             if best_dist == 0 {
@@ -621,7 +663,7 @@ impl SubLibrary {
     /// sequences 5 prime end
     fn lookup_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
@@ -646,10 +688,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
         }
 
@@ -660,7 +702,7 @@ impl SubLibrary {
     /// sequences 3 prime end
     fn lookup_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: u32;
@@ -686,10 +728,10 @@ impl SubLibrary {
                 continue;
             } else if dist < best_dist {
                 hits.clear();
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
                 best_dist = dist;
             } else if dist == best_dist {
-                hits.push(reg.clone());
+                hits.push(reg.region.clone());
             }
         }
 
@@ -699,7 +741,7 @@ impl SubLibrary {
     /// Compare an observed sequence to the library via Bounded Levenshtein distance
     fn lookup_bounded_levenshtein(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
@@ -718,10 +760,10 @@ impl SubLibrary {
                 None => continue,
                 Some(d) if d < best_dist => {
                     hits.clear();
-                    hits.push(reg.clone());
+                    hits.push(reg.region.clone());
                     best_dist = d;
                 }
-                Some(d) if d == best_dist => hits.push(reg.clone()),
+                Some(d) if d == best_dist => hits.push(reg.region.clone()),
                 Some(_) => continue,
             }
 
@@ -737,7 +779,7 @@ impl SubLibrary {
     /// sequences 5 prime end
     fn lookup_bounded_levenshtein_5prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
@@ -759,10 +801,10 @@ impl SubLibrary {
                 None => continue,
                 Some(d) if d < best_dist => {
                     hits.clear();
-                    hits.push(reg.clone());
+                    hits.push(reg.region.clone());
                     best_dist = d;
                 }
-                Some(d) if d == best_dist => hits.push(reg.clone()),
+                Some(d) if d == best_dist => hits.push(reg.region.clone()),
                 Some(_) => continue,
             }
         }
@@ -774,7 +816,7 @@ impl SubLibrary {
     /// sequences 3 prime end
     fn lookup_bounded_levenshtein_3prime(
         seq: &[u8],
-        regions: &[Arc<LibraryRegion>],
+        regions: &[LibrarySequence],
         max_dist: u32,
     ) -> (Vec<Arc<LibraryRegion>>, u64) {
         let mut dist: Option<u32>;
@@ -797,10 +839,10 @@ impl SubLibrary {
                 None => continue,
                 Some(d) if d < best_dist => {
                     hits.clear();
-                    hits.push(reg.clone());
+                    hits.push(reg.region.clone());
                     best_dist = d;
                 }
-                Some(d) if d == best_dist => hits.push(reg.clone()),
+                Some(d) if d == best_dist => hits.push(reg.region.clone()),
                 Some(_) => continue,
             }
         }

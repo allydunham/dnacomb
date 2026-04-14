@@ -1,19 +1,23 @@
 //! Core data structures for DNA sequence objects
 //!
 //! Provides various core data objects needed across the library for DNA sequences.
-use crate::groups::ReadGroup;
+use crate::interning::SeqHandle;
+use crate::{groups::ReadGroup, interning::seq_from_bytes};
 use bio::{bio_types::sequence::Sequence, io::fastq};
 
 /// Pair of sequences
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct SeqPair {
-    pub forward: Sequence,
-    pub reverse: Option<Sequence>,
+    pub forward: SeqHandle,
+    pub reverse: Option<SeqHandle>,
 }
 
 impl SeqPair {
     pub fn new(forward: Sequence, reverse: Option<Sequence>) -> Self {
-        Self { forward, reverse }
+        Self {
+            forward: seq_from_bytes(&forward),
+            reverse: reverse.map(|x| seq_from_bytes(&x)),
+        }
     }
 
     pub fn from_readpair(rp: &ReadPair) -> Self {
@@ -48,6 +52,8 @@ impl ReadPair {
 
 #[cfg(test)]
 mod tests {
+    use crate::interning::seq_to_bytes;
+
     use super::*;
     use bio::io::fastq;
     use std::collections::HashSet;
@@ -77,7 +83,7 @@ mod tests {
             key, constructed,
             "single-end key must equal constructor-derived SeqPair"
         );
-        assert_eq!(key.forward.as_slice(), b"ACGTACGT");
+        assert_eq!(seq_to_bytes(key.forward).as_ref(), b"ACGTACGT");
         assert!(key.reverse.is_none());
     }
 
@@ -87,8 +93,8 @@ mod tests {
         let rp = make_readpair(b"AAAA", Some(b"TTTT"), ReadGroup::grouped("g1".into()));
         let key = rp.key();
 
-        assert_eq!(key.forward.as_slice(), b"AAAA");
-        assert_eq!(key.reverse.as_ref().unwrap().as_slice(), b"TTTT");
+        assert_eq!(seq_to_bytes(key.forward).as_ref(), b"AAAA");
+        assert_eq!(seq_to_bytes(key.reverse.unwrap()).as_ref(), b"TTTT");
 
         // Cross-check with constructor:
         let constructed = SeqPair::new(b"AAAA".to_vec(), Some(b"TTTT".to_vec()));
@@ -133,10 +139,10 @@ mod tests {
             k_single, k_paired,
             "adding a reverse read must change the key"
         );
-        assert_eq!(k_single.forward.as_slice(), b"GGGG");
+        assert_eq!(seq_to_bytes(k_single.forward).as_ref(), b"GGGG");
         assert!(k_single.reverse.is_none());
-        assert_eq!(k_paired.forward.as_slice(), b"GGGG");
-        assert_eq!(k_paired.reverse.unwrap().as_slice(), b"A");
+        assert_eq!(seq_to_bytes(k_paired.forward).as_ref(), b"GGGG");
+        assert_eq!(seq_to_bytes(k_paired.reverse.unwrap()).as_ref(), b"A");
     }
 
     /// Determinism: repeated calls to ReadPair::key() must be stable.
@@ -157,11 +163,11 @@ mod tests {
         let k1 = rp1.key();
         let k2 = rp2.key();
 
-        assert_eq!(k1.forward.as_slice(), b"A");
+        assert_eq!(seq_to_bytes(k1.forward).as_ref(), b"A");
         assert!(k1.reverse.is_none());
 
-        assert_eq!(k2.forward.as_slice(), b"A");
-        assert_eq!(k2.reverse.as_ref().unwrap().as_slice(), b"");
+        assert_eq!(seq_to_bytes(k2.forward).as_ref(), b"A");
+        assert_eq!(seq_to_bytes(k2.reverse.unwrap()).as_ref(), b"");
 
         assert_ne!(
             k1, k2,

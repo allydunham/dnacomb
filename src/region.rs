@@ -5,8 +5,7 @@
 use bio::bio_types::sequence::Sequence;
 use std::sync::Arc;
 
-use crate::errors::seq_to_string_or_log;
-use crate::interning::RegionID;
+use crate::interning::{RegionID, SeqHandle, seq_from_bytes, seq_to_bytes};
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 
 /// Key identifying an observed Region
@@ -41,7 +40,7 @@ pub struct ObservedRegion {
     pub id: RegionID,
 
     /// Observed Sequence
-    pub seq: Sequence,
+    pub seq: SeqHandle,
 
     /// Completeness status of the region
     pub completeness: RegionCompleteness,
@@ -55,18 +54,18 @@ impl ObservedRegion {
     pub fn new(id: RegionID, seq: &[u8], complete: RegionCompleteness) -> Self {
         Self {
             id,
-            seq: seq.to_vec(),
+            seq: seq_from_bytes(seq),
             completeness: complete,
             nearest_matches: RegionMatch::Uncompared,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.seq.len()
+        seq_to_bytes(self.seq).len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.seq.is_empty()
+        seq_to_bytes(self.seq).is_empty()
     }
 
     /// Check if library comparison has been performed
@@ -89,7 +88,7 @@ impl ObservedRegion {
     ) -> RegionMatch {
         let lib_match = match self.completeness {
             RegionCompleteness::Complete => {
-                match library.lookup(&self.id, &self.seq, distance_metric, PartialMatching::Full) {
+                match library.lookup(&self.id, self.seq, distance_metric, PartialMatching::Full) {
                     // lookup can only return Err(LibraryError::MissingRegion) which implies the
                     // region isn't in the library. Needs changing if more errors are added to it.
                     Err(_) => return RegionMatch::NoLibrary { seq: None },
@@ -99,7 +98,7 @@ impl ObservedRegion {
             RegionCompleteness::Partial5Prime => {
                 match library.lookup(
                     &self.id,
-                    &self.seq,
+                    self.seq,
                     distance_metric,
                     PartialMatching::ThreePrimeOnly,
                 ) {
@@ -112,7 +111,7 @@ impl ObservedRegion {
             RegionCompleteness::Partial3Prime => {
                 match library.lookup(
                     &self.id,
-                    &self.seq,
+                    self.seq,
                     distance_metric,
                     PartialMatching::FivePrimeOnly,
                 ) {
@@ -124,16 +123,20 @@ impl ObservedRegion {
             }
             RegionCompleteness::MissingCenter { split_ind }
             | RegionCompleteness::Overlapping { split_ind } => {
+                let seq = seq_to_bytes(self.seq);
+                let left_seq = seq_from_bytes(&seq[0..split_ind]);
+                let right_seq = seq_from_bytes(&seq[split_ind + 1..seq.len()]);
+
                 let left_match = library.lookup(
                     &self.id,
-                    &self.seq[0..split_ind],
+                    left_seq,
                     distance_metric,
                     PartialMatching::FivePrimeOnly,
                 );
 
                 let right_match = library.lookup(
                     &self.id,
-                    &self.seq[split_ind + 1..self.seq.len()],
+                    right_seq,
                     distance_metric,
                     PartialMatching::ThreePrimeOnly,
                 );
@@ -174,10 +177,7 @@ impl ObservedRegion {
     /// Generate output TSV chunk describing the region
     pub fn to_tsv_chunk(&self) -> String {
         // Generate "{region} {region}_nearest {region}_distance {region}_n_matches" String
-        let mut seq = match String::from_utf8(self.seq.clone()) {
-            Ok(x) => x,
-            Err(_) => panic!("Error converting Vec<u8> sequence to string"),
-        };
+        let mut seq = self.seq.to_str_or_log();
 
         // Add appropriate marker to incomplete regions
         match self.completeness {
@@ -247,7 +247,7 @@ pub enum RegionMatch {
     Unmatched,
 
     /// Region not in library, with option to store the observed sequence
-    NoLibrary { seq: Option<Sequence> },
+    NoLibrary { seq: Option<SeqHandle> },
 }
 
 impl RegionMatch {
@@ -266,7 +266,7 @@ impl RegionMatch {
                 seq_match,
                 distance,
             } => (
-                seq_to_string_or_log(&seq_match.sequence),
+                seq_match.sequence.to_str_or_log(),
                 distance.to_string(),
                 "1".to_string(),
             ),
@@ -276,7 +276,7 @@ impl RegionMatch {
             } => {
                 let mut seqs = seq_matches
                     .iter()
-                    .map(|x| seq_to_string_or_log(&x.sequence))
+                    .map(|x| x.sequence.to_str_or_log())
                     .collect::<Vec<_>>();
                 seqs.sort();
                 (seqs.join(","), distance.to_string(), seqs.len().to_string())
@@ -292,13 +292,13 @@ impl RegionMatch {
                 "".to_string()
             }
             RegionMatch::NoLibrary { seq } => match seq {
-                Some(s) => seq_to_string_or_log(s),
+                Some(s) => s.to_str_or_log(),
                 None => "".to_string(),
             },
-            RegionMatch::Match { seq_match, .. } => seq_to_string_or_log(&seq_match.sequence),
+            RegionMatch::Match { seq_match, .. } => seq_match.sequence.to_str_or_log(),
             RegionMatch::MultiMatch { seq_matches, .. } => seq_matches
                 .iter()
-                .map(|x| seq_to_string_or_log(&x.sequence))
+                .map(|x| x.sequence.to_str_or_log())
                 .collect::<Vec<_>>()
                 .join(","),
         }
@@ -321,7 +321,7 @@ mod tests {
         let r = make_region("barcode", b"ACGTACGT", RegionCompleteness::Complete);
 
         assert_eq!(region_id_to_str(r.id).to_string(), "barcode");
-        assert_eq!(r.seq, b"ACGTACGT");
+        assert_eq!(seq_to_bytes(r.seq).as_ref(), b"ACGTACGT");
         assert_eq!(r.len(), 8);
         assert!(matches!(r.completeness, RegionCompleteness::Complete));
     }
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(region_id_to_str(r.id).to_string(), "empty");
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());
-        assert_eq!(r.seq, b"");
+        assert_eq!(seq_to_bytes(r.seq).as_ref(), b"");
     }
 
     /// Byte content must be preserved exactly; no implicit normalisation should occur.
@@ -341,7 +341,11 @@ mod tests {
     fn preserves_bytes_verbatim() {
         let weird = b"ACGTNN--acgt\x00\xff";
         let r = make_region("weird", weird, RegionCompleteness::Complete);
-        assert_eq!(r.seq, weird, "region bytes changed unexpectedly");
+        assert_eq!(
+            seq_to_bytes(r.seq).as_ref(),
+            weird,
+            "region bytes changed unexpectedly"
+        );
         assert_eq!(r.len(), weird.len());
     }
 
@@ -352,7 +356,11 @@ mod tests {
         let mut buf = b"AAAA".to_vec();
         let r = make_region("id", &buf, RegionCompleteness::Complete);
         buf[0] = b'T'; // mutate the source buffer
-        assert_eq!(r.seq, b"AAAA", "region leaked aliasing to input slice");
+        assert_eq!(
+            seq_to_bytes(r.seq).as_ref(),
+            b"AAAA",
+            "region leaked aliasing to input slice"
+        );
     }
 
     /// Extremely short and extremely long sequences should not panic.
@@ -367,7 +375,7 @@ mod tests {
         let r2 = make_region("big", &big, RegionCompleteness::Complete);
         assert_eq!(r2.len(), 100_000);
         // spot-check end bytes to ensure contiguous storage
-        assert_eq!(r2.seq[0], b'G');
-        assert_eq!(r2.seq[99_999], b'G');
+        assert_eq!(seq_to_bytes(r2.seq).as_ref()[0], b'G');
+        assert_eq!(seq_to_bytes(r2.seq).as_ref()[99_999], b'G');
     }
 }

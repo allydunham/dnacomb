@@ -370,9 +370,9 @@ impl ObservedCombinations {
                                     distance: 0,
                                     matches: 0,
                                 },
-                                RegionMatch::NoLibrary { .. } => RegionMatch::NoLibrary {
-                                    seq: Some(or.seq.clone()),
-                                },
+                                RegionMatch::NoLibrary { .. } => {
+                                    RegionMatch::NoLibrary { seq: Some(or.seq) }
+                                }
                                 RegionMatch::Uncompared => RegionMatch::Uncompared,
                                 RegionMatch::Match { seq_match, .. } => RegionMatch::Match {
                                     seq_match: seq_match.clone(),

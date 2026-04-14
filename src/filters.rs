@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use crate::errors::{ReadCountError, seq_to_string_or_log};
+use crate::errors::ReadCountError;
 use crate::groups::ReadGroup;
 use crate::seqs::{ReadPair, SeqPair};
 use crate::utils::{div_or_zero, mean_quality};
@@ -500,9 +500,9 @@ impl FilteredReads {
                     writer,
                     "{}\t{}\t{}\t{}",
                     group,
-                    seq_to_string_or_log(&key.forward),
+                    key.forward.to_str_or_log(),
                     match &key.reverse {
-                        Some(x) => seq_to_string_or_log(x),
+                        Some(x) => x.to_str_or_log(),
                         None => "".to_string(),
                     },
                     counts.to_wide_tsv_line(total),

@@ -22,6 +22,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "interning")]
 mod enabled {
+    use crate::errors::seq_to_string_or_log;
+
     use super::Arc;
     use std::num::NonZeroU32;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -77,6 +79,25 @@ mod enabled {
         #[inline]
         fn index0(self) -> usize {
             (self.0.get() - 1) as usize
+        }
+
+        #[inline]
+        pub fn len(self) -> usize {
+            seq_to_bytes(self).len()
+        }
+
+        #[inline]
+        pub fn is_empty(self) -> bool {
+            seq_to_bytes(self).is_empty()
+        }
+
+        /// Convert the contained sequence to a string, logging UTF-8 failures
+        ///
+        /// UTF-8 failures should be sufficiently uncommon and generally occur in
+        /// final output so often want to log and continue to see what the state is
+        #[inline]
+        pub fn to_str_or_log(self) -> String {
+            seq_to_string_or_log(&seq_to_bytes(self).to_vec())
         }
     }
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::errors::{LibraryError, seq_to_string_or_log};
 use crate::groups::ReadGroup;
-use crate::interning::{LibraryID, RegionID, library_id_to_str};
+use crate::interning::{LibraryID, RegionID, library_id_to_str, seq_to_bytes};
 use crate::library::{DistanceMetric, Library};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
 use crate::seqs::SeqPair;
@@ -210,11 +210,11 @@ impl ObservedCombination {
 
             match &self.sequence {
                 Some(seq) => {
-                    output.push_str(&seq_to_string_or_log(&seq.forward));
+                    output.push_str(&seq_to_string_or_log(&seq_to_bytes(seq.forward).to_vec()));
                     output.push('\t');
-                    match &seq.reverse {
+                    match seq.reverse {
                         Some(rev) => {
-                            output.push_str(&seq_to_string_or_log(rev));
+                            output.push_str(&seq_to_string_or_log(&seq_to_bytes(rev).to_vec()));
                             output.push('\t');
                         }
                         None => output.push('\t'),

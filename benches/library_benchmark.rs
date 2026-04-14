@@ -1,22 +1,24 @@
 //! Benchmark LibSpec/Library lookup performance
-use bio::bio_types::sequence::Sequence;
 use criterion::{Criterion, criterion_group, criterion_main};
-use dnacomb::{interning::region_id_from_str, library};
+use dnacomb::{
+    interning::{SeqHandle, region_id_from_str, seq_from_bytes},
+    library,
+};
 use std::collections::HashMap;
 
 fn bench_lookup(c: &mut Criterion) {
     let lib = library::SubLibrary::from_file("config/pegrna.tsv", HashMap::new(), 3, None)
         .expect("Expect library to load correctly");
 
-    let exact_match: Sequence = vec![
+    let exact_match: SeqHandle = seq_from_bytes(&vec![
         b'C', b'T', b'T', b'A', b'A', b'T', b'G', b'T', b'T', b'G', b'A', b'C', b'T', b'T', b'C',
         b'T', b'T', b'A', b'C', b'G', b'A', b'C', b'G', b'A', b'A',
-    ];
+    ]);
 
-    let partial_match: Sequence = vec![
+    let partial_match: SeqHandle = seq_from_bytes(&vec![
         b'C', b'T', b'T', b'A', b'G', b'T', b'G', b'G', b'T', b'G', b'A', b'C', b'T', b'T', b'C',
         b'T', b'T', b'A', b'A', b'G', b'C', b'C', b'G', b'A', b'A',
-    ];
+    ]);
 
     let region = region_id_from_str("extension");
 
@@ -24,7 +26,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &exact_match,
+                exact_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
             );
@@ -35,7 +37,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &exact_match,
+                exact_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
             );
@@ -46,7 +48,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &exact_match,
+                exact_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,
             );
@@ -57,7 +59,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &partial_match,
+                partial_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
             );
@@ -68,7 +70,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &partial_match,
+                partial_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
             );
@@ -79,7 +81,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                &partial_match,
+                partial_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,
             );
