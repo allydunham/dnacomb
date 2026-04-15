@@ -26,7 +26,7 @@ mod enabled {
 
     use super::Arc;
     use std::num::NonZeroU32;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use ahash::RandomState;
     use dashmap::DashMap;
@@ -55,6 +55,18 @@ mod enabled {
         SEQ_INTERNER.reserve(estimated_unique);
     }
 
+    /// Check how many sequences are in the reverse interner
+    #[inline]
+    pub fn num_interned_reverse() -> usize {
+        SEQ_INTERNER.num_interned_reverse()
+    }
+
+    /// Check how many sequences are in the forward interner
+    #[inline]
+    pub fn num_interned_forward() -> usize {
+        SEQ_INTERNER.num_interned_forward()
+    }
+
     /// Handle to access a Sequence object (Vec<u8>)
     ///
     /// This access point interns the underlying vector to save duplication. It is
@@ -73,7 +85,12 @@ mod enabled {
         #[inline]
         fn from_index0(i: u32) -> Self {
             // Stored as 1-based so Option<SeqHandle> is niche-optimized
-            SeqHandle(NonZeroU32::new(i + 1).expect("nonzero"))
+            Self::from_raw(i + 1)
+        }
+
+        #[inline]
+        fn from_raw(i: u32) -> Self {
+            SeqHandle(NonZeroU32::new(i).expect("nonzero"))
         }
 
         #[inline]
@@ -101,9 +118,33 @@ mod enabled {
         }
     }
 
+    /// Forward-map entry for one canonical sequence.
+    ///
+    /// handle_raw stores the raw NonZeroU32 payload used by SeqHandle:
+    ///   0 => not yet published
+    ///   >0 => published and safe to use
+    ///
+    /// init_claimed elects a single thread to perform the first-time publication.
+    struct ForwardEntry {
+        bytes: Arc<[u8]>,
+        handle_raw: AtomicU32,
+        init_claimed: AtomicBool,
+    }
+
+    impl ForwardEntry {
+        #[inline]
+        pub fn new_unclaimed(bytes: Arc<[u8]>) -> Self {
+            ForwardEntry {
+                bytes,
+                handle_raw: AtomicU32::new(0),
+                init_claimed: AtomicBool::new(false),
+            }
+        }
+    }
+
     pub struct SeqInterner {
         /// Forward map: canonical bytes -> id
-        forward: DashMap<Arc<[u8]>, SeqHandle, RandomState>,
+        forward: DashMap<Arc<[u8]>, Arc<ForwardEntry>, RandomState>,
 
         /// Reverse vec: id -> canonical bytes (index = id.get() - 1)
         reverse: RwLock<Vec<Arc<[u8]>>>,
@@ -125,45 +166,66 @@ mod enabled {
     impl SeqInterner {
         #[inline]
         pub fn intern(&self, bytes: &[u8]) -> SeqHandle {
-            // Fast path
-            if let Some(found) = self.forward.get(bytes) {
-                return *found;
-            }
+            // First, get or set reference to the forward interner
+            let entry = match self.forward.get(bytes) {
+                Some(found) => Arc::clone(found.value()),
+                None => {
+                    let arc = Arc::<[u8]>::from(bytes);
+                    let entry_ref = self
+                        .forward
+                        .entry(arc.clone())
+                        .or_insert_with(|| Arc::new(ForwardEntry::new_unclaimed(arc)));
 
-            // Allocate once on miss
-            let arc = Arc::<[u8]>::from(bytes);
-
-            // Second check in case of race
-            if let Some(found) = self.forward.get(&*arc) {
-                return *found;
-            }
-
-            // Allocate an id
-            let idx0 = self.next.fetch_add(1, Ordering::Relaxed);
-            let id = SeqHandle::from_index0(idx0);
-
-            // Publish reverse entry
-            {
-                let mut rev = self.reverse.write();
-                let pos = idx0 as usize;
-
-                match rev.len().cmp(&pos) {
-                    std::cmp::Ordering::Less => {
-                        // Extremely rare; keep safe
-                        rev.resize_with(pos, || Arc::<[u8]>::from(&b""[..]));
-                        rev.push(arc.clone())
-                    }
-                    std::cmp::Ordering::Equal => rev.push(arc.clone()),
-                    std::cmp::Ordering::Greater => rev[pos] = arc.clone(),
+                    Arc::clone(entry_ref.value())
                 }
-            }
+            };
 
-            // Insert into forward map; if someone raced and inserted first, use theirs
-            if let Some(prev_id) = self.forward.insert(arc, id) {
-                return prev_id;
-            }
+            // Loop until handle is initialised
+            loop {
+                let raw = entry.handle_raw.load(Ordering::Acquire);
 
-            id
+                // Fast path: if handle is already published, return it
+                if raw != 0 {
+                    return SeqHandle::from_raw(raw);
+                }
+
+                // Otherwise try to claim the right to initialize
+                if entry
+                    .init_claimed
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    // We won the race. Allocate and publish the handle.
+                    let idx0 = self.next.fetch_add(1, Ordering::Relaxed);
+                    if idx0 == u32::MAX {
+                        panic!("SeqInterner exhausted SeqHandle space");
+                    }
+
+                    let handle = SeqHandle::from_index0(idx0);
+
+                    {
+                        let mut rev = self.reverse.write();
+
+                        let pos = idx0 as usize;
+                        match rev.len().cmp(&pos) {
+                            std::cmp::Ordering::Less => {
+                                // Extremely rare; keep safe
+                                rev.resize_with(pos, || Arc::<[u8]>::from(&b""[..]));
+                                rev.push(entry.bytes.clone())
+                            }
+                            std::cmp::Ordering::Equal => rev.push(entry.bytes.clone()),
+                            std::cmp::Ordering::Greater => rev[pos] = entry.bytes.clone(),
+                        }
+                    }
+
+                    // Publish handle with Release so all threads see it
+                    entry.handle_raw.store(handle.get(), Ordering::Release);
+                    return handle;
+                }
+
+                // Lost race - yield and loop to wait for Release.
+                std::thread::yield_now();
+            }
         }
 
         #[inline]
@@ -173,6 +235,18 @@ mod enabled {
 
         pub fn reserve(&self, additional_unique: usize) {
             self.reverse.write().reserve(additional_unique);
+        }
+
+        /// Check how many sequences are in the reverse interner
+        #[inline]
+        pub fn num_interned_reverse(&self) -> usize {
+            self.reverse.read().len()
+        }
+
+        /// Check how many sequences are in the forward interner
+        #[inline]
+        pub fn num_interned_forward(&self) -> usize {
+            self.forward.len()
         }
     }
 
@@ -359,6 +433,7 @@ pub use disabled::*;
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     // Common tests for interning and non-interning backends
 
@@ -505,6 +580,97 @@ mod tests {
                 set.insert(seq_from_bytes(&s));
             }
             assert_eq!(set.len(), 10_000);
+        }
+
+        /// Test multiple insertions of the same value don't add extra IDs to reverse
+        #[test]
+        fn concurrent_duplicate_inserts_do_not_allocate_extra_ids() {
+            let interner = Arc::new(SeqInterner::default());
+            let before_rev = interner.num_interned_reverse();
+            let before_fwd = interner.num_interned_forward();
+
+            let n_threads = 32;
+            let n_iters = 1000;
+
+            std::thread::scope(|s| {
+                for _ in 0..n_threads {
+                    s.spawn(|| {
+                        for _ in 0..n_iters {
+                            let _ = interner.intern(b"ACGT");
+                        }
+                    });
+                }
+            });
+
+            let after_rev = interner.num_interned_reverse();
+            let after_fwd = interner.num_interned_forward();
+            assert_eq!(
+                after_rev,
+                before_rev + 1,
+                "Concurrent inserts should add exactly 1 reverse ID"
+            );
+            assert_eq!(
+                after_fwd,
+                before_fwd + 1,
+                "Concurrent inserts should add exactly 1 forward ID"
+            );
+        }
+
+        /// Test concurrent inserts add exactly 1 ID each
+        #[test]
+        fn concurrent_unique_inserts_allocate_exactly_one_id_each() {
+            let interner = Arc::new(SeqInterner::default());
+            let before_rev = interner.num_interned_reverse();
+            let before_fwd = interner.num_interned_forward();
+
+            let n = 5_000;
+            let seqs: Vec<Vec<u8>> = (0..n)
+                .map(|i| format!("SEQ{:05}", i).into_bytes())
+                .collect();
+
+            std::thread::scope(|scope| {
+                let chunk = 500;
+                for part in seqs.chunks(chunk) {
+                    let thread_interner = interner.clone();
+                    scope.spawn(move || {
+                        for s in part {
+                            let _ = thread_interner.intern(s);
+                        }
+                    });
+                }
+            });
+
+            let after_rev = interner.num_interned_reverse();
+            let after_fwd = interner.num_interned_forward();
+            assert_eq!(
+                after_rev,
+                before_rev + n,
+                "unique inserts should allocate exactly one reverse entry per unique sequence"
+            );
+            assert_eq!(
+                after_fwd,
+                before_fwd + n,
+                "unique inserts should allocate exactly one forward entry per unique sequence"
+            );
+        }
+
+        /// Test concurrent interning and resolving
+        #[test]
+        fn concurrent_intern_and_resolve_is_safe() {
+            let n_threads = 16;
+            let n_iters = 5_000;
+
+            std::thread::scope(|scope| {
+                for _ in 0..n_threads {
+                    scope.spawn(|| {
+                        for _ in 0..n_iters {
+                            let h = seq_from_bytes(b"GATTACA");
+                            let seq = seq_to_bytes(h);
+                            assert_eq!(seq.as_ref(), b"GATTACA");
+                        }
+                    });
+                }
+            });
         }
     }
 
