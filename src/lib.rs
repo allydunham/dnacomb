@@ -29,6 +29,7 @@ pub mod library_combination;
 pub mod logging;
 pub mod parsing;
 pub mod region;
+pub mod seq_diff;
 pub mod seqs;
 pub mod utils;
 

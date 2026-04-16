@@ -374,16 +374,20 @@ impl ObservedCombinations {
                                     RegionMatch::NoLibrary { seq: Some(or.seq) }
                                 }
                                 RegionMatch::Uncompared => RegionMatch::Uncompared,
-                                RegionMatch::Match { seq_match, .. } => RegionMatch::Match {
+                                RegionMatch::Match {
+                                    seq_match, diff, ..
+                                } => RegionMatch::Match {
                                     seq_match: seq_match.clone(),
                                     distance: 0,
+                                    diff: diff.clone(),
                                 },
-                                RegionMatch::MultiMatch { seq_matches, .. } => {
-                                    RegionMatch::MultiMatch {
-                                        seq_matches: seq_matches.to_vec(),
-                                        distance: 0,
-                                    }
-                                }
+                                RegionMatch::MultiMatch {
+                                    seq_matches, diffs, ..
+                                } => RegionMatch::MultiMatch {
+                                    seq_matches: seq_matches.to_vec(),
+                                    distance: 0,
+                                    diffs: diffs.clone(),
+                                },
                             },
                         ))
                     }
@@ -497,8 +501,8 @@ impl ObservedCombinations {
             let s = region_id_to_str(*r);
             write!(
                 count_writer,
-                "{}\t{}_nearest\t{}_distance\t{}_n_matches\t",
-                s, s, s, s
+                "{}\t{}_nearest\t{}_variants\t{}_distance\t{}_n_matches\t",
+                s, s, s, s, s
             )?;
         }
         writeln!(

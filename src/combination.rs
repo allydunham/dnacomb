@@ -121,6 +121,7 @@ impl ObservedCombination {
                 RegionMatch::Match {
                     seq_match,
                     distance,
+                    ..
                 } => {
                     comb_dist += distance;
                     match candidate_matches[sublib] {
@@ -136,6 +137,7 @@ impl ObservedCombination {
                 RegionMatch::MultiMatch {
                     seq_matches,
                     distance,
+                    ..
                 } => {
                     comb_dist += distance;
 

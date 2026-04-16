@@ -3,10 +3,12 @@
 //! Structures and functions to store and manipulate library reqions extracted
 //! from sequencing data, as defined by a LibSpec.
 use bio::bio_types::sequence::Sequence;
+use itertools::Itertools;
 use std::sync::Arc;
 
 use crate::interning::{RegionID, SeqHandle, seq_from_bytes, seq_to_bytes};
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
+use crate::seq_diff::SequenceDiff;
 
 /// Key identifying an observed Region
 ///
@@ -158,6 +160,7 @@ impl ObservedRegion {
                     RegionMatch::Match {
                         seq_match: x.matches[0].clone(),
                         distance: x.distance,
+                        diff: SequenceDiff::compute_ids(self.seq, x.matches[0].sequence),
                     }
                 } else if x.matches.len() > max_matches {
                     RegionMatch::Overmatched {
@@ -166,8 +169,13 @@ impl ObservedRegion {
                     }
                 } else {
                     RegionMatch::MultiMatch {
-                        seq_matches: x.matches,
                         distance: x.distance,
+                        diffs: x
+                            .matches
+                            .iter()
+                            .map(|m| SequenceDiff::compute_ids(self.seq, m.sequence))
+                            .collect(),
+                        seq_matches: x.matches,
                     }
                 }
             }
@@ -188,9 +196,9 @@ impl ObservedRegion {
             RegionCompleteness::Partial3Prime => seq.push('^'),
         };
 
-        let (nearest, distance, matches) = self.nearest_matches.to_str_fields();
+        let (nearest, diff, distance, matches) = self.nearest_matches.to_str_fields();
 
-        format!("{}\t{}\t{}\t{}", seq, nearest, distance, matches)
+        format!("{}\t{}\t{}\t{}\t{}", seq, nearest, diff, distance, matches)
     }
 }
 
@@ -232,12 +240,14 @@ pub enum RegionMatch {
     Match {
         seq_match: Arc<LibraryRegion>,
         distance: u64,
+        diff: SequenceDiff,
     },
 
     /// Multiple equidistant matches and the distance
     MultiMatch {
         seq_matches: Vec<Arc<LibraryRegion>>,
         distance: u64,
+        diffs: Vec<SequenceDiff>,
     },
 
     /// Too many matches
@@ -251,35 +261,48 @@ pub enum RegionMatch {
 }
 
 impl RegionMatch {
-    /// Get library Sequence, distance and number of matches as strings for output.
+    /// Get library Sequence(s), difference(s), distance, number of matches as strings for output.
     ///
     /// NoLibrary matches are considered not to have a matching sequence
-    fn to_str_fields(&self) -> (String, String, String) {
+    fn to_str_fields(&self) -> (String, String, String, String) {
         match self {
-            RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => {
-                ("".to_string(), "".to_string(), "0".to_string())
-            }
-            RegionMatch::Overmatched { distance, matches } => {
-                ("".to_string(), distance.to_string(), matches.to_string())
-            }
+            RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => (
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "0".to_string(),
+            ),
+            RegionMatch::Overmatched { distance, matches } => (
+                "".to_string(),
+                "".to_string(),
+                distance.to_string(),
+                matches.to_string(),
+            ),
             RegionMatch::Match {
                 seq_match,
                 distance,
+                diff,
             } => (
                 seq_match.sequence.to_str_or_log(),
+                diff.to_string(),
                 distance.to_string(),
                 "1".to_string(),
             ),
             RegionMatch::MultiMatch {
                 seq_matches,
                 distance,
+                diffs,
             } => {
-                let mut seqs = seq_matches
+                let seqs: String = seq_matches
                     .iter()
                     .map(|x| x.sequence.to_str_or_log())
-                    .collect::<Vec<_>>();
-                seqs.sort();
-                (seqs.join(","), distance.to_string(), seqs.len().to_string())
+                    .join(",");
+
+                let diff_str: String = diffs.iter().map(|x| x.to_string()).join(",");
+
+                let count = seqs.len().to_string();
+
+                (seqs, diff_str, distance.to_string(), count)
             }
         }
     }
