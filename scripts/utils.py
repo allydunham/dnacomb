@@ -69,5 +69,7 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
             os.remove(f"{output}.library_counts.tsv")
         if os.path.exists(f"{output}.summary.tsv"):
             os.remove(f"{output}.summary.tsv")
+        if os.path.exists(f"{output}.filtered.tsv"):
+            os.remove(f"{output}.filtered.tsv")
 
     return (out, end - start)

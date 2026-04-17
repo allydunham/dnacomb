@@ -115,14 +115,14 @@ def main():
 
     print("\nRunning main tests:")
     # Basic function
-    run_test("Basic function", f_file=f"{root}/perfect_grna.fq", output="basic", mode="full-read",
-             verbose=True, sort=True, library=None, rm_output=True, critical=True)
+    run_test("Basic function", f_file=f"{root}/perfect_grna.fq", output=f"{root}/basic",
+             mode="full-read", verbose=True, sort=True, library=None, rm_output=True, critical=True)
 
     run_test("With IDs", f_file=f"{root}/perfect_grna.fq", lib_spec="config/grna.json",
-             output="ids", mode="inframe", metric="hamming", critical=True,
+             output=f"{root}/ids", mode="inframe", metric="hamming", critical=True,
              verbose=True, sort=True, rm_output=True, library=["config/grna.tsv"])
     run_test("Without IDs", f_file=f"{root}/perfect_grna.fq", lib_spec="config/grna_no_id.json",
-             output="no_ids", mode="inframe", metric="hamming", critical=True,
+             output=f"{root}/no_ids", mode="inframe", metric="hamming", critical=True,
              verbose=True, sort=True, rm_output=True, library=["config/grna_no_id.tsv"])
 
     # Full read counts
