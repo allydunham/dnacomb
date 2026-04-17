@@ -1,7 +1,9 @@
-//! Observed sequence regions from a sequencing experiment
+//! Observed variable-region sequences extracted from sequencing reads.
 //!
-//! Structures and functions to store and manipulate library reqions extracted
-//! from sequencing data, as defined by a LibSpec.
+//! This module defines the per-region objects used after read parsing and region
+//! extraction but before full combination-level summarisation. It captures both
+//! the observed sequence itself and how completely that region was observed,
+//! along with optional comparison to an expected library.
 use bio::bio_types::sequence::Sequence;
 use itertools::Itertools;
 use std::sync::Arc;
@@ -10,9 +12,14 @@ use crate::interning::{RegionID, SeqHandle, seq_from_bytes, seq_to_bytes};
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
 use crate::seq_diff::SequenceDiff;
 
-/// Key identifying an observed Region
+/// Key identifying one distinct observed region state.
 ///
-/// Contains a subset of the region information to be used as a hash key
+/// Two observations are considered the same region key if they share:
+/// - the same region ID,
+/// - the same observed sequence,
+/// - and the same completeness status.
+///
+/// This is used to deduplicate repeated region observations across reads.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct RegionKey {
     pub id: RegionID,
@@ -30,12 +37,16 @@ impl RegionKey {
     }
 }
 
-/// Observed sequence for a given library region
+/// Observed sequence for one variable region.
 ///
-/// Each time this sequence is observed for this region it will be linked back to this object to
-/// save library comparison overhead. The struct includes the observed sequence, a marker for
-/// whether the whole region has necessarily been observed (i.e. if it is at the the start or end
-///  of a read) and a RegionMatch object detailing the library match
+/// An `ObservedRegion` stores:
+/// - the region ID,
+/// - the observed sequence,
+/// - how completely that region was observed in the read(s),
+/// - and, once performed, the result of comparison to the expected library.
+///
+/// Identical region observations can be shared across multiple observed
+/// combinations to avoid repeating library-comparison work.
 #[derive(Debug)]
 pub struct ObservedRegion {
     /// Name of the region from LibSpec
@@ -52,7 +63,7 @@ pub struct ObservedRegion {
 }
 
 impl ObservedRegion {
-    /// Create a new ObservedRegion
+    /// Create a new observed region in the uncompared state.
     pub fn new(id: RegionID, seq: &[u8], complete: RegionCompleteness) -> Self {
         Self {
             id,
@@ -62,26 +73,33 @@ impl ObservedRegion {
         }
     }
 
+    /// Length of the observed sequence.
     pub fn len(&self) -> usize {
         seq_to_bytes(self.seq).len()
     }
 
+    /// Return `true` if the observed sequence is empty.
     pub fn is_empty(&self) -> bool {
         seq_to_bytes(self.seq).is_empty()
     }
 
-    /// Check if library comparison has been performed
+    /// Return `true` if library comparison has already been performed for this region.
     pub fn is_compared_to_library(&self) -> bool {
         !matches!(self.nearest_matches, RegionMatch::Uncompared)
     }
 
-    /// Compare the region sequence to a library of oligo options, dispatching to the appropriate implementation
+    /// Compare this observed region to the expected library.
     ///
-    /// The distance to each is calculated and all nearest match indeces below the threshold
-    /// supplied to library are returned.
-    /// If no applicable matches are found nearest_matches will be an empty.
-    /// If over max_matches hits are returned the region will be considered overmatched and
-    /// indeterminant.
+    /// The lookup strategy depends on `completeness`:
+    /// - `Complete` regions are matched against the full library sequence,
+    /// - `Partial5Prime` regions are matched against the library 3' end,
+    /// - `Partial3Prime` regions are matched against the library 5' end,
+    /// - `MissingCenter` and `Overlapping` regions are split into left/right
+    ///   pieces and matched independently before intersecting compatible results.
+    ///
+    /// The result is returned as a `RegionMatch`, which may represent a unique
+    /// match, multiple equally good matches, too many matches, no match, or the
+    /// absence of this region from the supplied library.
     pub fn compare_to_library(
         &self,
         library: &Library,
@@ -182,12 +200,10 @@ impl ObservedRegion {
         }
     }
 
-    /// Generate display string representing the region
+    /// Convert this region into display strings for TSV/output generation.
     ///
-    /// Output a tuple of values that can be used to represent the region (may be replaced
-    /// a struct in future). The values are:
-    ///
-    /// * Sequence (with ^ at start or end to represent incompleteness)
+    /// The returned tuple contains:
+    /// * Sequence (with ^ at start or end to represent a partially truncated end)
     /// * nearest match(s)
     /// * difference to match(s)
     /// * distance from match
@@ -247,68 +263,79 @@ impl ObservedRegion {
     }
 }
 
-/// Whether an observed region is complete
+/// How completely a region was observed in the read data.
 ///
-/// Complete regions are known to be full, either being flanked by neighbours on
-/// both side in the read or being the full expected length. Partial regions might
-/// have more sequence before/after because this is not the case.
+/// Completeness captures whether the full region sequence is known, whether one
+/// end may be truncated by read boundaries, or whether paired-read evidence
+/// produced gapped or overlapping partial observations.
+///
+/// For `MissingCenter` and `Overlapping`, the stored sequence is expected to
+/// contain a separator byte at `split_ind`, with left and right observed
+/// fragments stored on either side.
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum RegionCompleteness {
-    /// A full region
+    /// The full region sequence is believed to be observed.
     Complete,
 
-    /// 5 prime end is potentially incomplete
+    /// The 5' end may be truncated; the observed sequence begins inside the region.
     Partial5Prime,
 
-    /// 3 prime end is potentially incomplete
+    /// The 3' end may be truncated; the observed sequence ends inside the region.
     Partial3Prime,
 
-    /// Reads come from both ends without meeting. Stored as
-    /// both seqs divided by a / at split_ind
+    /// Forward/reverse evidence covers both ends of the region but leaves a gap
+    /// in the middle. The stored sequence contains a `/` separator at `split_ind`.
     MissingCenter { split_ind: usize },
 
-    /// Reads come from both ends and overlap. Stored as
-    /// both seqs divided by a / at split_ind
+    /// Forward/reverse evidence covers both ends of the region and overlaps.
+    /// The stored sequence contains a `/` separator at `split_ind`.
     Overlapping { split_ind: usize },
 }
 
 /// Status of the match between an ObservedRegion and a Library
 ///
-/// Includes the status plus reference(s) to the matched sequence in
-/// the library and how distant it is.
+/// This stores both the qualitative match status and any associated library
+/// sequence(s), distance(s), and sequence-difference information.
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub enum RegionMatch {
-    /// No comparison has occured yet
+    /// Library comparison has not yet been performed.
     Uncompared,
 
-    /// A single match (`Vec<u8>` sequence and library indeces) and associated distance
+    /// A unique best library-region match was found.
     Match {
         seq_match: Arc<LibraryRegion>,
         distance: u64,
         diff: SequenceDiff,
     },
 
-    /// Multiple equidistant matches and the distance
+    /// Multiple equally good best library-region matches were found.
     MultiMatch {
         seq_matches: Vec<Arc<LibraryRegion>>,
         distance: u64,
         diffs: Vec<SequenceDiff>,
     },
 
-    /// Too many matches
+    /// More than `max_matches` equally good matches were found.
     Overmatched { distance: u64, matches: usize },
 
-    /// No match found
+    /// No acceptable library-region match was found.
     Unmatched,
 
-    /// Region not in library, with option to store the observed sequence
+    /// This region is not represented in the supplied library.
+    ///
+    /// The observed sequence may optionally be retained for output.
     NoLibrary { seq: Option<SeqHandle> },
 }
 
 impl RegionMatch {
-    /// Get library Sequence(s), difference(s), distance, number of matches as strings for output.
+    /// Convert the library-match portion of this region comparison into strings
+    /// for TSV/output generation.
     ///
-    /// NoLibrary matches are considered not to have a matching sequence
+    /// Returns:
+    /// - matching sequence(s),
+    /// - sequence difference(s),
+    /// - match distance,
+    /// - number of matches.
     pub fn to_strings(&self) -> (String, String, String, String) {
         match self {
             RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => (

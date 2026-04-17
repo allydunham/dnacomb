@@ -1,11 +1,18 @@
-//! Core data structures for DNA sequence objects
+//! Core sequence container types used throughout DNAComb.
 //!
-//! Provides various core data objects needed across the library for DNA sequences.
+//! This module provides lightweight containers for:
+//! - full read sequences (`SeqPair`), used as stable keys and cached values,
+//! - parsed sequencing records plus grouping metadata (`ReadPair`), used during
+//!   parsing and counting.
 use crate::interning::SeqHandle;
 use crate::{groups::ReadGroup, interning::seq_from_bytes};
 use bio::{bio_types::sequence::Sequence, io::fastq};
 
-/// Pair of sequences
+/// Forward/reverse sequence pair used as a stable content-based key.
+///
+/// `SeqPair` stores only sequence content, not qualities, IDs, or grouping
+/// metadata. It is therefore suitable for hashing, deduplication, caching,
+/// and output.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct SeqPair {
     pub forward: SeqHandle,
@@ -13,6 +20,7 @@ pub struct SeqPair {
 }
 
 impl SeqPair {
+    /// Construct a `SeqPair` from owned forward and optional reverse sequences.
     pub fn new(forward: Sequence, reverse: Option<Sequence>) -> Self {
         Self {
             forward: seq_from_bytes(&forward),
@@ -20,6 +28,10 @@ impl SeqPair {
         }
     }
 
+    /// Build a sequence-only key from a parsed `ReadPair`.
+    ///
+    /// This drops read names, qualities, and grouping metadata while preserving
+    /// forward/reverse sequence content.
     pub fn from_readpair(rp: &ReadPair) -> Self {
         Self::new(
             rp.forward.seq().to_vec(),
@@ -28,7 +40,11 @@ impl SeqPair {
     }
 }
 
-/// Pair of linked Fastq reads
+/// Parsed sequencing read pair plus grouping metadata.
+///
+/// This is the main record type yielded by parsers during counting. It stores
+/// FASTQ-style forward and optional reverse reads together with the assigned
+/// `ReadGroup`.
 #[derive(Debug)]
 pub struct ReadPair {
     pub forward: fastq::Record,
@@ -37,11 +53,15 @@ pub struct ReadPair {
 }
 
 impl ReadPair {
-    /// Generate a key to identify unique read types
+    /// Generate the corresponding sequence-only `SeqPair` key.
+    ///
+    /// This is useful for caching and deduplication where only sequence content
+    /// matters.
     pub fn key(&self) -> SeqPair {
         SeqPair::from_readpair(self)
     }
 
+    /// Consume this `ReadPair` and convert it into a sequence-only `SeqPair`.
     pub fn into_seqpair(self) -> SeqPair {
         SeqPair::new(
             self.forward.seq().to_vec(),

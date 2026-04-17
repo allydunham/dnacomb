@@ -1,23 +1,33 @@
-//! Facilities to intern and deduplicate frequently used objects
+//! Facilities for interning and deduplicating frequently reused sequences and IDs.
 //!
-//! Interning sequences (Vec<u8>) and strings (e.g. group and region names) can
-//! drastically decrease memory usage as they are included in many objects.
-//! It can therefore increase speed as copying load is a significant overhead and
-//! moves initial comparisons to an O(1) opperation.
+//! DNAComb stores many repeated sequence values and short identifiers such as
+//! region names, library IDs, and read-group labels. In the default `interning`
+//! configuration, these values are deduplicated into shared global interners and
+//! referred to through compact handle types.
 //!
-//! Interning has no garbage collection because the standard workflow on the CLI accumalates
-//! then outputs and everything is always in use. For use as a more general library where you
-//! might process then drop sequences/regions/groups a feature flag is included to disable
-//! interning in favour of a pass-through owned sequence/string.
+//! Benefits of interning include:
+//! - reduced memory usage when the same values occur many times,
+//! - cheaper cloning and copying of handles,
+//! - and fast equality/hash behaviour driven by compact identifiers.
 //!
-//! Public API (same in both modes):
-//!   - SeqHandle,   seq_from_bytes(),   seq_bytes()
-//!   - GroupHandle, group_from_str(),   group_str()
-//!   - RegionHandle, region_from_str(), region_str()
+//! When the `interning` feature is disabled, the same public API is preserved
+//! but handles wrap owned shared data directly instead of global interned IDs.
+//! This can be preferable in library-style workflows where values are created
+//! and dropped over time and global accumulation is undesirable.
 //!
-//! Since Groups, IDs and Regions are both strings they use ThreadedRodeo but are separated to allow
+//! Public API available in both modes:
+//! - `SeqHandle`, `seq_from_bytes()`, `seq_to_bytes()`
+//! - `GroupID`, `group_id_from_str()`, `group_id_to_str()`
+//! - `LibraryID`, `library_id_from_str()`, `library_id_to_str()`
+//! - `RegionID`, `region_id_from_str()`, `region_id_to_str()`
+//!
+//! SeqHandle uses a custom implementation to deal with the specifics of sequence data
+//! and Groups, IDs and Regions use ThreadedRodeo but are separated to allow
 //! different tuning since they have different access patterns
-
+//!
+//! In interning mode, interned values are stored in global process-wide tables
+//! and are not garbage collected during execution. This matches DNAComb's main
+//! CLI workflow, where values accumulate until final output.
 use std::sync::Arc;
 
 #[cfg(feature = "interning")]
@@ -38,45 +48,61 @@ mod enabled {
     /// Shared unique SeqInterner instance storing interned sequences
     static SEQ_INTERNER: Lazy<SeqInterner> = Lazy::new(SeqInterner::default);
 
-    /// Get a SeqHandle for a Sequence vector, interning it if it's new
+    /// Return a handle for the given sequence bytes.
+    ///
+    /// In interning mode, identical byte sequences resolve to the same canonical
+    /// handle across the process. In non-interning mode, a new owned shared value
+    /// may be created, but equality and hashing remain content-based.
     #[inline]
     pub fn seq_from_bytes(bytes: &[u8]) -> SeqHandle {
         SEQ_INTERNER.intern(bytes)
     }
 
-    /// Resolve seq handle to owned Sequence (Arc<[u8]>)
+    /// Resolve a sequence handle to shared sequence bytes.
+    ///
+    /// The returned value is cheap to clone and may share storage with other
+    /// equal handles.
     #[inline]
     pub fn seq_to_bytes(h: SeqHandle) -> Arc<[u8]> {
         SEQ_INTERNER.resolve(h)
     }
 
-    // Reserve more space in the Sequence interner
+    /// Reserve capacity for additional unique sequences in the sequence interner.
+    ///
+    /// This is only meaningful in interning mode and can reduce allocation churn
+    /// when the approximate number of unique sequences is known in advance.
     pub fn reserve_seq_interner(estimated_unique: usize) {
         SEQ_INTERNER.reserve(estimated_unique);
     }
 
-    /// Check how many sequences are in the reverse interner
+    /// Return the number of sequence entries currently stored in the reverse map.
     #[inline]
     pub fn num_interned_reverse() -> usize {
         SEQ_INTERNER.num_interned_reverse()
     }
 
-    /// Check how many sequences are in the forward interner
+    /// Return the number of distinct canonical sequences currently stored in the forward map.
     #[inline]
     pub fn num_interned_forward() -> usize {
         SEQ_INTERNER.num_interned_forward()
     }
 
-    /// Handle to access a Sequence object (Vec<u8>)
+    /// Handle identifying an observed sequence.
     ///
-    /// This access point interns the underlying vector to save duplication. It is
-    /// implemented as a NonZeroU32 ID under the hood to allow Option<SeqHandle> to
-    /// fit in 4 bytes.
+    /// `SeqHandle` is copyable, hashable, and equality-comparable. In interning
+    /// mode it is backed by a compact non-zero integer ID, allowing
+    /// `Option<SeqHandle>` to use niche optimisation and remain the same size as
+    /// `SeqHandle` itself. In non-interning mode it is a thin wrapper around an owned
+    /// Vec<u8>
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SeqHandle(NonZeroU32);
 
     impl SeqHandle {
+        /// Return the raw underlying handle value.
+        ///
+        /// This is mainly useful for diagnostics and internal plumbing rather
+        /// than normal library use.
         #[inline]
         pub fn get(self) -> u32 {
             self.0.get()
@@ -98,20 +124,22 @@ mod enabled {
             (self.0.get() - 1) as usize
         }
 
+        /// Length of the referenced sequence in bases/bytes.
         #[inline]
         pub fn len(self) -> usize {
             seq_to_bytes(self).len()
         }
 
+        /// Return `true` if the referenced sequence is empty.
         #[inline]
         pub fn is_empty(self) -> bool {
             seq_to_bytes(self).is_empty()
         }
 
-        /// Convert the contained sequence to a string, logging UTF-8 failures
+        /// Convert the sequence to a UTF-8 string for output, logging failures.
         ///
-        /// UTF-8 failures should be sufficiently uncommon and generally occur in
-        /// final output so often want to log and continue to see what the state is
+        /// This is intended for diagnostics and table writing; non-UTF-8 content
+        /// yields an empty string after logging a warning.
         #[inline]
         pub fn to_str_or_log(self) -> String {
             seq_to_string_or_log(&seq_to_bytes(self).to_vec())
@@ -142,6 +170,12 @@ mod enabled {
         }
     }
 
+    /// Global concurrent sequence interner.
+    ///
+    /// Maintains:
+    /// - a forward map from canonical byte content to handle metadata,
+    /// - a reverse table from handle to canonical bytes,
+    /// - and a monotonic ID allocator for new unique sequences.
     pub struct SeqInterner {
         /// Forward map: canonical bytes -> id
         forward: DashMap<Arc<[u8]>, Arc<ForwardEntry>, RandomState>,
@@ -164,6 +198,10 @@ mod enabled {
     }
 
     impl SeqInterner {
+        /// Intern a sequence and return its canonical handle.
+        ///
+        /// Concurrent callers interning the same byte sequence will converge on
+        /// the same published handle.
         #[inline]
         pub fn intern(&self, bytes: &[u8]) -> SeqHandle {
             // First, get or set reference to the forward interner
@@ -228,22 +266,24 @@ mod enabled {
             }
         }
 
+        /// Resolve a handle back to its canonical shared byte sequence.
         #[inline]
         pub fn resolve(&self, id: SeqHandle) -> Arc<[u8]> {
             self.reverse.read()[id.index0()].clone()
         }
 
+        /// Reserve space in the interner
         pub fn reserve(&self, additional_unique: usize) {
             self.reverse.write().reserve(additional_unique);
         }
 
-        /// Check how many sequences are in the reverse interner
+        /// Return the number of sequence entries currently stored in the reverse map.
         #[inline]
         pub fn num_interned_reverse(&self) -> usize {
             self.reverse.read().len()
         }
 
-        /// Check how many sequences are in the forward interner
+        /// Return the number of distinct canonical sequences currently stored in the forward map.
         #[inline]
         pub fn num_interned_forward(&self) -> usize {
             self.forward.len()
@@ -274,12 +314,12 @@ mod enabled {
     /// Shared unique interner instance storing Group names
     static GROUP_IDS: Lazy<ThreadedRodeo<GroupKey>> = Lazy::new(ThreadedRodeo::<GroupKey>::new);
 
-    /// Global interned group ID
+    /// Interned identifier for a read-group label string.
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct GroupID(GroupKey);
 
-    /// Get a GroupID for a Group ID, interning it if it's new
+    /// Get a GroupID for a read group string, interning it if it's new
     #[inline]
     pub fn group_id_from_str(s: &str) -> GroupID {
         GroupID(GROUP_IDS.get_or_intern(s))
@@ -297,7 +337,7 @@ mod enabled {
         GroupID(GroupKey(i))
     }
 
-    /// Resolve GroupID to raw in
+    /// Resolve GroupID to raw int
     #[inline]
     pub fn group_id_to_raw(id: GroupID) -> NonZeroU32 {
         id.0.0
@@ -350,18 +390,28 @@ mod enabled {
 mod disabled {
     use super::Arc;
 
-    // Sequences (Vec<u8>)
-    /// Non-interning handle to access a Sequence object (Vec<u8>)
+    /// Shared owned sequence handle used when interning is disabled.
+    ///
+    /// Unlike the interned backend, identical sequences are not guaranteed to
+    /// share a global canonical ID, but equality and hashing still behave by
+    /// sequence content so the public API remains semantically compatible.
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SeqHandle(pub Arc<[u8]>);
 
-    /// Get a SeqHandle for a Sequence vector (non-interning)
+    /// Return a handle for the given sequence bytes.
+    ///
+    /// In interning mode, identical byte sequences resolve to the same canonical
+    /// handle across the process. In non-interning mode, a new owned shared value
+    /// may be created, but equality and hashing remain content-based.
     #[inline]
     pub fn seq_from_bytes(bytes: &[u8]) -> SeqHandle {
         SeqHandle(Arc::<[u8]>::from(bytes))
     }
 
-    /// Convert a non-interning SeqHandle to Sequence bytes
+    /// Resolve a sequence handle to shared sequence bytes.
+    ///
+    /// The returned value is cheap to clone and may share storage with other
+    /// equal handles.
     #[inline]
     pub fn seq_to_bytes(h: SeqHandle) -> Arc<[u8]> {
         h.0
@@ -371,7 +421,7 @@ mod disabled {
     pub fn reserve_seq_interner(_estimated_unique: usize) {}
 
     // Group IDs (Str)
-    /// Non-interning handle to access Group IDs
+    /// Shared owned group identifier used when interning is disabled.
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct GroupID(pub Arc<str>);
 
@@ -388,7 +438,7 @@ mod disabled {
     }
 
     // Library IDs (Str)
-    /// Non-interning handle to access Group IDs
+    /// Shared owned library identifier used when interning is disabled.
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct LibraryID(pub Arc<str>);
 
@@ -405,7 +455,7 @@ mod disabled {
     }
 
     // Region IDs (Str)
-    /// Non-interning handle to access Region IDs
+    /// Shared owned region identifier used when interning is disabled.
     #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct RegionID(pub Arc<str>);
 

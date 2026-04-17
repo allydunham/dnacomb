@@ -1,7 +1,13 @@
-//! Read Group Data Structure
+//! Read-group identifiers used to partition counts.
 //!
-//! ReadGroup struct with interning and non-interning forms
-
+//! A `ReadGroup` represents the grouping assigned to a read during parsing,
+//! for example from a regex capture on the read name. Two sentinel values are
+//! also supported:
+//! - `ungrouped`, for workflows where no grouping is configured,
+//! - `unmatched`, for reads where grouping was requested but no capture was found.
+//!
+//! This module provides both interned and non-interned implementations behind
+//! the same public API.
 #[cfg(feature = "interning")]
 mod enabled {
     use std::fmt;
@@ -11,8 +17,13 @@ mod enabled {
         group_id_from_raw, group_id_from_str, group_id_to_raw, group_id_to_str,
     };
 
-    /// ReadGroup using interned GroupID with niche optimization.
-    /// The first 2 bits are reserved for Option<ReadGroup> (via NonZeroU32) and the flag variants
+    /// Compact read-group identifier with special sentinel values for
+    /// ungrouped and unmatched reads.
+    ///
+    /// In the interning backend, named groups are stored as interned IDs while
+    /// `ungrouped` and `unmatched` are represented as reserved flag values.
+    /// Internally this uses a NonZeroU32 for Option niche optimisation and the
+    /// first 2 bits are reserved for the sentinel values.
     #[repr(transparent)]
     #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
     pub struct ReadGroup(NonZeroU32);
@@ -23,19 +34,20 @@ mod enabled {
         const FLAG_BITS: u32 = 0b11;
         // 4+ reserved for interned GroupIDs
 
-        /// Create an Ungrouped ReadGroup
+        /// Construct the sentinel value used when no grouping is configured.
         #[inline]
         pub fn ungrouped() -> Self {
             ReadGroup(NonZeroU32::new(Self::UNGROUPED).expect("Know this is 1"))
         }
 
-        /// Create an Unmatched ReadGroup
+        /// Construct the sentinel value used when grouping is configured but
+        /// no group could be extracted for a read.
         #[inline]
         pub fn unmatched() -> Self {
             ReadGroup(NonZeroU32::new(Self::UNMATCHED).expect("Know this is 2"))
         }
 
-        /// Create a ReadGroup from a group name string (interns if needed)
+        /// Create a ReadGroup from a group name string (interning if needed)
         #[inline]
         pub fn grouped(s: &str) -> Self {
             // Send string to the interner, retrieving the ID and interning if necessary
@@ -43,25 +55,29 @@ mod enabled {
             ReadGroup(group_id_to_raw(group_id))
         }
 
-        /// Check if this is Ungrouped
+        /// Return `true` if this read belongs to the `ungrouped` sentinel class.
         #[inline]
         pub fn is_ungrouped(&self) -> bool {
             self.0.get() == Self::UNGROUPED
         }
 
-        /// Check if this is Unmatched
+        /// Return `true` if grouping was attempted but no group was matched.
         #[inline]
         pub fn is_unmatched(&self) -> bool {
             self.0.get() == Self::UNMATCHED
         }
 
-        /// Check if this is a Match variant
+        /// Return `true` if this value represents a concrete named group.
         #[inline]
         pub fn is_match(&self) -> bool {
             self.0.get() > Self::FLAG_BITS
         }
     }
 
+    /// Display as the stable output form used in TSVs:
+    /// - `ungrouped` renders as an empty string,
+    /// - `unmatched` renders as `_unmatched_`,
+    /// - named groups render as their group label.
     impl fmt::Display for ReadGroup {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             if self.is_match() {
@@ -84,7 +100,12 @@ mod enabled {
 mod disabled {
     use std::fmt;
 
-    /// Group status of a read (non-interning)
+    /// Read-group assignment for a read.
+    ///
+    /// This enum distinguishes three cases:
+    /// - `Ungrouped`: no grouping was requested,
+    /// - `Unmatched`: grouping was requested but no capture was found,
+    /// - `Match(String)`: a concrete extracted group label.
     #[derive(Debug, Clone, Eq, PartialEq, Hash)]
     pub enum ReadGroup {
         Ungrouped,
@@ -93,34 +114,42 @@ mod disabled {
     }
 
     impl ReadGroup {
-        /// Create an Unmatched ReadGroup
+        /// Construct the sentinel value used when no grouping is configured.
         pub fn ungrouped() -> Self {
             Self::Ungrouped
         }
 
-        /// Create an Unmatched ReadGroup
+        /// Construct the sentinel value used when grouping is configured but
+        /// no group could be extracted for a read.
         pub fn unmatched() -> Self {
             Self::Unmatched
         }
 
-        /// Create a ReadGroup from a group name string (non-interning)
+        /// Construct a named read group from an extracted group label.
         pub fn grouped(s: &str) -> Self {
             ReadGroup::Match(s.to_string())
         }
 
+        /// Return `true` if this read belongs to the `ungrouped` sentinel class.
         pub fn is_ungrouped(&self) -> bool {
             matches!(self, ReadGroup::Ungrouped)
         }
 
+        /// Return `true` if grouping was attempted but no group was matched.
         pub fn is_unmatched(&self) -> bool {
             matches!(self, ReadGroup::Unmatched)
         }
 
+        /// Return `true` if this value represents a concrete named group.
         pub fn is_match(&self) -> bool {
             matches!(self, ReadGroup::Match(_))
         }
     }
 
+    /// Display as the stable output form used in TSVs:
+    /// - `ungrouped` renders as an empty string,
+    /// - `unmatched` renders as `_unmatched_`,
+    /// - named groups render as their group label.
     impl fmt::Display for ReadGroup {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {

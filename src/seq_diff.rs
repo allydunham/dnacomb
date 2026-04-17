@@ -1,8 +1,8 @@
-//! Sequence difference tracking using edit distance operations
+//! Sequence-difference tracking for observed versus expected DNA sequences.
 //!
-//! Provides HGVS-notation compatible representations of differences between
-//! observed and expected DNA sequences.
-
+//! This module computes edit operations between an observed sequence and an
+//! expected/library sequence and formats those differences in a compact,
+//! HGVS-inspired string representation for output.
 use std::cell::RefCell;
 use std::fmt::{self, Display};
 
@@ -31,18 +31,30 @@ thread_local! {
     );
 }
 
+/// One edit operation transforming an expected sequence into an observed sequence.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum EditOperation {
+    /// Substitution at the given zero-based expected-sequence position:
+    /// `(position, expected_base, observed_base)`.
     Sub(usize, u8, u8),
+
+    /// Insertion in the observed sequence after the given expected-sequence position.
     Ins(usize, Vec<u8>),
+
+    /// Deletion from the expected sequence starting at the given zero-based position.
     Del(usize, Vec<u8>),
 }
 
 impl EditOperation {
+    /// Format this edit operation in a compact HGVS-like string form.
+    ///
+    /// Substitutions are reported using 1-based positions. Insertions and
+    /// deletions are reported as interval-style events relative to the expected
+    /// sequence coordinates.
     pub fn to_hgvs_string(&self) -> String {
         match self {
-            EditOperation::Sub(pos, obs, exp) => {
-                format!("{}{}>{}", pos + 1, *obs as char, *exp as char)
+            EditOperation::Sub(pos, exp, obs) => {
+                format!("{}{}>{}", pos + 1, *exp as char, *obs as char)
             }
             EditOperation::Ins(pos, seq) => {
                 format!("{}_{}_ins{}", pos, pos + 1, String::from_utf8_lossy(seq))
@@ -59,12 +71,15 @@ impl EditOperation {
     }
 }
 
+/// Collection of edit operations describing the difference between an observed
+/// sequence and an expected sequence.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct SequenceDiff {
     pub operations: Vec<EditOperation>,
 }
 
 impl SequenceDiff {
+    /// Construct a sequence diff from a precomputed list of edit operations.
     pub fn new(operations: Vec<EditOperation>) -> Self {
         Self { operations }
     }
@@ -75,7 +90,12 @@ impl SequenceDiff {
         Self::compute(&seq_to_bytes(observed), &seq_to_bytes(expected))
     }
 
-    /// Compute diff between observed and expected sequences
+    /// Compute the edit operations needed to describe an observed sequence
+    /// relative to an expected sequence.
+    ///
+    /// A global alignment is used to derive substitutions, insertions, and
+    /// deletions. Consecutive insertion or deletion operations are merged into
+    /// single multi-base events where possible. Positions are reported relative to the expected sequence.
     pub fn compute(observed: &[u8], expected: &[u8]) -> Self {
         if observed.is_empty() && expected.is_empty() {
             return Self::new(Vec::new());
@@ -183,6 +203,7 @@ impl SequenceDiff {
     }
 }
 
+/// Display as `;`-separated HGVS-like edit operations.
 impl Display for SequenceDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

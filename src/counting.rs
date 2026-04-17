@@ -1,10 +1,16 @@
-//! Counting the occurance of different reads in sequence files
+//! Counting and region-extraction algorithms for structured sequencing reads.
 //!
-//! Contains methods for counting combinations of expected
-//! regions in DNA sequence input.
-//! Supports multiple approaches for extracting regions of interest
-//! from the input sequence: alignment, pattern matching, inframe
-//! position matching and full read counting.
+//! This module contains the core logic for converting sequencing reads into
+//! `ObservedCombinations`. It supports several extraction strategies with
+//! different robustness/performance tradeoffs:
+//! - alignment to a full template,
+//! - flanking-pattern matching,
+//! - in-frame positional extraction,
+//! - and raw full-read counting.
+//!
+//! It also contains helper logic for pairing forward/reverse evidence within
+//! a region and for dispatching counting work across multiple threads. The
+//! `count_reads` function is one of the key entry points into DNAComb.
 use bio::alignment::AlignmentOperation;
 use bio::alignment::distance::hamming;
 use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
@@ -27,15 +33,15 @@ use crate::region::{RegionCompleteness, RegionKey};
 use crate::seqs::{ReadPair, SeqPair};
 use crate::utils::mean_quality;
 
-/// Position in an alignment where a region is found
+/// Query interval and completeness assigned to one expected region:
+/// `(start, end, completeness)`.
 ///
-/// Has the format (start, stop, RegionCompleteness status)
+/// Coordinates are query-sequence positions using the 1-based convention derived
+/// from Rust-Bio alignment paths.
 pub type AlignmentPosition = (usize, usize, RegionCompleteness);
 
-/// Region sequence identified while searching an input sequence, containing
-/// the found sequence, quality and whether it is complete. Convenience type
-/// for counting functions that is quickly processed into region keys and the
-/// proper combination structs.
+/// Observed region sequence, quality values, and completeness status extracted
+/// from one read.e
 type RegionMatch = (Sequence, Vec<u8>, RegionCompleteness);
 
 static WARN_MERGE: Once = Once::new();
@@ -87,7 +93,12 @@ const RAW_LOG_INTERVAL: u64 = 1000;
 #[cfg(not(debug_assertions))]
 const RAW_LOG_INTERVAL: u64 = 10000000;
 
-/// Customisable alignment scoring scheme allowing Ns
+/// Alignment scoring scheme for template-based region extraction.
+///
+/// This wraps the match/mismatch/gap parameters used for semi-global alignment
+/// against the LibSpec template. Matches involving `N` use a separate score so
+/// that variable regions represented by `N` in the template can align flexibly
+/// without being treated as either full matches or full mismatches.
 #[derive(Debug, Copy, Clone)]
 pub struct AlignmentScorer {
     std_match: i32,
@@ -114,19 +125,18 @@ impl AlignmentScorer {
         }
     }
 
-    /// Generate a matching Scoring object to use with Rust Bio alignment
+    /// Build a Rust-Bio `Scoring` object using this scorer for match evaluation.
     pub fn get_scoring(self) -> Scoring<AlignmentScorer> {
         Scoring::new(self.gap_open, self.gap_extend, self)
     }
 }
 
 impl MatchFunc for AlignmentScorer {
-    /// Alignment match scores allowing Ns
+    /// Score a single aligned base pair.
     ///
-    /// Return a (mis)match score that allows alignment of anything against N
-    /// with a moderate penalty. Penalty is greater than a mismatch but less
-    /// than a gap to account for possible sequencing errors before variable
-    /// regions, which otherwise get shunted into the N region
+    /// Return a (mis)match score for a pair of bytes. `N` is treated specially so
+    /// that template positions representing variable regions can absorb sequence
+    /// variation with an intermediate penalty.
     fn score(&self, a: u8, b: u8) -> i32 {
         if a == b'N' || b == b'N' {
             self.n_match
@@ -138,11 +148,22 @@ impl MatchFunc for AlignmentScorer {
     }
 }
 
-/// Extract the regions of a query sequence that match template sections by walking
-/// an alignment path and region position vector together
+/// Map template-region intervals onto query-sequence intervals by walking an
+/// alignment path.
 ///
-/// Returns a vector of AlignmentPostions the same length as region_positions where each entry gives
-/// the corresponding position in the query sequence plus a RegionCompleteness status
+/// `region_positions` should contain template intervals in ascending order,
+/// expressed using the same 1-based coordinate convention as Rust-Bio alignment
+/// paths. The returned vector has the same length, with each element giving the
+/// corresponding query interval and `RegionCompleteness` status if that region
+/// could be located in the alignment.
+///
+/// Regions may be returned as:
+/// - complete,
+/// - truncated at the 5' or 3' end,
+/// - or absent (`None`) if no sequence could be assigned.
+///
+/// This helper is used by alignment-based counting to translate template-relative
+/// region definitions into observed query substrings.
 fn regions_from_alignment_path(
     region_positions: &[(usize, usize)],
     alignment_path: &[(usize, usize, AlignmentOperation)],
@@ -220,7 +241,7 @@ fn regions_from_alignment_path(
             });
         }
 
-        // TODO - need to work out partial matches properly (both alignment end and region expected length?) and need to deal with different alignment opperations
+        // TODO - need to work out partial matches properly (both alignment end and region expected length?) and need to deal with different alignment operations
 
         // Check break conditions
         if reg_idx == region_positions.len() {
@@ -256,13 +277,25 @@ fn regions_from_alignment_path(
     Ok(out_regions)
 }
 
-/// Merge a forward and reverse sequence in a region
+/// This combines two region observations derived from opposite reads into a
+/// single observed sequence plus a `RegionCompleteness` state.
 ///
-/// Looks at each position in turn and takes the highest quality option, if any.
-/// Args are tuples with sequence, quality vector and a completeness tag, plus the
-/// expected region length. This only works for fixed length, will need something
-/// more complete if there is variable overlap (plus should really warn to use a read
-/// merger at that point).
+/// Behaviour depends on completeness:
+/// - if only one side is present, that side is used;
+/// - if one side is complete, it takes precedence;
+/// - if both sides are partial and non-overlapping, the result is marked
+///   `MissingCenter`;
+/// - if both sides are partial and overlapping, the result is marked
+///   `Overlapping`;
+/// - if both sides cover the same span, the higher-quality sequence is chosen.
+///
+/// This function assumes a fixed expected region length and uses that to infer
+/// whether partial forward/reverse observations overlap or leave a gap. In general
+/// using hte max length for variable length regions gives reasonable outcomes.
+///
+/// This function is intentionally quite a basic attempt to merge information and
+/// it is recommended (including in a warning on use) that using a dedicated read merger
+/// will be more robust when overlap is expected.
 fn merge_seqs(
     fwd: Option<RegionMatch>,
     rev: Option<RegionMatch>,
@@ -419,15 +452,20 @@ fn merge_seqs(
     }
 }
 
-/// Find region matches by pattern
+/// Extract variable regions by searching for flanking fixed-sequence patterns.
 ///
-/// Search an input sequence for regions flanked by the input patterns, in the order
-/// they occur. Not all regions need to be identified, but those found will be a
-/// continuous subsequence. For instance, it may return hits for regions 2-4 but
-/// be missing regions 1 and 5. Where the first/last flank sequence is None it is
-/// considered to start/end at the sequence start/end. A mismatch tolerance allows
-/// close flank matches to be considered hits to correct for errors, but this requires
-/// care where multiple flank sequences have similar sequences.
+/// Each variable region is defined by one of:
+/// - a start-of-read open flank,
+/// - an end-of-read open flank,
+/// - or fixed flanks on both sides.
+///
+/// Matching proceeds left-to-right through the read. Regions found form a
+/// continuous subsequence of the expected region list: once a required flank is
+/// missed, downstream regions are not recovered later in the read.
+///
+/// `tolerance` allows a bounded number of mismatches in flank-pattern matching.
+/// This improves robustness to sequencing errors in fixed regions, but increases
+/// the risk of ambiguous or incorrect matches when flanking patterns are similar.
 ///
 /// Returns a vector of hits, one per input region with None if the region is missing or
 /// Some((Sequence, Phred Quality, RegionCompleteness)) tuple
@@ -642,18 +680,51 @@ fn join_observed_combinations(
     }
 }
 
-/// Count algorithm to apply
+/// Region-extraction strategy to use during counting.
+///
+/// Different modes trade off robustness, assumptions about read structure, and
+/// speed.
 #[derive(Clone, ValueEnum, Debug, Copy)]
 pub enum CountMode {
+    /// Count complete read sequences without structured region extraction.
     FullRead,
+
+    /// Extract regions from their expected in-read positions.
+    ///
+    /// Fast, but assumes reads are already in frame and region lengths are fixed.
     Inframe,
+
+    /// Extract regions using fixed flanking sequences.
+    ///
+    /// Faster than alignment and supports variable-length regions, but relies on
+    /// intact flanking sequence and only recovers a continuous block of regions.
     Pattern,
+
+    /// Extract regions by semi-global alignment to the full template.
+    ///
+    /// Most robust and the default choice for complex or noisy data, but slowest.
     Align,
 }
 
-/// Count the occurance of query regions in sequencing reads
+/// Count observed read forms from a sequencing dataset.
 ///
-/// Dispatches counting to the appropriate implementation based on CountMode
+/// This is the main entry point for region extraction and counting. It dispatches
+/// to one of the supported counting modes, applies configured read/alignment
+/// filtering, optionally caches sequence-derived results, and can parallelise the
+/// counting step across worker threads.
+///
+/// Behaviour depends on `mode`:
+/// - `Align` requires a `LibrarySpec` and an `AlignmentScorer`,
+/// - `Pattern` requires a `LibrarySpec`, `pattern_length`, and `pattern_tolerance`,
+/// - `Inframe` requires a `LibrarySpec`,
+/// - `FullRead` can operate without a `LibrarySpec`.
+///
+/// If `full_seq` is true, the full read sequence(s) are stored alongside each
+/// observed combination; otherwise only extracted regions are tracked.
+///
+/// The returned `ObservedCombinations` contains unfiltered counts, filtered-read
+/// summaries, and any read-level cache accumulated during counting. Library
+/// comparison is not performed here.
 pub fn count_reads<T: ReadPairProducer>(
     reads: T,
     lib_spec: &Option<LibrarySpec>,
@@ -801,7 +872,11 @@ pub fn count_reads<T: ReadPairProducer>(
     }
 }
 
-/// Count single end reads by aligning to the library template
+/// Count single-end reads by semi-global alignment to the LibSpec template.
+///
+/// Variable regions are located by mapping the alignment path back onto template
+/// region intervals. This is the most robust structured counting mode, but also
+/// the slowest.
 fn count_single_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -936,7 +1011,12 @@ fn count_single_align<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads by aligning to the library template
+/// Count paired-end reads by aligning forward and reverse reads independently
+/// to the LibSpec template and then merging per-region evidence.
+///
+/// Reverse reads are reverse-complemented before alignment. Where both reads
+/// contribute evidence for the same region, `merge_seqs` is used to reconcile
+/// complete, partial, overlapping, or gapped observations.
 fn count_paired_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1209,7 +1289,11 @@ fn count_paired_align<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count single end reads using surrounding patterns from the library template
+/// Count single-end reads by identifying variable regions from flanking fixed-sequence patterns.
+///
+/// This mode is faster than alignment and still supports variable-length regions,
+/// but depends on reliable flanking sequence and may fail to recover downstream
+/// regions once an earlier flank is missed.
 fn count_single_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1292,7 +1376,11 @@ fn count_single_pattern<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads using surrounding patterns from the library template
+/// Count paired-end reads by identifying variable regions from flanking fixed-sequence patterns.
+///
+/// This mode is faster than alignment and still supports variable-length regions,
+/// but depends on reliable flanking sequence and may fail to recover downstream
+/// regions once an earlier flank is missed.
 fn count_paired_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1408,7 +1496,11 @@ fn count_paired_pattern<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count single end reads based on their in-frame position in the template
+/// Count single-end reads by extracting regions from expected in-read positions.
+///
+/// This mode assumes reads begin at the configured LibSpec start region and that
+/// region boundaries can be inferred directly from template coordinates. It is
+/// therefore best suited to fixed-length, well-framed reads.
 fn count_single_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1523,7 +1615,11 @@ fn count_single_inframe<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads based on their in-frame position in the template
+/// Count paired-end reads by extracting regions from expected in-read positions.
+///
+/// This mode assumes reads begin at the configured LibSpec start region and that
+/// region boundaries can be inferred directly from template coordinates. It is
+/// therefore best suited to fixed-length, well-framed reads.
 fn count_paired_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1734,7 +1830,11 @@ fn count_paired_inframe<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count entire single end reads
+/// Count complete read sequences without structured region extraction.
+///
+/// This mode still applies read-level filtering, but does not use the LibSpec
+/// region structure and stores each full read (or read pair) as a distinct
+/// observed combination.
 fn count_raw<T: ReadPairProducer>(
     reads: T,
     filter_config: FilterConfig,

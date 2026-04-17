@@ -1,8 +1,8 @@
-//! Utility fucntions for use throughout the library
-//!
-//! Provides a range of utility functions that are needed across modules
+//! Small utility helpers used across DNAComb.
 
-/// Calculate the mean of a fastq quality vector
+/// Compute the mean Phred quality score from FASTQ quality bytes.
+///
+/// Input qualities are assumed to use Phred+33 encoding.
 pub fn mean_quality(qual: &[u8]) -> f32 {
     if qual.is_empty() {
         return 0.0;
@@ -12,7 +12,9 @@ pub fn mean_quality(qual: &[u8]) -> f32 {
     total as f32 / qual.len() as f32 - 33.0 // Subtract 33 as Phred scores are shifted 33 in byte codepoints
 }
 
-/// Divide x / y or return 0.0 if y == 0
+/// Divide `x / y`, returning `0.0` when `y == 0.0`.
+///
+/// This is mainly used when reporting proportions in summary/output tables.
 pub fn div_or_zero(x: f32, y: f32) -> f32 {
     if y == 0.0 {
         return 0.0;

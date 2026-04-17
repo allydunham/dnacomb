@@ -1,8 +1,13 @@
-//! Specification for DNA constructs and libraries
+//! Definition and validation of DNA construct specifications (`LibSpec`).
 //!
-//! Provides methdods for importing JSON based DNA construct specifications
-//! and manipulating them. Additionally supports TSV libraries corresponding
-//! to these constructs, with lookup capabilities.
+//! A `LibrarySpec` describes the expected structure of a sequenced construct:
+//! the ordered regions that make up the construct, which regions are fixed or
+//! variable, where forward and reverse reads are expected to start, and optional
+//! per-region matching tolerances for later library comparison.
+//!
+//! This module also provides helpers for deriving template sequences, expected
+//! read sequences, variable-region flanks, and other information needed by the
+//! counting algorithms.
 use bio::alphabets::dna::revcomp;
 use bio::bio_types::sequence::Sequence;
 use serde::ser::Error as SerError;
@@ -50,9 +55,12 @@ where
     Ok(s.into_bytes())
 }
 
-/// LibSpec region types
+/// Region in a `LibrarySpec`.
 ///
-/// Specification for serde json to parse LibSpec regions
+/// A construct is described as an ordered list of regions. Regions are either:
+/// - `Fixed`: constant sequence used as known scaffold/anchor sequence,
+/// - `Library`: variable sequence to be extracted from reads and optionally
+///   compared to an expected library.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "seq_type")]
 pub enum Region {
@@ -102,7 +110,10 @@ impl Region {
         }
     }
 
-    /// Get the region length
+    /// Return the region length
+    ///
+    /// For fixed regions this is the exact sequence length. For library regions
+    /// this is the maximum allowed length.
     pub fn len(&self) -> usize {
         match self {
             Region::Fixed { seq, .. } => seq.len(),
@@ -110,17 +121,19 @@ impl Region {
         }
     }
 
-    // Is the region "empty" (i.e. of 0 length)
+    // Return true if the region is empty (i.e. of 0 length)
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// If the region is variable (i.e. to be extracted during counting)
+    /// Return true if the region is variable (i.e. to be extracted during counting)
     pub fn is_variable(&self) -> bool {
         matches!(self, Region::Library { .. })
     }
 
-    /// Check the region is valid
+    /// Validate region-level constraints.
+    ///
+    /// Currently this just checks that `min_length <= max_length` for library regions.
     pub fn validate(&self) -> Result<(), LibSpecError> {
         match self {
             Region::Library {
@@ -144,7 +157,13 @@ impl Region {
     }
 }
 
-/// Sequence of flanking regions around a sequence of interest
+/// Fixed-sequence context flanking a variable region.
+///
+/// This describes how a variable region is bounded for pattern-based extraction:
+/// - `Unflanked`: no usable fixed sequence on either side,
+/// - `OpenStart`: only a downstream flank exists,
+/// - `Internal`: fixed flanks exist on both sides,
+/// - `OpenEnd`: only an upstream flank exists.
 #[derive(Debug)]
 pub enum FlankingSequences {
     Unflanked,
@@ -171,9 +190,17 @@ impl Display for FlankingSequences {
     }
 }
 
-/// LibSpec definition
+/// Specification of a sequenced construct and expected read layout.
 ///
-/// Specification for serde json to parse LibSpec JSON files
+/// A `LibrarySpec` defines:
+/// - the ordered regions composing the construct,
+/// - where forward and reverse reads are expected to start,
+/// - the expected read lengths,
+/// - and optional matching tolerances for variable regions.
+///
+/// It is the main source of structural information used by all structured
+/// counting modes. The struct is used by `serde-json` to parse LibSpec
+/// JSON files.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LibrarySpec {
     /// The name of the library/sequence type
@@ -204,7 +231,16 @@ pub struct LibrarySpec {
 }
 
 impl LibrarySpec {
-    /// Read a LibrarySpec from a JSON file
+    /// Read a `LibrarySpec` from a JSON file and optionally override read-layout fields.
+    ///
+    /// The JSON file is parsed and validated, then any provided CLI-style
+    /// overrides are applied to:
+    /// - forward start region,
+    /// - forward read length,
+    /// - reverse start region,
+    /// - reverse read length.
+    ///
+    /// The resulting modified spec is validated again before being returned.
     pub fn from_file(
         path: &str,
         forward_start: Option<String>,
@@ -237,7 +273,7 @@ impl LibrarySpec {
         Ok(lib_spec)
     }
 
-    /// Fetch a specified region
+    /// Fetch a region by ID
     pub fn get_region(&self, id: &RegionID) -> Result<&Region, LibSpecError> {
         for r in &self.regions {
             if r.id() == id {
@@ -248,7 +284,9 @@ impl LibrarySpec {
         Err(LibSpecError::MissingRegion { id: *id })
     }
 
-    /// Get a HashMap of max_distances per region
+    /// Return per-region maximum library-match distances defined in the spec.
+    ///
+    /// Only variable regions with an explicit `max_distance` are included.
     pub fn get_max_distances(&self) -> HashMap<RegionID, u64> {
         let mut max_dists = HashMap::new();
 
@@ -269,11 +307,16 @@ impl LibrarySpec {
         max_dists
     }
 
-    /// Validate the integrity of a LibrarySpec, raising an error if any annomolies are identified
+    /// Validate the logical integrity of the `LibrarySpec`.
     ///
-    /// Much of the LibrarySpec format is checked by Serde as part of it's definition and
-    /// deserialisation process but some properties are not amenable to this. These are validated
-    /// here instead.
+    /// In addition to serde-level structural validation, this checks:
+    /// - that the forward and reverse start regions exist,
+    /// - that region IDs are unique,
+    /// - that each region is individually valid,
+    /// - and that variable regions are not adjacent.
+    ///
+    /// Adjacent variable regions are rejected because region boundaries cannot be
+    /// inferred reliably without fixed anchor sequence between them.
     pub fn validate(&self) -> Result<(), LibSpecError> {
         let mut errors: Vec<String> = Vec::new();
 
@@ -329,11 +372,12 @@ impl LibrarySpec {
         Ok(())
     }
 
-    /// Generate a template sequence from the sequence specification
+    /// Build the full template sequence implied by the `LibrarySpec`.
     ///
-    /// This function returns a template sequence with the expected structure of sequences
-    /// coming from this library, for example to align reads against. It is the concatenation
-    /// of each region in the library with max_length Ns included for variable regions.
+    /// Fixed regions contribute their literal sequence. Variable regions are
+    /// represented by `N` repeated to their maximum allowed length.
+    ///
+    /// This template is primarily used for alignment-based extraction.
     pub fn template_sequence(&self) -> Sequence {
         let mut len: usize = 0;
         for region in &self.regions {
@@ -359,10 +403,15 @@ impl LibrarySpec {
         template
     }
 
-    /// Expected forward read
+    /// Construct the minimum expected forward read sequence.
     ///
-    /// Generate a minimum length expected forward read as a lower bound for
-    /// alignment to the template
+    /// Starting at `forward_start_region`, this walks forward through the construct
+    /// and appends:
+    /// - fixed-region sequence verbatim,
+    /// - `N` repeated to each variable region's minimum length.
+    ///
+    /// The result is truncated to `forward_read_length` and acts as a lower-bound
+    /// expected read for alignment-threshold calculations.
     pub fn expected_forward_read(&self) -> Sequence {
         let mut template: Sequence = Vec::with_capacity(self.forward_read_length as usize);
         let mut read_started = false;
@@ -393,10 +442,15 @@ impl LibrarySpec {
         template[0..cmp::min(self.forward_read_length as usize, template.len())].to_vec()
     }
 
-    /// Expected reverse read
+    /// Construct the minimum expected reverse read sequence.
     ///
-    /// Generate a minimum length expected reverse read as a lower bound for
-    /// alignment to the template
+    /// Starting at `reverse_start_region`, this walks backward through the construct
+    /// and appends:
+    /// - reverse-complemented fixed-region sequence,
+    /// - `N` repeated to each variable region's minimum length.
+    ///
+    /// The result is truncated to `reverse_read_length` and acts as a lower-bound
+    /// expected reverse read for alignment-threshold calculations.
     pub fn expected_reverse_read(&self) -> Sequence {
         let mut template: Sequence = Vec::with_capacity(self.forward_read_length as usize);
         let mut read_started = false;
@@ -427,10 +481,10 @@ impl LibrarySpec {
         template[0..cmp::min(self.reverse_read_length as usize, template.len())].to_vec()
     }
 
-    /// Identify the position of a region in the library template sequence
+    /// Return the half-open template interval `[start, end)` for a region.
     ///
-    /// This function returns a tuple of the start/end indeces of the passed region, as a half
-    /// open interval [a, b) as used for rust vector slices.
+    /// Coordinates are relative to the template sequence returned by
+    /// `template_sequence()`.
     pub fn template_position(&self, region: &RegionID) -> Result<(usize, usize), LibSpecError> {
         let mut start: usize = 0;
 
@@ -444,7 +498,7 @@ impl LibrarySpec {
         Err(LibSpecError::MissingRegion { id: *region })
     }
 
-    /// Identify the variable regions in the library
+    /// Return the variable-region IDs in construct order.
     pub fn variable_regions(&self) -> Vec<RegionID> {
         self.regions
             .iter()
@@ -453,7 +507,14 @@ impl LibrarySpec {
             .collect()
     }
 
-    /// Get flanking sequences for all variable regions
+    /// Compute flanking fixed-sequence patterns for all variable regions.
+    ///
+    /// Each variable region is assigned up to `len` bases of fixed sequence from
+    /// its upstream and/or downstream context, stopping early at construct ends or
+    /// at neighbouring variable regions.
+    ///
+    /// The resulting flank descriptors are validated to ensure they form a
+    /// consistent sequence for pattern matching.
     pub fn get_all_flanking_regions(
         &self,
         len: usize,
@@ -469,9 +530,12 @@ impl LibrarySpec {
         Ok(flanks)
     }
 
-    /// Validate flanking regions
+    /// Validate a list of flank descriptors for use in pattern matching.
     ///
-    /// Currently check that they form a valid and findable sequence of region types
+    /// This checks that the flank descriptors form a consistent ordered pattern:
+    /// - at most the first region may have an open start,
+    /// - at most the last region may have an open end,
+    /// - and no unflanked region appears once usable flank patterns are expected.
     pub fn validate_flank_seqs(flanks: &[FlankingSequences]) -> Result<(), LibSpecError> {
         for (i, r) in flanks.iter().enumerate() {
             match r {
@@ -505,10 +569,14 @@ impl LibrarySpec {
         Ok(())
     }
 
-    /// Identify the sequences flanking a region of interest
+    /// Compute the fixed-sequence context flanking a single variable region.
     ///
-    /// If the region is first/last the corresponding flanking region is None, otherwise
-    /// it is `Some<vec<u8>>` up to len long (less if a variable region or the end is reached).
+    /// Up to `len` bases are collected from the nearest upstream and downstream
+    /// fixed regions, stopping if another variable region or a construct boundary
+    /// is encountered first.
+    ///
+    /// This is used by pattern-based region extraction to identify variable
+    /// regions from surrounding constant sequence.
     pub fn flanking_regions(
         &self,
         region: &RegionID,
@@ -608,7 +676,7 @@ impl LibrarySpec {
 impl FromStr for LibrarySpec {
     type Err = LibSpecError;
 
-    /// Parse a LibrarySpec from a JSON string
+    /// Parse and validate a `LibrarySpec` from a JSON string.
     fn from_str(spec: &str) -> Result<Self, Self::Err> {
         let lib_spec: LibrarySpec = serde_json::from_str::<LibrarySpec>(spec)?;
         lib_spec.validate()?;

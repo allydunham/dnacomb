@@ -1,10 +1,8 @@
-//! Filters to identify and count failing reads
+//! Read-filtering logic and filtered-read summaries.
 //!
-//! Provides a range of filtering criteria that a function
-//! processing reads can tap into via a simple config and
-//! interface, easily filtering reads for a range of reasons.
-//! Also makes it easy to keep track of filtered reads and
-//! print a summary to file.
+//! This module defines the configurable filters applied during counting, along
+//! with the data structures used to track why reads were discarded and how often
+//! each filtered read sequence was observed.
 use bio::bio_types::alignment::Alignment;
 use bio::io::fastq::Record;
 use std::collections::HashMap;
@@ -20,7 +18,7 @@ type ReadFilter = fn(&Record, Option<&Record>, &FilterConfig) -> Option<FilterRe
 /// Function filtering based on an alignment
 type AlignmentFilter = fn(&Alignment, Option<&Alignment>, &FilterConfig) -> Option<FilterReason>;
 
-/// Reasons for filtering a read
+/// Reason why a read or read pair was filtered out during counting.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterReason {
@@ -31,7 +29,7 @@ pub enum FilterReason {
     BadAlignment,
 }
 
-/// Metadata about filters
+/// Stable metadata describing a filter reason for display and TSV output.
 #[derive(Debug)]
 pub struct FilterMeta {
     pub id: &'static str,
@@ -57,6 +55,8 @@ impl FilterReason {
         self as usize
     }
 
+    /// Return the stable output identifier and human-readable label for this
+    /// filter reason.
     pub fn meta(self) -> FilterMeta {
         match self {
             FilterReason::EmptyRead => FilterMeta {
@@ -185,9 +185,12 @@ fn bad_alignment_filter(
     None
 }
 
-/// Configuration for filtering
+/// Configuration controlling which filters are applied during counting.
 ///
-/// Instructions for how to filter reads
+/// Filters are applied in a fixed order, and the first matching reason is
+/// recorded for a read. Depending on counting mode, some filters act directly on
+/// reads (`filter_readpair`) while alignment-quality filters act after alignment
+/// (`filter_alignment`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterConfig {
     pub mean_quality_threshold: Option<f32>,
@@ -215,6 +218,12 @@ impl FilterConfig {
     }
 }
 
+/// Precomputed alignment-score thresholds for filtering alignment-based modes.
+///
+/// The expected forward and reverse alignment scores are calculated from the
+/// LibSpec template and alignment scoring scheme. The supplied tolerance is then
+/// used to convert those expected scores into minimum acceptable scores for
+/// filtering observed alignments.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
 pub struct AlignmentTolerance {
@@ -226,6 +235,8 @@ pub struct AlignmentTolerance {
 }
 
 impl AlignmentTolerance {
+    /// Create alignment-score thresholds from an expected-score baseline and a
+    /// fractional tolerance in the range `[0.0, 1.0]`.
     pub fn new(
         tolerance: f32,
         expected_f_score: i32,
@@ -247,7 +258,9 @@ impl AlignmentTolerance {
     }
 }
 
-/// Count of reads filtered for each reason, stored as an array indexed by FilterReason u8 values
+/// Counts of how many times a read was filtered for each `FilterReason`.
+///
+/// Internally this is stored as a fixed-size array indexed by `FilterReason`.
 #[derive(Debug, Clone)]
 pub struct FilteredCounts([u64; FilterReason::N_REASONS]);
 
@@ -256,11 +269,13 @@ impl FilteredCounts {
         Self([0; FilterReason::N_REASONS])
     }
 
+    /// Get the count for one specific filter reason.
     #[inline]
     pub fn get(&self, r: &FilterReason) -> u64 {
         self.0[r.as_index()]
     }
 
+    /// Iterate over counts in the stable `FilterReason::ALL_FILTERS` order.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &u64> {
         self.0.iter()
@@ -270,12 +285,12 @@ impl FilteredCounts {
         self.0[r.as_index()] += 1;
     }
 
-    /// Total count of filtered reads
+    /// Total number of filtered observations across all reasons.
     pub fn total(&self) -> u64 {
         self.0.iter().sum()
     }
 
-    /// Merge counts from another FilteredCounts
+    /// Merge counts from another FilteredCounts into this one
     pub fn merge(&mut self, new_counts: FilteredCounts) {
         for i in 0..FilterReason::N_REASONS {
             self.0[i] += new_counts.0[i]
@@ -289,9 +304,15 @@ impl Default for FilteredCounts {
     }
 }
 
-/// Container for filtered reads
+/// Summary of reads discarded by filtering.
 ///
-/// Keeps track of counts for filtered reads during counting
+/// This tracks:
+/// - the filter configuration used,
+/// - total counts by filter reason,
+/// - and per-read/per-group filtered counts keyed by read sequence.
+///
+/// It is used both to decide whether a read should be discarded and to generate
+/// summary/output tables of filtered reads.
 #[derive(Debug, Clone)]
 pub struct FilteredReads {
     pub config: FilterConfig,
@@ -300,6 +321,7 @@ pub struct FilteredReads {
 }
 
 impl FilteredReads {
+    /// Create an empty filtered-read container for a specific filter configuration.
     pub fn new(config: FilterConfig) -> Self {
         Self {
             config,
@@ -340,10 +362,11 @@ impl FilteredReads {
         }
     }
 
-    /// Determine if a readpair should be filtered based on the supplied config
+    /// Apply read-level filters to a read pair.
     ///
-    /// Checks whether the read should be filtered, adding it to the appropriate count if so, and
-    /// returns a FilterReason determining why it was filtered.
+    /// Filters are evaluated in the order defined by `READPAIR_FILTERS`. The first
+    /// matching `FilterReason` is returned. If `increment` is true, that reason is
+    /// also recorded in the filtered-read counts.
     pub fn filter_readpair(&mut self, record: &ReadPair, increment: bool) -> Option<FilterReason> {
         let f_read = &record.forward;
         let r_read = record.reverse.as_ref();
@@ -360,10 +383,11 @@ impl FilteredReads {
         None
     }
 
-    /// Determine if an alignment should be filtered based on the supplied config
+    /// Apply alignment-level filters to an aligned read pair.
     ///
-    /// Checks if an alignment should be filtered, adding it to the appropriate count if so, and
-    /// returns a FilterReason determining why it was filtered
+    /// This is used after alignment-based extraction to discard reads whose
+    /// alignment scores fall below the configured thresholds. If `increment` is
+    /// true, the matching reason is also recorded in the filtered-read counts.
     pub fn filter_alignment(
         &mut self,
         record: &ReadPair,
@@ -388,7 +412,10 @@ impl FilteredReads {
         self.totals.total()
     }
 
-    /// Merge counts from another FilteredReads object
+    /// Merge another `FilteredReads` into this one.
+    ///
+    /// This is primarily used when combining results from multiple counting
+    /// threads. The filter configurations must be identical.
     pub fn merge(&mut self, new_reads: FilteredReads) -> Result<(), ReadCountError> {
         if !(self.config == new_reads.config) {
             return Err(ReadCountError::Error {
@@ -419,10 +446,13 @@ impl FilteredReads {
         Ok(())
     }
 
-    /// Produce a vector of filtered reads to iterate over
+    /// Output filtered-read counts for iteration or output.
     ///
-    /// Generate an optionally sorted vector of SeqPairs with their ReadGroup and counts for
-    /// each filter reason.
+    /// Returns one entry per `(read sequence, read group)` combination together
+    /// with its per-reason counts. If `sort` is true, rows are ordered by
+    /// descending total filtered count per read sequence.
+    ///
+    /// This allocates a new vector of references.
     pub fn to_vector(&self, sort: bool) -> Vec<(&SeqPair, &ReadGroup, &FilteredCounts)> {
         let mut keys: Vec<(&SeqPair, u64)> = self
             .counts

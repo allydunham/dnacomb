@@ -1,6 +1,10 @@
-//! Store collections of observed combinations
+//! Container and aggregation logic for observed region combinations.
 //!
-//! Structures and functions to store and manipulate groups of observed combinations extracted from sequencing data
+//! This module defines [`ObservedCombinations`], the central data structure used
+//! during counting. It accumulates distinct observed combinations, deduplicates
+//! regions, tracks read counts and filtered reads, and provides methods for
+//! merging results, performing library comparison, and generating summary views
+//! for downstream output.
 use anyhow::{self};
 use bio::bio_types::alignment::Alignment;
 use crossbeam::channel::{Receiver, unbounded};
@@ -20,12 +24,19 @@ use crate::region::{ObservedRegion, RegionKey};
 use crate::seqs::ReadPair;
 use crate::seqs::SeqPair;
 
-/// Container for ObservedCombination objects
+/// Container for all distinct `ObservedCombination` objects in a dataset
 ///
-/// The core is a HashMap of the ObservedRegions seen so far and a HashMap
-/// of ObservedCombination objects that link to the contained regions.
-/// An additional HashMap plus the library is added when library comparison
-/// is run. It also carries the region ids to be considered in order.
+/// This is the main accumulation structure used during counting. It stores:
+/// - the ordered list of variable region IDs expected from the `LibSpec`,
+/// - deduplicated `ObservedRegion` objects keyed by sequence and completeness,
+/// - deduplicated `ObservedCombination` objects keyed by their constituent regions, with
+///   the contained ObservedRegions linking back to the region container.
+/// - optional library-comparison results,
+/// - filtered read counts,
+/// - and an optional read-level cache used to avoid repeating extraction work.
+///
+/// The container is designed for incremental counting followed by an optional
+/// library-comparison step and final output summarisation.
 #[derive(Debug)]
 pub struct ObservedCombinations {
     pub region_ids: Vec<RegionID>,
@@ -38,6 +49,8 @@ pub struct ObservedCombinations {
 }
 
 impl ObservedCombinations {
+    /// Create an empty `ObservedCombinations` container for a specific ordered
+    /// set of variable region IDs and filtering configuration.
     pub fn new(region_ids: Vec<RegionID>, filter_config: FilterConfig) -> Self {
         Self {
             region_ids,
@@ -50,19 +63,25 @@ impl ObservedCombinations {
         }
     }
 
+    /// Borrow the filtered-read summary accumulated during counting.
     pub fn filtered_reads(&self) -> &FilteredReads {
         &self.filtered_reads
     }
 
-    /// Merge counts from another ObservedCombinations object into this one
+    /// Merge another `ObservedCombinations` into this one.
     ///
-    /// New counts and regions are added to this container with an empty return on
-    /// successful operation and an error returned if the two ObservedCombinations objects
-    /// are incompatible.
+    /// This is primarily used to combine per-thread counting results. Regions and
+    /// combinations are deduplicated into the receiving container, and counts are
+    /// summed across matching read groups.
     ///
-    /// Reasons for incompatibility:
-    /// - Library comparison has occured
-    /// - Region ids are not the same
+    /// Merge is only valid before library comparison has been performed, because
+    /// library-comparison results depend on shared region state and are not
+    /// currently merged.
+    ///
+    /// Returns an error if:
+    /// - either container has already been compared to a library,
+    /// - the ordered `region_ids` differ,
+    /// - or the filtered-read configurations are incompatible.
     pub fn merge(&mut self, new_counts: ObservedCombinations) -> Result<(), ReadCountError> {
         if self.is_compared_to_library() || new_counts.is_compared_to_library() {
             return Err(ReadCountError::Error {
@@ -138,7 +157,11 @@ impl ObservedCombinations {
         self.filtered_reads.total()
     }
 
-    /// Increment a combination count or add a new combination if it hasn't been seen yet
+    /// Add a new observed combination or increment an existing one.
+    ///
+    /// Region keys are resolved against the container-wide deduplicated region map,
+    /// creating new `ObservedRegion` objects only when a region sequence/completeness
+    /// combination has not been seen before.
     pub fn add_or_increment_combination(
         &mut self,
         comb_key: &CombinationKey,
@@ -210,12 +233,18 @@ impl ObservedCombinations {
             .filter_alignment(record, f_alignment, r_alignment, increment)
     }
 
-    /// Add a result to the cache
+    /// Store a read-level cache entry.
+    ///
+    /// Cache entries are keyed by full read sequence(s), not by quality values or
+    /// other metadata, so only sequence-derived outcomes should be cached.
     pub fn cache(&mut self, key: SeqPair, value: CacheHit) {
         self.cache.insert(key, value);
     }
 
-    /// Check if a read is cached and optionally increment it
+    /// Check whether this read has a cached result and optionally apply it.
+    ///
+    /// If `increment` is true, the cached combination or filter result is replayed
+    /// into the current counts before returning the cached value.
     pub fn check_cache(
         &mut self,
         record: &ReadPair,
@@ -242,7 +271,21 @@ impl ObservedCombinations {
         Ok(Some(hit))
     }
 
-    /// Compare observed combinations to those expected in a Library
+    /// Compare all observed regions and combinations to an expected library.
+    ///
+    /// This proceeds in three stages:
+    /// 1. compare each distinct observed region to the appropriate library region,
+    /// 2. combine those per-region matches into per-combination library assignments,
+    /// 3. build a summarised set of `LibraryCombination` counts for output.
+    ///
+    /// This mutates the container in place by:
+    /// - storing the compiled library,
+    /// - updating each `ObservedRegion` with its nearest library match state,
+    /// - updating each `ObservedCombination` with its overall combination match,
+    /// - and constructing the library-level summary table.
+    ///
+    /// Once this has been run, the container is considered library-compared and
+    /// can no longer be merged with uncompared containers.
     pub fn compare_to_library(
         &mut self,
         library: Library,
@@ -416,15 +459,18 @@ impl ObservedCombinations {
         Ok(())
     }
 
-    /// Check if library comparison has occured
+    /// Return `true` if library comparison has been run on this container.
     pub fn is_compared_to_library(&self) -> bool {
         self.library.is_some()
     }
 
-    /// Summarise the observed  read count categories
+    /// Summarise observed counts into high-level read categories.
     ///
-    /// Counts the occurance of each CombinationMatch, so makes little sense if library comparison
-    /// hasn't occured first as it will just sum the total reads
+    /// The returned `ReadSummary` includes both filtered-read totals and counts of
+    /// each `CombinationMatch` category across unfiltered reads.
+    ///
+    /// Before library comparison, all unfiltered reads fall into the `uncompared`
+    /// category.
     pub fn summarise(&self) -> ReadSummary {
         let mut read_summary = ReadSummary::empty();
 
@@ -458,10 +504,12 @@ impl ObservedCombinations {
         read_summary
     }
 
-    /// Produce a vector of LibraryCombinations to iterate over
+    /// Output the library-combination summary as a vector for iteration/output.
     ///
-    /// Generate an optionally sorted vector of LibraryCombinations to process.
-    /// The requirement to sort means allocating a new vector is necessary.
+    /// If `sort` is true, combinations are returned in descending total-count order.
+    /// This allocates a new vector of references.
+    ///
+    /// Returns an error if library comparison has not yet been performed.
     pub fn to_library_vector(
         &self,
         sort: bool,
@@ -481,10 +529,10 @@ impl ObservedCombinations {
         }
     }
 
-    /// Produce a vector of Combinations to iterate over
+    /// Output observed combinations as a vector for iteration/output.
     ///
-    /// Generate an optionally sorted vector of ObservedCombinations to process.
-    /// The requirement to sort means allocating a new vector is necessary.
+    /// If `sort` is true, combinations are returned in descending total-count order.
+    /// This allocates a new vector of references.
     pub fn to_vector(&self, sort: bool) -> Vec<&ObservedCombination> {
         let mut vec: Vec<&ObservedCombination> = self.combinations.values().collect();
 
@@ -496,20 +544,33 @@ impl ObservedCombinations {
     }
 }
 
-/// HashMap cache of observed reads and which combination they map to
+/// Read-level cache mapping full read sequences to previously computed outcomes.
 pub type ObservedReads = HashMap<SeqPair, CacheHit>;
 
-/// Options to cache for each identified read
+/// Cached outcome for a previously seen read sequence.
 ///
-/// The cache operates at a sequence level only, so you shouldn't cache filtering related
-/// to quality
+/// The cache works on `SeqPair`s only, which only store sequences, so only
+/// sequence-derived outcomes should be cached. In particular, filter results
+/// that depend on qualities or alignment scoring should not be reused purely from
+/// sequence identity unless that behaviour is known to be correct for the calling
+/// context.
 #[derive(Debug, Clone)]
 pub enum CacheHit {
     Comb(CombinationKey),
     Filter(FilterReason),
 }
 
-/// Summary counts of read types
+/// High-level summary of read outcomes.
+///
+/// This struct collapses the full observed-combination table into broad categories
+/// used for reporting, including:
+/// - unmatched/uncompared reads,
+/// - exact and inexact library matches,
+/// - multimatches,
+/// - recombinations,
+/// - mismatches,
+/// - nonmatches,
+/// - and filtered-read totals by reason.
 pub struct ReadSummary {
     /// Comparison hasn't occured
     pub uncompared: u64,
@@ -582,7 +643,7 @@ impl ReadSummary {
         }
     }
 
-    /// Sum of unfiltered reads
+    /// Total number of unfiltered reads represented in the summary.
     pub fn total_unfiltered(&self) -> u64 {
         self.uncompared
             + self.exact_match
@@ -594,7 +655,7 @@ impl ReadSummary {
             + self.nonmatch
     }
 
-    /// Total reads observed across categories
+    /// Total number of reads processed, including filtered reads.
     pub fn total(&self) -> u64 {
         self.total_unfiltered() + self.filtered_reads.total()
     }

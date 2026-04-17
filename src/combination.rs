@@ -1,6 +1,9 @@
-//! Observed combination of sequence regions from a sequencing experiment
+//! Representation of individual observed region combinations.
 //!
-//! Structures and functions to store and manipulate combinations of reqions extracted from sequencing data
+//! This module defines [`ObservedCombination`] and related types describing a
+//! single distinct combination of observed variable regions extracted from reads.
+//! It also includes the logic for combining per-region library matches into an
+//! overall combination-level assignment relative to an expected library.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -26,11 +29,15 @@ impl CombinationKey {
     }
 }
 
-/// Combination of ObservedRegions seen in sequence reads
+/// Combination of observed variable regions seen in one or more reads.
 ///
-/// A set of observed regions determining the "type" of read, as defined in the LibSpec.
-/// Also includes a count, the read grouping (for instance for different cells in single
-/// cell studies) and whether it matches an expected library member.
+/// An `ObservedCombination` represents one distinct combination of ObservedRegions.
+/// It stores:
+/// - the observed region for each variable region,
+/// - optional full read sequence
+/// - counts split by read group,
+/// - the inferred relationship between this combination and
+///   the expected library (after comparison is run)
 #[derive(Debug, Clone)]
 pub struct ObservedCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
@@ -75,11 +82,21 @@ impl ObservedCombination {
         }
     }
 
-    /// Compare the combination to expected combinations in the library
+    /// Compare this observed combination to the expected library.
     ///
-    /// Returns a CombinationMatch object which can also be added to the ObservedCombination
-    /// library matches field. Looks at each region in turn and identifies which library
-    /// combinations are possible overall matches.
+    /// Each observed region is first compared to its corresponding library region
+    /// if that comparison has not already been performed. The per-region matches
+    /// are then combined across all expected regions to determine whether the
+    /// overall observed combination is:
+    ///
+    /// - a unique library match,
+    /// - a multimatch to several equally good library combinations,
+    /// - a recombination of valid library elements in an unexpected combination,
+    /// - a mismatch because at least one observed region could not be assigned,
+    /// - or a nonmatch because one or more expected regions are missing.
+    ///
+    /// Regions that are not present in the supplied library are ignored when
+    /// determining the overall combination match.
     pub fn compare_to_library(
         &self,
         region_ids: &Vec<RegionID>,
@@ -200,37 +217,53 @@ impl ObservedCombination {
 
 /// Status of the match between ObservedCombination and a Library
 ///
-/// Includes the match status and the indeces of matches in the libray
-/// plus the distance to the library.
+/// This enum summarises the result of combining per-region library matches
+/// across all expected variable regions.
+/// It includes a status plus distance and the match(s) as potential payloads.
 #[derive(Debug, Clone)]
 pub enum CombinationMatch {
-    /// Comparison hasn't occured
+    /// Library comparison has not been performed.
     Uncompared,
 
-    /// Full match with a specific library member/combination of sub-library members. None means that sublibrary
+    /// All relevant regions resolve to a single consistent library assignment.
+    ///
+    /// For multi-sublibrary designs, `inds` contains one entry per sublibrary.
+    /// `None` means that this combination did not include any region from that
+    /// sublibrary.
     Match {
         inds: Vec<Option<LibraryID>>,
         distance: u64,
     },
 
-    /// Fully matches multiple library members for at least one sublibrary
+    /// The observed combination is consistent with multiple equally good library
+    /// assignments in at least one sublibrary.
+    ///
+    /// For multi-sublibrary designs, `inds` contains one entry per sublibrary.
+    /// `None` means that this combination did not include any region from that
+    /// sublibrary.
     MultiMatch {
         inds: Vec<Option<HashSet<LibraryID>>>,
         distance: u64,
     },
 
-    /// Partially matches multiple library members and the total distance
+    /// The individual regions match library elements, but not in a valid expected
+    /// combination.
     Recombination { distance: u64 },
 
-    /// Regions exist but at least one cannot be assigned to the library
+    /// All regions exist but at least one could not be assigned to the library
     Mismatch,
 
-    /// Not all regions exist
+    /// One or more expected regions were missing from the observed combination.
     Nonmatch,
 }
 
 impl CombinationMatch {
-    /// Extract the relevant ID string from the match
+    /// Format the matched library IDs for display or TSV output.
+    ///
+    /// For a unique match this returns one ID per sublibrary, joined by `/`.
+    /// For a multimatch, IDs within a sublibrary are joined by `,` and different
+    /// sublibraries are joined by `/`.
+    /// Returns an empty string for statuses without a meaningful match.
     pub fn id_string(&self) -> Result<String, LibraryError> {
         Ok(match self {
             CombinationMatch::Match { inds, .. } => inds

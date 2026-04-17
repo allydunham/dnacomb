@@ -1,8 +1,11 @@
-//! Parse Fasta and Fastq files with a consistent interface
+//! Unified parsing of single-end and paired-end FASTA/FASTQ inputs.
 //!
-//! Provides a parser that can read single and paired-end fasta
-//! and fastq files with a single interface, always returning a
-//! standard ReadPair object.
+//! This module normalises sequence-file input into a common `ReadPair` stream,
+//! regardless of whether the source data are FASTA or FASTQ, compressed or
+//! uncompressed, single-end or paired-end.
+//!
+//! FASTA input is converted into FASTQ-like records by assigning a default
+//! quality score to each base so downstream code can operate on a single record type.
 use bio::io::{fasta, fastq};
 use clap::ValueEnum;
 use crossbeam::channel::Receiver;
@@ -90,7 +93,10 @@ where
     }
 }
 
-/// Create a mock Fastq record from a Fasta record
+/// Convert a FASTA record into a synthetic FASTQ record.
+///
+/// Because downstream processing expects FASTQ-style records, FASTA input is
+/// normalised by assigning the same default quality byte to every base.
 fn fasta_to_fastq(fasta_record: fasta::Record, default_quality: u8) -> fastq::Record {
     let id = fasta_record.id().to_string();
     let desc = fasta_record.desc().map(|d| d.to_string());
@@ -100,17 +106,32 @@ fn fasta_to_fastq(fasta_record: fasta::Record, default_quality: u8) -> fastq::Re
     fastq::Record::with_attrs(&id, desc.as_deref(), &seq, &qual)
 }
 
+/// Common interface for sources that yield `ReadPair` records.
+///
+/// This trait abstracts over direct file parsing and threaded read delivery so
+/// counting code can consume either through the same interface.
 pub trait ReadPairProducer: Iterator<Item = Result<ReadPair, ReadPairError>> {
+    /// Return `true` if produced records may include reverse reads.
     fn has_reverse(&self) -> bool;
+
+    /// Return the grouping regex used to assign read groups, if any.
     fn group(&self) -> &Option<Regex>;
+
+    /// Maximum number of reads configured for this producer, or `0` for no limit.
     fn max_reads(&self) -> u64;
+
+    /// Number of reads yielded so far.
     fn read_count(&self) -> u64;
 }
 
-/// Parser outputing ReadPair objects
+/// Parser that yields normalised `ReadPair` records from one or two sequence files.
 ///
-/// Internally uses boxed forward and reverse parsers that may yield Fasta or Fastq
-/// records then converts to Fastq format
+/// Internally, forward and reverse inputs may be FASTA or FASTQ and may be
+/// compressed or uncompressed. All records are converted into FASTQ-style
+/// records before being assembled into `ReadPair`s.
+///
+/// For paired-end input, forward and reverse files are consumed in lockstep and
+/// must remain synchronised. Grouping is derived from the forward read header only.
 pub struct ReadPairParser {
     /// Forward parser
     forward: Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>,
@@ -136,6 +157,7 @@ pub struct ReadPairParser {
 }
 
 impl ReadPairParser {
+    /// Construct a parser from already-initialised forward and optional reverse iterators.
     fn new(
         forward: Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>,
         reverse: Option<Box<dyn Iterator<Item = Result<fastq::Record, FastaError>>>>,
@@ -152,7 +174,11 @@ impl ReadPairParser {
         }
     }
 
-    /// Initialise a read parser from file paths
+    /// Construct a `ReadPairParser` from forward and optional reverse file paths.
+    ///
+    /// File format and compression may be explicitly specified or auto-detected
+    /// from the path. FASTA input is converted into FASTQ-style records using
+    /// `default_quality`.
     pub fn from_paths(
         forward: SeqPath,
         reverse: Option<SeqPath>,
@@ -169,7 +195,11 @@ impl ReadPairParser {
         Ok(ReadPairParser::new(f_records, r_records, group, max_reads))
     }
 
-    /// Extract read group from a record
+    /// Assign a read group from the forward read header.
+    ///
+    /// If no grouping regex is configured, reads are assigned to the `ungrouped`
+    /// sentinel group. If a regex is configured but no first capture group is
+    /// found, reads are assigned to the `unmatched` sentinel group.
     fn read_group(&mut self, f_record: &fastq::Record) -> ReadGroup {
         let re = match &self.group {
             None => return ReadGroup::ungrouped(),
@@ -214,6 +244,8 @@ impl ReadPairProducer for ReadPairParser {
     }
 }
 
+/// Yields one `ReadPair` at a time, enforcing paired-file synchronisation when
+/// reverse reads are present.
 impl Iterator for ReadPairParser {
     type Item = Result<ReadPair, ReadPairError>;
 
@@ -284,9 +316,11 @@ impl Iterator for ReadPairParser {
     }
 }
 
-/// Multithreading wrapper for ReadPairParser
+/// `ReadPairProducer` implementation backed by a channel from another thread.
 ///
-/// Recieves reads from a ReadPairParser on another thread to process them in parallel
+/// This is used for multithreaded counting, where one thread produces parsed
+/// reads and worker threads consume them through the same `ReadPairProducer`
+/// interface as direct file parsing.
 pub struct ThreadedReadPairParser {
     // Channel receiving new reads
     rx: Receiver<Result<ReadPair, ReadPairError>>,
@@ -305,6 +339,7 @@ pub struct ThreadedReadPairParser {
 }
 
 impl ThreadedReadPairParser {
+    /// Construct a threaded read producer from a receiving channel and parser metadata.
     pub fn new(
         rx: Receiver<Result<ReadPair, ReadPairError>>,
         rev_reads: bool,
@@ -349,10 +384,10 @@ impl Iterator for ThreadedReadPairParser {
     }
 }
 
-/// Path to a sequence file
+/// Path plus parsing metadata for a sequence file.
 ///
-/// This struct implements automatic detection of filetype
-/// and compression status for more ergonomic parsing in ReadPairParser
+/// A `SeqPath` stores the file path together with either explicit or auto-detected
+/// format/compression settings, and can open the file as a normalised record iterator.
 #[derive(Debug)]
 pub struct SeqPath {
     path: String,
@@ -361,11 +396,16 @@ pub struct SeqPath {
 }
 
 impl SeqPath {
+    /// Construct a new sequence-file descriptor.
     pub fn new(path: String, format: SeqFormat, gzip: Compression) -> Self {
         SeqPath { path, format, gzip }
     }
 
-    /// Process path to produce the appropriate Fasta/Fastq parser
+    /// Open the sequence file and return an iterator over normalised FASTQ records.
+    ///
+    /// Format and compression are either taken directly from the stored settings
+    /// or auto-detected from the file path. FASTA input is converted into FASTQ
+    /// records using `default_quality`.
     fn get_records(
         &self,
         default_quality: u8,
@@ -427,11 +467,14 @@ impl fmt::Display for SeqPath {
     }
 }
 
-/// Sequence file format
+/// Sequence file format.
 #[derive(Clone, ValueEnum, Debug, Copy, PartialEq)]
 pub enum SeqFormat {
+    /// Detect format from the file extension.
     Auto,
+    /// Parse as FASTA.
     Fasta,
+    /// Parse as FASTQ.
     Fastq,
 }
 
@@ -469,25 +512,30 @@ fn detect_seq_format(path: &str) -> Result<SeqFormat, ReadPairError> {
     }
 }
 
-/// File compression status
+/// Compression mode for sequence-file input.
 #[derive(Clone, ValueEnum, Debug, Copy)]
 pub enum Compression {
+    /// Detect compression from the file extension.
     Auto,
+    /// Treat the file as gzip-compressed.
     Gzip,
+    /// Treat the file as uncompressed.
     None,
 }
 
 impl fmt::Display for Compression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Auto => write!(f, "Auto Compression"),
+            Self::Auto => write!(f, "Auto detect Compression"),
             Self::Gzip => write!(f, "Gzip"),
-            Self::None => write!(f, "Fastq"),
+            Self::None => write!(f, "None"),
         }
     }
 }
 
-/// Detect gzip status from a string path
+/// Detect compression format from the file extension.
+///
+/// Only Gzip with extension ".gz" ia supported currently.
 fn detect_gzip(path: &str) -> Compression {
     if str::ends_with(path, ".gz") {
         Compression::Gzip

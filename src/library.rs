@@ -1,8 +1,16 @@
-//! Specification for DNA constructs and libraries
+//! Compiled expected-sequence libraries and lookup logic.
 //!
-//! Provides methdods for importing JSON based DNA construct specifications
-//! and manipulating them. Additionally supports TSV libraries corresponding
-//! to these constructs, with lookup capabilities.
+//! This module defines:
+//! - [`Library`], which coordinates lookup across one or more independent
+//!   sublibraries,
+//! - [`SubLibrary`], which stores expected sequences for a specific subset of
+//!   variable regions,
+//! - and the distance-based matching logic used to compare observed region
+//!   sequences to those expected libraries.
+//!
+//! A single library TSV defines one `SubLibrary`. Multiple TSVs can be combined
+//! into a top-level `Library` to represent combinatorial designs where each TSV
+//! constrains one independent subset of regions.
 use bio::alignment::distance;
 use bio::bio_types::sequence::Sequence;
 use clap::ValueEnum;
@@ -19,9 +27,11 @@ use crate::interning::{
 };
 use crate::lib_spec::LibrarySpec;
 
-/// A compiled sequence library
+/// Compiled expected-sequence library spanning one or more sublibraries.
 ///
-/// Dispatces to sub-libraries for matching each subset of regions
+/// A `Library` dispatches region lookups to the appropriate [`SubLibrary`] based
+/// on region ID. This allows independent library TSVs to define separate parts of
+/// a combinatorial design while presenting a single lookup interface.
 #[derive(Debug)]
 pub struct Library {
     pub regions: HashMap<RegionID, usize>,
@@ -29,6 +39,10 @@ pub struct Library {
 }
 
 impl Library {
+    /// Construct a top-level library from compiled sublibraries.
+    ///
+    /// Each region may belong to at most one sublibrary. An error is returned if
+    /// the same region appears in multiple sublibraries.
     pub fn new(sublibraries: Vec<SubLibrary>) -> Result<Self, LibraryError> {
         let mut regions = HashMap::new();
 
@@ -48,12 +62,13 @@ impl Library {
         })
     }
 
+    /// Return true if the library contains no SubLibraries
     #[allow(dead_code)]
-    /// Check if the library is empty
     pub fn is_empty(&self) -> bool {
         self.sublibraries.is_empty()
     }
 
+    /// Return the sublibrary index responsible for a given region ID.
     pub fn get_sublibrary_index(&self, region: &RegionID) -> Result<usize, LibraryError> {
         match self.regions.get(region) {
             Some(x) => Ok(*x),
@@ -61,9 +76,16 @@ impl Library {
         }
     }
 
-    /// Compare an observed sequence to the library
+    /// Look up an observed sequence against the expected library for one region.
     ///
-    /// Itentify the subpool a candidate is from and dispatch to the appropriate SubLibrary
+    /// The region ID determines which sublibrary should be queried. Matching is
+    /// then delegated to that sublibrary using the requested distance metric and
+    /// partial-matching mode.
+    ///
+    /// Returns:
+    /// - `Ok(Some(...))` for one or more best matches within the allowed distance,
+    /// - `Ok(None)` if no acceptable match is found,
+    /// - `Err(...)` if the region is not represented in the library.
     pub fn lookup(
         &self,
         region: &RegionID,
@@ -74,7 +96,11 @@ impl Library {
         self.sublibraries[self.get_sublibrary_index(region)?].lookup(region, seq, metric, partial)
     }
 
-    /// Import a Library from a series of TSV files
+    /// Build a top-level library from one or more library TSV files.
+    ///
+    /// Each TSV becomes one independent [`SubLibrary`]. Together these define a
+    /// potentially combinatorial expected design, where each region must appear in
+    /// at most one input file.
     pub fn from_files(
         paths: &[String],
         lib_spec: &LibrarySpec,
@@ -97,9 +123,11 @@ impl Library {
     }
 }
 
-/// A compiled sequence sub-library, carrying the expected sequence combinations in each variable region
+/// Compiled expected-sequence library for a specific subset of variable regions.
 ///
-/// This allows efficient lookup of candidate sequences against the library
+/// A `SubLibrary` stores the expected sequence combinations from one library TSV
+/// and supports efficient lookup of observed sequences against the unique
+/// sequences present in each region.
 #[derive(Debug)]
 pub struct SubLibrary {
     /// Full sequences for each member of the library, divided into region vectors. The full nth
@@ -142,7 +170,11 @@ impl LibrarySequence {
     }
 }
 
-/// A sequence region from a compiled library
+/// One unique expected sequence for a region within a compiled sublibrary.
+///
+/// A `LibraryRegion` stores the canonical sequence plus the set of library-member
+/// indices and IDs that contain that sequence. This allows repeated identical
+/// region sequences across multiple library members to be represented once.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LibraryRegion {
     /// The sequence
@@ -166,16 +198,24 @@ impl Hash for LibraryRegion {
     }
 }
 
-/// Match with a LibraryRegion at a given distance
+/// Best-match result for a region lookup.
+///
+/// Contains all equally good best matches and the distance shared by those matches.
 #[derive(Debug)]
 pub struct LibraryMatch {
     pub matches: Vec<Arc<LibraryRegion>>,
     pub distance: u64,
 }
 
-/// Combine two library matches to matches consistent with both
-/// Distance is summed, which makes sense for the desired case of partial
-/// matches at both ends but may double count if overlapping
+/// Intersect two partial region-match results.
+///
+/// This is used when a region is observed only as two partial pieces, for example
+/// from opposite ends of a read pair. Only library-region matches consistent with
+/// both partial observations are retained.
+///
+/// Distances are summed across the two partial matches. This is appropriate when
+/// the partial observations cover distinct parts of the region, but may
+/// overcount if they overlap.
 pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option<LibraryMatch> {
     match (x, y) {
         (None, _) | (_, None) => None,
@@ -200,6 +240,18 @@ pub fn merge_matches(x: Option<LibraryMatch>, y: Option<LibraryMatch>) -> Option
 }
 
 impl SubLibrary {
+    /// Compile a sublibrary from per-region expected sequences.
+    ///
+    /// The input `library` maps each region ID to the full column of expected
+    /// sequences from one library TSV. All region vectors must have the same
+    /// length, representing the same ordered library members.
+    ///
+    /// During compilation this:
+    /// - validates dimensions and IDs,
+    /// - assigns library-member IDs,
+    /// - deduplicates identical region sequences,
+    /// - builds exact-match lookup maps,
+    /// - and reconstructs full per-member region assignments.
     pub fn new(
         library: HashMap<RegionID, Vec<Sequence>>,
         ids: Option<Vec<String>>,
@@ -338,8 +390,8 @@ impl SubLibrary {
         })
     }
 
-    #[allow(dead_code)] // not used in count_reads but useful for users
-    /// Number of elements in the library (i.e. length of one seq vector)
+    /// Number of library members in this sublibrary.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         if self.library.is_empty() {
             return 0;
@@ -352,23 +404,34 @@ impl SubLibrary {
             .len()
     }
 
-    #[allow(dead_code)] // not used in count_reads but useful for users
-    /// Check is the library is empty
+    /// Return `true` if this sublibrary contains no library members.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.library.is_empty()
     }
 
-    /// Get the names of regions in the sublibrary
+    /// Return the region IDs represented in this sublibrary.
     pub fn regions(&self) -> Vec<&RegionID> {
         self.regions.keys().collect()
     }
 
-    /// Compare an observed sequence to the library
+    /// Look up an observed sequence against one region of this sublibrary.
     ///
-    /// Itentify the library members that most closely match a query sequence, with options
-    /// for distance metric to use and whether to require matches to the full sequence or
-    /// just one end. This is useful where you know your query is incomplete compared to the
-    /// library regions.
+    /// Matching proceeds in two stages:
+    /// 1. exact-match lookup is attempted first,
+    /// 2. if needed, the requested distance metric is used to find the best
+    ///    sequence(s) within the configured maximum distance.
+    ///
+    /// `partial` controls whether the query must match the full library sequence
+    /// or only one end of it. This is used for incompletely observed regions,
+    /// such as truncation at the 5' or 3' end of a read.
+    ///
+    /// Returns the best match set and its distance, or `None` if no match lies
+    /// within the allowed threshold.
+    ///
+    /// `DistanceMetric::BoundedLevenshtein` uses the configured maximum distance
+    /// as an upper bound and is generally equivalent to Levenshtein for accepted
+    /// matches while often being faster.
     ///
     /// The implementation dispatches to the appropriate lookup funciton based on distance matric
     /// and partial match type. We use the SIMD optimised versions of Hamming and Levenshtein
@@ -377,10 +440,6 @@ impl SubLibrary {
     /// optimisation and either version should be portable without undefined behaviour. Bounded
     /// levenshtein is only available as a SIMD implementation with fallback so we rely on
     /// the Rust Bio and editdistancek authors for the check.
-    ///
-    /// The max distance is used as the upper bound for bounded Levenshtein so this gives identical
-    /// results to Levenshtein in less time. Therefore generally bounded should be prefered to
-    /// Levenshtein but both options are available in case of edge cases.
     pub fn lookup(
         &self,
         region: &RegionID,
@@ -850,7 +909,12 @@ impl SubLibrary {
         (hits, best_dist as u64)
     }
 
-    /// Initialise a Library from a LibrarySpec object
+    /// Build a sublibrary from a TSV file and validate it against a `LibrarySpec`.
+    ///
+    /// This checks that:
+    /// - the reserved `_id` name is not used as a variable region in the spec,
+    /// - all TSV region columns correspond to variable regions in the spec,
+    /// - and per-region max-distance defaults are taken from the spec where present.
     pub fn from_file_with_lib_spec(
         path: &str,
         lib_spec: &LibrarySpec,
@@ -881,7 +945,11 @@ impl SubLibrary {
         Ok(lib)
     }
 
-    /// Import a Library from a TSV file
+    /// Build a sublibrary directly from a library TSV file.
+    ///
+    /// The TSV must contain one column per region and one row per library member.
+    /// An optional `_id` column supplies library-member names; otherwise names are
+    /// generated automatically from `default_id`.
     pub fn from_file(
         path: &str,
         region_max_distance: HashMap<RegionID, u64>,
@@ -942,23 +1010,37 @@ impl SubLibrary {
     }
 }
 
-/// Distance metric types
+/// Distance metric used for library lookup.
 #[derive(Clone, ValueEnum, Debug, Copy)]
 pub enum DistanceMetric {
+    /// Require exact sequence equality.
     Exact,
+
+    /// Count substitutions only; lengths must match for full matching.
     Hamming,
+
+    /// Full edit distance allowing substitutions, insertions, and deletions.
     Levenshtein,
+
+    /// Edit distance capped at the configured maximum threshold.
+    ///
+    /// Usually equivalent to Levenshtein for accepted matches, but often faster.
     BoundedLevenshtein,
 }
 
-/// Partial matching options
+/// How an observed query sequence should be aligned against a library region.
 ///
-/// Refers to the end of the library sequence to include - so a query
-/// that is trunctated at the 3 prime end would use FivePrimeOnly.
+/// Partial matching is used for truncated observed regions. The enum names refer
+/// to which end of the *library sequence* must be matched by the query.
 #[derive(Clone, Debug, Copy)]
 pub enum PartialMatching {
+    /// Require the full query to match the full library region.
     Full,
+
+    /// Match the query to the 5' end of the library sequence.
     FivePrimeOnly,
+
+    /// Match the query to the 3' end of the library sequence.
     ThreePrimeOnly,
 }
 

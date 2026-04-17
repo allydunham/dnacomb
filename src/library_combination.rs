@@ -1,6 +1,9 @@
-//! Library matches from sequencing data
+//! Summary representations of library-assigned region combinations.
 //!
-//! Structures and functions to store and manipulate library matches extracted from sequencing data
+//! These types are used after library comparison to collapse full observed
+//! combinations into a library-centric summary table. In particular, they remove
+//! per-observation detail such as sequence diffs while retaining enough
+//! information to group counts by inferred library assignment.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -10,9 +13,11 @@ use crate::interning::{RegionID, SeqHandle};
 use crate::library::LibraryRegion;
 use crate::region::RegionMatch;
 
-/// Key identifying a particular library match
+/// Key identifying one distinct summarised library-assignment pattern.
 ///
-/// Contains a subset of library match information for use as a hash key
+/// This key is used to collapse multiple `ObservedCombination`s that differ in
+/// observed sequence detail but share the same per-region library-assignment
+/// summary.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct LibraryCombinationKey {
     pub regions: Vec<(RegionID, LibraryRegionMatch)>,
@@ -24,62 +29,64 @@ impl LibraryCombinationKey {
     }
 }
 
-/// Status of the match between a region and a Library
+/// Summary form of a region-to-library match.
 ///
-/// Includes the status plus reference(s) to the matched sequence in
-/// the library and how distant it is. Different from RegionMatch as
-/// it doesn't include SeqDiffs, meaning regions can be combined over
-/// sequences.
+/// This is a reduced version of [`RegionMatch`] used for library-summary output.
+/// Unlike `RegionMatch`, it does not retain additional per-match information (SequenceDiff,
+/// distance or number of matches), so multiple observed regions with the same library
+/// assignment can be grouped together.
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub enum LibraryRegionMatch {
-    /// No comparison has occured yet
+    /// Library comparison has not been performed.
     Uncompared,
 
-    /// A single match (`Vec<u8>` sequence and library indeces) and associated distance
-    Match {
-        seq_match: Arc<LibraryRegion>,
-        distance: u64,
-    },
+    /// A unique library-region assignment was found.
+    Match { seq_match: Arc<LibraryRegion> },
 
-    /// Multiple equidistant matches and the distance
+    /// Multiple equally good library-region assignments were found.
     MultiMatch {
         seq_matches: Vec<Arc<LibraryRegion>>,
-        distance: u64,
     },
 
-    /// Too many matches
-    Overmatched { distance: u64, matches: usize },
+    /// Too many equally good matches were found to report individually.
+    Overmatched,
 
-    /// No match found
+    /// No library-region assignment was found.
     Unmatched,
 
-    /// Region not in library, with option to store the observed sequence
+    /// This region is not represented in the library summary.
+    ///
+    /// The observed sequence may optionally be retained so outputs can still
+    /// report the raw sequence for regions intentionally absent from the library.
     NoLibrary { seq: Option<SeqHandle> },
 }
 
 impl LibraryRegionMatch {
+    /// Convert a full per-region match into its summary representation.
+    ///
+    /// This drops sequence-difference detail so that library-summary rows group
+    /// by library assignment rather than by exact observed variant.
     pub fn from_region_match(region_match: &RegionMatch) -> Self {
         match region_match {
             RegionMatch::Uncompared => Self::Uncompared,
             RegionMatch::Unmatched => Self::Unmatched,
             RegionMatch::NoLibrary { seq } => Self::NoLibrary { seq: *seq },
-            RegionMatch::Overmatched { .. } => Self::Overmatched {
-                distance: 0,
-                matches: 0,
-            },
+            RegionMatch::Overmatched { .. } => Self::Overmatched,
             RegionMatch::Match { seq_match, .. } => Self::Match {
                 seq_match: seq_match.clone(),
-                distance: 0,
             },
             RegionMatch::MultiMatch { seq_matches, .. } => Self::MultiMatch {
                 seq_matches: seq_matches.clone(),
-                distance: 0,
             },
         }
     }
 
-    /// Get matching Sequence as a string, including the passed through raw
-    /// Sequence for NoLibrary matches.
+    /// Return the library-associated sequence(s) for display or TSV output.
+    ///
+    /// - unique matches return one sequence,
+    /// - multimatches return comma-separated sequences,
+    /// - `NoLibrary` returns the stored observed sequence if available,
+    /// - unmatched/uncompared/overmatched states return an empty string.
     pub fn str_sequence(&self) -> String {
         match self {
             LibraryRegionMatch::Uncompared
@@ -99,10 +106,11 @@ impl LibraryRegionMatch {
     }
 }
 
-/// Summary version of ObservedCombination
+/// Summarised library-assignment counts across observed combinations.
 ///
-/// This counts a particular form of match with the expected library instead of a particular
-/// combination of observed reads and so uses a hash map of RegionMatches instead of ObservedRegions
+/// This groups together observed combinations that share the same per-region
+/// summary library assignments and the same overall combination-match status.
+/// Counts are accumulated per read group.
 #[derive(Debug)]
 pub struct LibraryCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
@@ -116,6 +124,7 @@ pub struct LibraryCombination {
 }
 
 impl LibraryCombination {
+    /// Create an empty library-summary combination with no counts.
     pub fn new(
         regions: HashMap<RegionID, LibraryRegionMatch>,
         library_matches: CombinationMatch,

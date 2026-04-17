@@ -1,11 +1,14 @@
-//! Functions to write output TSVs
+//! TSV output generation for DNAComb results.
 //!
-//! Functions processing the various structs into formatted output tables:
-//! * Full counts table
-//! * Library counts table
-//! * Summary table
-//! * Filtered reads table
-
+//! This module contains functions for writing the main output tables produced by
+//! DNAComb, including:
+//! - full observed-combination counts,
+//! - library-assignment summaries,
+//! - read-level summary statistics,
+//! - and filtered-read summaries.
+//!
+//! These functions format internal data structures into stable TSV schemas for
+//! downstream analysis.
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -19,7 +22,8 @@ use crate::utils::div_or_zero;
 
 /// Write all observed combinations to a TSV file
 ///
-/// Write a full ouput TSV from an ObservedCombinations object.
+/// Write a full ouput TSV from an ObservedCombinations object with each
+/// `ReadGroup`/`ObservedCombination` pair getting one output row.
 ///
 /// This TSV has the format:
 /// - group: ReadGroup
@@ -122,10 +126,10 @@ pub fn write_counts(
     Ok(())
 }
 
-/// Write a comressed count TSV file with library matches
+/// Write a compressed count TSV file with library matches
 ///
 /// Write a compressed count TSV from an ObservedCombinations object covering only library matches
-/// and summing over all hits of different distances for each match.
+/// and merging hits at different distances for each match.
 ///
 /// This TSV has the format:
 /// - group: ReadGroup
@@ -299,7 +303,7 @@ fn write_summary_row<W: Write>(
 /// for what reason.
 ///
 /// This TSV has the format:
-/// - group: Subsection of summary for group_proportion
+/// - group: ReadGroup the read came from, if any
 /// - forward: Forward read
 /// - reverse: Reverse read (if paired)
 /// - count: Read count

@@ -1,4 +1,7 @@
-//! CLI interface to the DNAComb read counting and library comparison tool.
+//! CLI entry point for the DNAComb structured-read counting tool.
+//!
+//! This binary wires together argument parsing, input validation, read parsing,
+//! counting, optional library comparison, and TSV output generation.
 use anyhow::Error;
 use bio::alignment::pairwise::Aligner;
 use clap::{ArgAction, Parser};
@@ -18,28 +21,25 @@ use dnacomb::{
     ObservedCombinations, write_counts, write_filter_summary, write_library_counts, write_summary,
 };
 
-/// Fast general purpose read counter supporting complex structured reads
+/// Fast general-purpose read counter for structured sequencing reads.
 ///
-/// Count occurances of structured sequence reads, extracting regions of interest from
-/// a library specification and comparing observations to a library of expected combinations.
-/// Supports several alignment modes appropriate for different read structures and data sizes:
+/// DNAComb extracts variable regions from single-end or paired-end reads using
+/// one of several region-extraction modes, optionally compares those regions to
+/// one or more expected libraries, and writes TSV outputs summarising observed
+/// combinations, inferred library assignments, read-category summaries, and
+/// filtered reads.
 ///
-/// Alignment - Align reads to the template via semi-global alignment. Most thorough but
-/// slowest, allows variable region lengths [Default]
+/// Supported counting modes:
+/// - `align`: semi-global alignment to the LibSpec template; most robust, slowest
+/// - `pattern`: flank-pattern matching; faster, less robust to flank mutations
+/// - `inframe`: positional extraction from expected read coordinates; fastest structured mode
+/// - `full-read`: count complete read sequences without structured extraction
 ///
-/// Pattern matching - Use flanking regions to identify regions. Faster than alignment
-/// while allowing variable region length but less robust against variation.
-///
-/// Inframe - Assume regions occur at the correct position in reads (for instance after
-/// using cutadapt). Fastest structured read counting but can't handle variation.
-///
-/// Raw - Count full length sequences, fastest but unstructured
-///
-/// Outputs 1-3 files and logs to stderr:
-/// * {prefix}.counts.tsv - full count table
-/// * {prefix}.library_counts.tsv - summarised counts of library matches only
-/// * {prefix}.summary.tsv - summary read counts for e.g. matches, recombinations, mismatches
-/// * {prefix}.filtered.tsv - filtered read counts for e.g. bad alignments, low quality, short reads
+/// Outputs written:
+/// - `{prefix}.counts.tsv`
+/// - `{prefix}.library_counts.tsv` (when library comparison is performed)
+/// - `{prefix}.summary.tsv`
+/// - `{prefix}.filtered.tsv`
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
@@ -105,26 +105,29 @@ struct Cli {
     #[arg(short = 'm', long, value_enum, default_value_t = CountMode::Align, help_heading = "Counting")]
     mode: CountMode,
 
-    /// Additionally store the full read sequence associated with each combination. This is useful for debugging
-    /// computation and experiments but also generally each combination is associated with many sequences so it
-    /// doesn't compress results as much.
+    /// Store full read sequence(s) alongside each observed combination.
+    /// Useful for debugging and inspection, but increases output size because
+    /// many observed combinations correspond to multiple underlying full reads.
     #[arg(short = 'F', long, action, help_heading = "Counting")]
     full_seq: bool,
 
-    /// Group counts by applying this capture group regex to forward read names and
-    /// extracting the first capture group match
+    /// Group counts by applying this capture-group regex to forward read names
+    /// and using the first capture as the group label; reads without a match are
+    /// assigned to `_unmatched_`
     #[arg(short = 'g', long, help_heading = "Counting")]
     group: Option<String>,
 
-    /// Calculate similarity to oligo library(s) and output an additional table of library counts
+    /// Compare observed regions to one or more expected library TSVs and write
+    /// an additional library-summary output table
     #[arg(short = 'c', long, num_args = 1.., value_delimiter = ' ', help_heading = "Library Comparison")]
     library: Option<Vec<String>>,
 
-    /// Distance metric to use for library comparison. Hamming counts the number of mismatches
-    /// and levenshtein the number of subs/insertion/deletions required to go from A to B.
-    /// Bounded levenshtein only considers up to some distance and should be faster than unbounded.
-    /// Since we only consider matches with a max distance bounded should be prefered unless a
-    /// special case applies.
+    /// Distance metric to use for library comparison.
+    ///
+    /// Hamming counts substitutions only, while Levenshtein allows substitutions,
+    /// insertions, and deletions. Bounded Levenshtein applies the configured
+    /// maximum distance threshold during lookup and is usually faster while giving
+    /// the same accepted matches.
     #[arg(
         short = 'd',
         long,
@@ -158,7 +161,7 @@ struct Cli {
     #[arg(short = 'q', long, help_heading = "Filtering")]
     mean_quality_threshold: Option<f32>,
 
-    /// Minimum proportion of expected alignment score to keep
+    /// Minimum proportion of expected alignment score to keep. Only used in alignment mode.
     #[arg(short = 'r', long, help_heading = "Filtering")]
     alignment_tolerance: Option<f32>,
 
@@ -175,7 +178,7 @@ struct Cli {
     #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
     pattern_length: usize,
 
-    /// Number of mismatches to accept while matching flanking patterns
+    /// Number of mismatches to accept while matching flanking patterns. Only using in pattern mode.
     #[arg(long, default_value_t = 1, help_heading = "Pattern Matching")]
     pattern_tolerance: u64,
 
@@ -204,7 +207,8 @@ struct Cli {
     #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = "Alignment")]
     gap_extend_score: i32,
 
-    /// Don't cache reads when in align mode, trading lower memory usage for lower speed
+    /// Disable read-level caching in align mode, trading lower memory usage for
+    /// slower repeated processing of duplicate read sequences
     #[arg(long, action = ArgAction::SetTrue, help_heading = "Technical")]
     no_cache: bool,
 
@@ -212,7 +216,8 @@ struct Cli {
     #[arg(long, default_value_t = 0, help_heading = "Technical")]
     max_reads: u64,
 
-    /// Phred value to assume for Fasta files. Only matters when comparing to Fastq.
+    /// Phred byte to assign when reading FASTA input, which lacks quality scores. Only meaningful
+    /// if comparing Fasta and Fastq.
     #[arg(long, default_value_t = b'I', help_heading = "Technical")]
     default_phred: u8,
 
@@ -221,9 +226,7 @@ struct Cli {
     threads: usize,
 }
 
-/// Main function
-///
-/// Runs the pipeline and captures errors
+/// Parse CLI arguments, initialise logging, and run the main pipeline.
 fn main() -> Result<(), Error> {
     // Process arguments
     let args: Cli = Cli::parse();
@@ -247,9 +250,17 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-/// Run the CLI pipeline
+/// Execute the full CLI workflow.
 ///
-/// Manages control flow for CLI tool, dispatching to the appropriate functions
+/// This function:
+/// - validates output paths and options,
+/// - initialises read parsing and grouping,
+/// - loads and validates the LibSpec,
+/// - optionally compiles expected library TSVs,
+/// - constructs alignment/filtering configuration,
+/// - runs read counting,
+/// - optionally performs library comparison,
+/// - and writes all requested TSV outputs.
 fn run(args: Cli) -> Result<(), Error> {
     info!("Using options: {:#?}", args);
 
@@ -480,7 +491,12 @@ fn run(args: Cli) -> Result<(), Error> {
     Ok(())
 }
 
-/// Calculate alignment tolerance based on the expected alignment scores
+/// Convert a user-supplied alignment tolerance fraction into absolute alignment
+/// score thresholds for forward and reverse reads.
+///
+/// Expected read sequences are derived from the LibSpec and aligned to the full
+/// template using the configured alignment scoring scheme. The observed alignment
+/// thresholds are then set as `tolerance * expected_score`.
 fn calculate_alignment_tolerance(
     lib_spec: &LibrarySpec,
     alignment_scorer: &AlignmentScorer,
@@ -524,11 +540,8 @@ fn calculate_alignment_tolerance(
     )?))
 }
 
-/// Log SIMD feature presence and whether the tool is compiled
-/// to use them.
-///
-/// This version is for x86/x86_64 where SIMD may be available
-/// via AVX2/SSE4.1
+/// Log whether SIMD-accelerated distance calculations are available and enabled
+/// for this build/runtime combination.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn check_simd_features() {
     match (
@@ -549,11 +562,7 @@ fn check_simd_features() {
     }
 }
 
-/// Log SIMD feature presence and whether the tool is compiled
-/// to use them.
-///
-/// This version is for other architectures where SIMD will not
-/// be available.
+/// Log that SIMD-accelerated distance calculations are unavailable on this architecture.
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn check_simd_features() {
     log::info!("SIMD features are not available on this architecture.");

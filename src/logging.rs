@@ -1,16 +1,22 @@
-//! A simple logging based progress counter using count and timing information
+//! Lightweight progress reporting integrated with logging.
 //!
-//! Intended as a light-weight progress counter that easily integrate with existing logging output
-//! in the vein of proglog but with timing and customised for my use case.
+//! This module provides a simple progress-reporting abstraction that emits
+//! periodic updates through a logging-style callback. It is designed for
+//! long-running counting and comparison steps where full terminal progress bars
+//! are unnecessary or awkward.
 use log::info;
 use std::{sync::Arc, time::Instant};
 
+/// Logging callback used by progress reporters.
+///
+/// Typically this will wrap a logging macro such as `info!`.
 pub type LogFn = dyn Fn(&str) + Send + Sync;
 
-/// Progress bar
+/// Generic progress reporter.
 ///
-/// Generic container for different progress bar options. Currently just a
-/// logging progress bar and a NoOp dummy.
+/// This wraps either:
+/// - a real logging-based progress reporter,
+/// - or a no-op implementation when progress output is disabled.
 pub enum Progress<'a> {
     /// Logging progress bar
     Log(LogProgress<'a>),
@@ -44,10 +50,10 @@ impl<'a> Progress<'a> {
         Self::None
     }
 
-    /// Create a progress bar from a ProgressStyle object
+    /// Construct a progress reporter from shared style settings.
     ///
-    /// Using this approach makes it easier to initiate a single style for all
-    /// progress bars in a script
+    /// This makes it easy to apply the same logging behaviour consistently across
+    /// multiple stages of a workflow.
     pub fn from_style(
         style: &ProgressStyle,
         message: &'a str,
@@ -85,7 +91,11 @@ impl<'a> Progress<'a> {
     }
 }
 
-/// Progress monitor outputing via logging
+/// Progress reporter that periodically emits updates through a logging callback.
+///
+/// Progress is reported in terms of processed item count, elapsed time, current
+/// rate, and average rate. If a total is known, percentage completion and an
+/// estimated remaining time are also reported.
 pub struct LogProgress<'a> {
     /// Message to output before each update
     message: &'a str,
@@ -105,7 +115,7 @@ pub struct LogProgress<'a> {
     /// Number of iterations between logging output
     log_interval: u64,
 
-    /// When the opperation initially started
+    /// When the operation initially started
     start_time: Instant,
 
     /// When the last log update occured
@@ -119,7 +129,12 @@ pub struct LogProgress<'a> {
 }
 
 impl<'a> LogProgress<'a> {
-    /// Create a new progress tracker.
+    /// Create a new logging progress reporter.
+    ///
+    /// `message` is used for intermediate updates, `final_message` for the final
+    /// completion line, `total` optionally sets the expected total item count,
+    /// and `log_interval` determines how many processed items occur between log
+    /// updates.
     pub fn new(
         message: &'a str,
         final_message: &'a str,
@@ -151,7 +166,8 @@ impl<'a> LogProgress<'a> {
         }
     }
 
-    /// Increment progress by a specific amount.
+    /// Increment the processed item count and emit an update if the logging
+    /// interval has been reached.
     pub fn inc(&mut self, amount: u64) {
         self.current += amount;
         if self.current % self.log_interval == 0 {
@@ -211,7 +227,7 @@ impl<'a> LogProgress<'a> {
                 let remaining: f64 = ((total - self.current) as f64) / avg_rate;
 
                 (self.log_fn)(&format!(
-                    "{} {}/{:.1} {:.0}% in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s | est {:.0}s remaining{}",
+                    "{} {}/{} {:.0}% in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s | est {:.0}s remaining{}",
                     self.message,
                     self.current,
                     total,
@@ -227,7 +243,10 @@ impl<'a> LogProgress<'a> {
     }
 }
 
-/// Manager for multiple progress trackers with shared settings.
+/// Shared configuration for constructing progress reporters.
+///
+/// This lets different stages of a workflow share the same logging function and
+/// the same choice of whether thread IDs should be included in progress output.
 #[derive(Clone)]
 pub struct ProgressStyle {
     log_fn: Option<Arc<LogFn>>,
