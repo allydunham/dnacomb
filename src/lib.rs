@@ -27,6 +27,7 @@ pub mod lib_spec;
 pub mod library;
 pub mod library_combination;
 pub mod logging;
+pub mod output;
 pub mod parsing;
 pub mod region;
 pub mod seq_diff;
@@ -38,6 +39,7 @@ pub use combinations::ObservedCombinations;
 pub use counting::{CountMode, count_reads};
 pub use lib_spec::LibrarySpec;
 pub use library::SubLibrary;
+pub use output::{write_counts, write_filter_summary, write_library_counts, write_summary};
 
 #[cfg(not(any(target_pointer_width = "64", target_pointer_width = "32")))]
 compile_error!(

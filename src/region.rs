@@ -182,23 +182,68 @@ impl ObservedRegion {
         }
     }
 
-    /// Generate output TSV chunk describing the region
-    pub fn to_tsv_chunk(&self) -> String {
-        // Generate "{region} {region}_nearest {region}_distance {region}_n_matches" String
-        let mut seq = self.seq.to_str_or_log();
-
-        // Add appropriate marker to incomplete regions
-        match self.completeness {
+    /// Generate display string representing the region
+    ///
+    /// Output a tuple of values that can be used to represent the region (may be replaced
+    /// a struct in future). The values are:
+    ///
+    /// * Sequence (with ^ at start or end to represent incompleteness)
+    /// * nearest match(s)
+    /// * difference to match(s)
+    /// * distance from match
+    /// * number of matches
+    pub fn to_strings(&self) -> (String, String, String, String, String) {
+        let seq = match self.completeness {
             RegionCompleteness::Complete
             | RegionCompleteness::MissingCenter { .. }
-            | RegionCompleteness::Overlapping { .. } => {}
-            RegionCompleteness::Partial5Prime => seq.insert(0, '^'),
-            RegionCompleteness::Partial3Prime => seq.push('^'),
+            | RegionCompleteness::Overlapping { .. } => self.seq.to_str_or_log(),
+            RegionCompleteness::Partial5Prime => format!("^{}", self.seq.to_str_or_log()),
+            RegionCompleteness::Partial3Prime => format!("{}^", self.seq.to_str_or_log()),
         };
 
-        let (nearest, diff, distance, matches) = self.nearest_matches.to_str_fields();
+        match &self.nearest_matches {
+            RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => (
+                seq,
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "0".to_string(),
+            ),
+            RegionMatch::Overmatched { distance, matches } => (
+                seq,
+                "".to_string(),
+                "".to_string(),
+                distance.to_string(),
+                matches.to_string(),
+            ),
+            RegionMatch::Match {
+                seq_match,
+                distance,
+                diff,
+            } => (
+                seq,
+                seq_match.sequence.to_str_or_log(),
+                diff.to_string(),
+                distance.to_string(),
+                "1".to_string(),
+            ),
+            RegionMatch::MultiMatch {
+                seq_matches,
+                distance,
+                diffs,
+            } => {
+                let seqs: String = seq_matches
+                    .iter()
+                    .map(|x| x.sequence.to_str_or_log())
+                    .join(",");
 
-        format!("{}\t{}\t{}\t{}\t{}", seq, nearest, diff, distance, matches)
+                let diff_str: String = diffs.iter().map(|x| x.to_string()).join(",");
+
+                let count = seq_matches.len().to_string();
+
+                (seq, seqs, diff_str, distance.to_string(), count)
+            }
+        }
     }
 }
 
@@ -264,7 +309,7 @@ impl RegionMatch {
     /// Get library Sequence(s), difference(s), distance, number of matches as strings for output.
     ///
     /// NoLibrary matches are considered not to have a matching sequence
-    fn to_str_fields(&self) -> (String, String, String, String) {
+    pub fn to_strings(&self) -> (String, String, String, String) {
         match self {
             RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => (
                 "".to_string(),
@@ -300,30 +345,10 @@ impl RegionMatch {
 
                 let diff_str: String = diffs.iter().map(|x| x.to_string()).join(",");
 
-                let count = seqs.len().to_string();
+                let count = seq_matches.len().to_string();
 
                 (seqs, diff_str, distance.to_string(), count)
             }
-        }
-    }
-
-    /// Get matching Sequence as a string, including the passed through raw
-    /// Sequence for NoLibrary matches.
-    pub fn str_sequence(&self) -> String {
-        match self {
-            RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::Overmatched { .. } => {
-                "".to_string()
-            }
-            RegionMatch::NoLibrary { seq } => match seq {
-                Some(s) => s.to_str_or_log(),
-                None => "".to_string(),
-            },
-            RegionMatch::Match { seq_match, .. } => seq_match.sequence.to_str_or_log(),
-            RegionMatch::MultiMatch { seq_matches, .. } => seq_matches
-                .iter()
-                .map(|x| x.sequence.to_str_or_log())
-                .collect::<Vec<_>>()
-                .join(","),
         }
     }
 }

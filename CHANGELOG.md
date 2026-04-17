@@ -2,9 +2,13 @@
 
 This file contains a record of the major changes between versions.
 
-## v0.6.0 Interning & combinatorial libraries
+## v0.6.0 Interning, combinatorial libraries & sequence differences
 
 * Added interning of Sequences, Groups and Region IDs to reduce duplication, reduce memory usage and speed up performance
+* Reworked LibSpec/Library specification to move library to a separate argument
+* Added option to include multiple libraries for independent subsets of regions within your vector (e.g. if you had two guides that occur in all combinations)
+* Added calculation of difference between observed and expected sequences
+* Added many more unit tests and benchmarks
 
 ## v0.5.0 Deeper tracking, refined config and performance improvements
 

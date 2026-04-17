@@ -62,7 +62,7 @@ Counting:
   -g, --group <GROUP>  Group counts by applying this capture group regex to forward read names and extracting the first capture group match
 
 Library Comparison:
-  -c, --library-counts                     Calculate similarity to oligo library and output an additional table of library counts
+  -c, --library <LIBRARY>...               Calculate similarity to oligo library(s) and output an additional table of library counts
   -d, --distance-metric <DISTANCE_METRIC>  Distance metric to use for library comparison.
 
 Filtering:
@@ -115,8 +115,7 @@ In general it has the form:
             "seq_type": "Fixed", // A fixed region, anchors variable regions to allow identification
             "length": 86 // Length, must be the length of seq
         },
-    ],
-    "library": "path/to/library.tsv" // Path to a TSV file describing the library
+    ]
 }
 ```
 
@@ -127,6 +126,9 @@ This doesn't have to include all variable regions, for instance if you have a ba
 Each row contains an expected sequence combination.
 A special column named `_id` can be used to associate a name with each library member, which will be used in the output table in place of it's numeric index (this means `_id` should be avoided as a region name).
 Examples are again found in `config/` matching the LibSpec JSONs.
+
+Providing a single library TSV means only those combinations of sequences will occur, with any others being considered recombinations.
+If you have partially independent regions in your library you can instead pass multiple library TSVs, meaning the subsections of regions in each must occur in the specified combinations but the groups of regions between TSVs can be combined in any.
 
 ## Outputs
 
@@ -204,8 +206,7 @@ The test script runs the tool under a variety of conditions with simulated data 
 The benchmark script runs a variety of simulated read workloads, writing a summary TSV to `benchmark/benchmark.tsv`.
 The results of both processes can be further analysed using the plotting R script to generate summary plots, with example plots found in `plots/`.
 All scripts assume they are running from the project root.
-
-Unit tests and unit benchmarks are also used to test individual functionality, although at present the coverage is fairly low.
+Integration tests, unit tests and unit benchmarks are also used to test individual functionalities.
 
 ### Performance
 
@@ -252,8 +253,8 @@ We are also happy to accept pull requests with implementations or bug fixes alth
 
 Currently planned features:
 
-* LibSpec enhancements, including more meta data
 * Multi-threaded IO
-* Mutant regions, for instance for regions covering an ORF that has an expected sequence with minor variations
-* More handling of unexpected sequences, for instance identifying the observed recombination positions or outputting unexpected reads to file for analysis
+* Mutant regions to describe a region where you expect minor variations to an expected sequence, for instance the ORF of an SGE experiment.
 * More diagnostic output, for instance discarded reads and alignments
+* Additional region extraction algorithms to handle more complex sequence designs
+* Handling for libraries containing more than one sequence design - for instance a library with regular gRNA and pegRNA included.

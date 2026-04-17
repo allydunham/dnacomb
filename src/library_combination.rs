@@ -2,11 +2,12 @@
 //!
 //! Structures and functions to store and manipulate library matches extracted from sequencing data
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::combination::CombinationMatch;
-use crate::errors::LibraryError;
 use crate::groups::ReadGroup;
-use crate::interning::RegionID;
+use crate::interning::{RegionID, SeqHandle};
+use crate::library::LibraryRegion;
 use crate::region::RegionMatch;
 
 /// Key identifying a particular library match
@@ -14,12 +15,87 @@ use crate::region::RegionMatch;
 /// Contains a subset of library match information for use as a hash key
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct LibraryCombinationKey {
-    pub regions: Vec<(RegionID, RegionMatch)>,
+    pub regions: Vec<(RegionID, LibraryRegionMatch)>,
 }
 
 impl LibraryCombinationKey {
-    pub fn new(regions: Vec<(RegionID, RegionMatch)>) -> Self {
+    pub fn new(regions: Vec<(RegionID, LibraryRegionMatch)>) -> Self {
         Self { regions }
+    }
+}
+
+/// Status of the match between a region and a Library
+///
+/// Includes the status plus reference(s) to the matched sequence in
+/// the library and how distant it is. Different from RegionMatch as
+/// it doesn't include SeqDiffs, meaning regions can be combined over
+/// sequences.
+#[derive(Debug, Eq, Hash, PartialEq, Clone)]
+pub enum LibraryRegionMatch {
+    /// No comparison has occured yet
+    Uncompared,
+
+    /// A single match (`Vec<u8>` sequence and library indeces) and associated distance
+    Match {
+        seq_match: Arc<LibraryRegion>,
+        distance: u64,
+    },
+
+    /// Multiple equidistant matches and the distance
+    MultiMatch {
+        seq_matches: Vec<Arc<LibraryRegion>>,
+        distance: u64,
+    },
+
+    /// Too many matches
+    Overmatched { distance: u64, matches: usize },
+
+    /// No match found
+    Unmatched,
+
+    /// Region not in library, with option to store the observed sequence
+    NoLibrary { seq: Option<SeqHandle> },
+}
+
+impl LibraryRegionMatch {
+    pub fn from_region_match(region_match: &RegionMatch) -> Self {
+        match region_match {
+            RegionMatch::Uncompared => Self::Uncompared,
+            RegionMatch::Unmatched => Self::Unmatched,
+            RegionMatch::NoLibrary { seq } => Self::NoLibrary { seq: *seq },
+            RegionMatch::Overmatched { .. } => Self::Overmatched {
+                distance: 0,
+                matches: 0,
+            },
+            RegionMatch::Match { seq_match, .. } => Self::Match {
+                seq_match: seq_match.clone(),
+                distance: 0,
+            },
+            RegionMatch::MultiMatch { seq_matches, .. } => Self::MultiMatch {
+                seq_matches: seq_matches.clone(),
+                distance: 0,
+            },
+        }
+    }
+
+    /// Get matching Sequence as a string, including the passed through raw
+    /// Sequence for NoLibrary matches.
+    pub fn str_sequence(&self) -> String {
+        match self {
+            LibraryRegionMatch::Uncompared
+            | LibraryRegionMatch::Unmatched
+            | LibraryRegionMatch::Overmatched { .. } => "".to_string(),
+            LibraryRegionMatch::NoLibrary { seq } => match seq {
+                Some(s) => s.to_str_or_log(),
+                None => "".to_string(),
+            },
+            LibraryRegionMatch::Match { seq_match, .. } => seq_match.sequence.to_str_or_log(),
+            LibraryRegionMatch::MultiMatch { seq_matches, .. } => seq_matches
+                .iter()
+                .map(|x| x.sequence.to_str_or_log())
+                .collect::<Vec<_>>()
+                .join(","),
+        }
     }
 }
 
@@ -30,17 +106,20 @@ impl LibraryCombinationKey {
 #[derive(Debug)]
 pub struct LibraryCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
-    counts: HashMap<ReadGroup, u32>,
+    pub counts: HashMap<ReadGroup, u32>,
 
     /// RegionMatches determine the connection to the library
-    regions: HashMap<RegionID, RegionMatch>,
+    pub regions: HashMap<RegionID, LibraryRegionMatch>,
 
     /// Status and result of comparison with the expected library of sequences
-    library_matches: CombinationMatch,
+    pub library_matches: CombinationMatch,
 }
 
 impl LibraryCombination {
-    pub fn new(regions: HashMap<RegionID, RegionMatch>, library_matches: CombinationMatch) -> Self {
+    pub fn new(
+        regions: HashMap<RegionID, LibraryRegionMatch>,
+        library_matches: CombinationMatch,
+    ) -> Self {
         Self {
             counts: HashMap::new(),
             regions,
@@ -61,40 +140,6 @@ impl LibraryCombination {
                 self.counts.insert(*group, n);
             }
         }
-    }
-
-    /// Generate tsv line(s) corresponding to this combination. Each read group
-    /// the combination is observed is given a separate line
-    pub fn to_tsv(&self, region_ids: &Vec<RegionID>) -> Result<String, LibraryError> {
-        // Line has \t separated format:
-        // group [{region} for each region] status combinations_in_library combination_indexes count
-
-        let mut output = String::with_capacity(100 * self.counts.len());
-
-        for (group, count) in self.counts.iter() {
-            // Read group
-            output.push_str(&group.to_string());
-            output.push('\t');
-
-            // Region seq
-            for reg_id in region_ids {
-                let region = self.regions.get(reg_id);
-
-                match region {
-                    None => output.push('\t'), // Missing regions 1 blanks
-                    Some(r) => {
-                        output.push_str(&r.str_sequence());
-                        output.push('\t');
-                    }
-                }
-            }
-
-            output.push_str(&self.library_matches.to_summary_tsv_chunk()?);
-            output.push_str(&count.to_string());
-            output.push('\n');
-        }
-
-        Ok(output)
     }
 }
 

@@ -5,8 +5,6 @@ use anyhow::{self};
 use bio::bio_types::alignment::Alignment;
 use crossbeam::channel::{Receiver, unbounded};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use std::thread::scope;
 
@@ -14,14 +12,13 @@ use crate::combination::{CombinationKey, CombinationMatch, ObservedCombination};
 use crate::errors::{LibraryError, ReadCountError};
 use crate::filters::{FilterConfig, FilterReason, FilteredCounts, FilteredReads};
 use crate::groups::ReadGroup;
-use crate::interning::{RegionID, region_id_to_str};
+use crate::interning::RegionID;
 use crate::library::{DistanceMetric, Library};
-use crate::library_combination::{LibraryCombination, LibraryCombinationKey};
+use crate::library_combination::{LibraryCombination, LibraryCombinationKey, LibraryRegionMatch};
 use crate::logging::{Progress, ProgressStyle};
-use crate::region::{ObservedRegion, RegionKey, RegionMatch};
+use crate::region::{ObservedRegion, RegionKey};
 use crate::seqs::ReadPair;
 use crate::seqs::SeqPair;
-use crate::utils::div_or_zero;
 
 /// Container for ObservedCombination objects
 ///
@@ -31,7 +28,7 @@ use crate::utils::div_or_zero;
 /// is run. It also carries the region ids to be considered in order.
 #[derive(Debug)]
 pub struct ObservedCombinations {
-    region_ids: Vec<RegionID>,
+    pub region_ids: Vec<RegionID>,
     regions: HashMap<RegionKey, Arc<Mutex<ObservedRegion>>>,
     combinations: HashMap<CombinationKey, ObservedCombination>,
     library: Option<Library>,
@@ -51,6 +48,10 @@ impl ObservedCombinations {
             filtered_reads: FilteredReads::new(filter_config),
             cache: HashMap::new(),
         }
+    }
+
+    pub fn filtered_reads(&self) -> &FilteredReads {
+        &self.filtered_reads
     }
 
     /// Merge counts from another ObservedCombinations object into this one
@@ -359,36 +360,12 @@ impl ObservedCombinations {
                 // match count, etc. to summarise the library and store NoLibrary
                 // region seqs to capture e.g. barcodes.
                 match comb.regions.get(reg) {
-                    None => key.regions.push((*reg, RegionMatch::Unmatched)),
+                    None => key.regions.push((*reg, LibraryRegionMatch::Unmatched)),
                     Some(x) => {
                         let or = x.lock().unwrap();
                         key.regions.push((
                             *reg,
-                            match &or.nearest_matches {
-                                RegionMatch::Unmatched => RegionMatch::Unmatched,
-                                RegionMatch::Overmatched { .. } => RegionMatch::Overmatched {
-                                    distance: 0,
-                                    matches: 0,
-                                },
-                                RegionMatch::NoLibrary { .. } => {
-                                    RegionMatch::NoLibrary { seq: Some(or.seq) }
-                                }
-                                RegionMatch::Uncompared => RegionMatch::Uncompared,
-                                RegionMatch::Match {
-                                    seq_match, diff, ..
-                                } => RegionMatch::Match {
-                                    seq_match: seq_match.clone(),
-                                    distance: 0,
-                                    diff: diff.clone(),
-                                },
-                                RegionMatch::MultiMatch {
-                                    seq_matches, diffs, ..
-                                } => RegionMatch::MultiMatch {
-                                    seq_matches: seq_matches.to_vec(),
-                                    distance: 0,
-                                    diffs: diffs.clone(),
-                                },
-                            },
+                            LibraryRegionMatch::from_region_match(&or.nearest_matches),
                         ))
                     }
                 }
@@ -481,93 +458,41 @@ impl ObservedCombinations {
         read_summary
     }
 
-    /// Write all counts to file
-    pub fn write_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
-        let mut count_writer = BufWriter::new(file);
-        let mut keys: Vec<(&CombinationKey, u32)> = self
-            .combinations
-            .iter()
-            .map(|x| (x.0, x.1.total_count()))
-            .collect();
+    /// Produce a vector of LibraryCombinations to iterate over
+    ///
+    /// Generate an optionally sorted vector of LibraryCombinations to process.
+    /// The requirement to sort means allocating a new vector is necessary.
+    pub fn to_library_vector(
+        &self,
+        sort: bool,
+    ) -> Result<Vec<&LibraryCombination>, ReadCountError> {
+        if let Some(combs) = &self.library_combinations {
+            let mut vec: Vec<&LibraryCombination> = combs.iter().map(|(_, v)| v).collect();
 
-        if sort {
-            // Invert count to get desc order
-            keys.sort_unstable_by_key(|x| 0 - i64::from(x.1));
-        }
-
-        // Write header
-        write!(count_writer, "group\tforward\treverse\t")?;
-        for r in &self.region_ids {
-            let s = region_id_to_str(*r);
-            write!(
-                count_writer,
-                "{}\t{}_nearest\t{}_variants\t{}_distance\t{}_n_matches\t",
-                s, s, s, s, s
-            )?;
-        }
-        writeln!(
-            count_writer,
-            "combination_status\tcombination_distance\tcombinations_in_library\tcombination_id\tcount"
-        )?;
-
-        for (key, _) in keys {
-            let combination = self.combinations.get(key).expect(
-                "Combination key from extracted key list missing from ObservedCombinations",
-            );
-            write!(count_writer, "{}", combination.to_tsv(&self.region_ids)?)?;
-        }
-
-        count_writer.flush()?;
-        Ok(())
-    }
-
-    /// Write matched library combination counts to file
-    pub fn write_summary_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
-        let combs = match &self.library_combinations {
-            None => {
-                return Err(ReadCountError::Error {
-                    desc: "Combinations uncompared, compare before summarising".to_string(),
-                }
-                .into());
+            if sort {
+                vec.sort_unstable_by_key(|c| std::cmp::Reverse(c.total_count()));
             }
-            Some(x) => x,
-        };
 
-        let mut writer = BufWriter::new(file);
-        let mut keys: Vec<(&LibraryCombinationKey, u32)> =
-            combs.iter().map(|x| (x.0, x.1.total_count())).collect();
-
-        // Sort
-        if sort {
-            // Invert count to get desc order
-            keys.sort_unstable_by_key(|x| 0 - i64::from(x.1));
+            Ok(vec)
+        } else {
+            Err(ReadCountError::Error {
+                desc: "Combinations uncompared, compare before summarising".to_string(),
+            })
         }
-
-        // Write
-        write!(writer, "group\t")?;
-        for r in &self.region_ids {
-            write!(writer, "{}\t", region_id_to_str(*r))?;
-        }
-        writeln!(
-            writer,
-            "combination_status\tcombinations_in_library\tcombination_id\tcount"
-        )?;
-
-        for (key, _) in keys {
-            let combination = combs.get(key).expect(
-                "Combination key from extracted key list missing from ObservedCombinations",
-            );
-            write!(writer, "{}", combination.to_tsv(&self.region_ids)?)?;
-        }
-
-        writer.flush()?;
-        Ok(())
     }
 
-    /// Write all counts to file
-    pub fn write_filtered_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
-        self.filtered_reads.write_filter_tsv(file, sort)?;
-        Ok(())
+    /// Produce a vector of Combinations to iterate over
+    ///
+    /// Generate an optionally sorted vector of ObservedCombinations to process.
+    /// The requirement to sort means allocating a new vector is necessary.
+    pub fn to_vector(&self, sort: bool) -> Vec<&ObservedCombination> {
+        let mut vec: Vec<&ObservedCombination> = self.combinations.values().collect();
+
+        if sort {
+            vec.sort_unstable_by_key(|c| std::cmp::Reverse(c.total_count()));
+        }
+
+        vec
     }
 }
 
@@ -658,7 +583,7 @@ impl ReadSummary {
     }
 
     /// Sum of unfiltered reads
-    fn total_unfiltered(&self) -> u64 {
+    pub fn total_unfiltered(&self) -> u64 {
         self.uncompared
             + self.exact_match
             + self.nearest_match
@@ -672,94 +597,6 @@ impl ReadSummary {
     /// Total reads observed across categories
     pub fn total(&self) -> u64 {
         self.total_unfiltered() + self.filtered_reads.total()
-    }
-
-    /// Write to file in TSV format
-    pub fn write_tsv(self, file: File) -> Result<(), anyhow::Error> {
-        let mut writer = BufWriter::new(file);
-        let unfiltered_total = self.total_unfiltered();
-        let total = self.total();
-
-        // Write data
-        writeln!(
-            writer,
-            "group\tmetric\tcount\toverall_proportion\tgroup_proportion"
-        )?;
-        writeln!(
-            writer,
-            "all\ttotal\t{}\t{:.4}\t{:.4}",
-            total,
-            if total > 0 { 1.0 } else { 0.0 },
-            if total > 0 { 1.0 } else { 0.0 },
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\ttotal\t{}\t{:.4}\t{:.4}",
-            unfiltered_total,
-            div_or_zero(unfiltered_total as f32, total as f32),
-            div_or_zero(unfiltered_total as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tuncompared\t{}\t{:.4}\t{:.4}",
-            self.uncompared,
-            div_or_zero(self.uncompared as f32, total as f32),
-            div_or_zero(self.uncompared as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\texact_match\t{}\t{:.4}\t{:.4}",
-            self.exact_match,
-            div_or_zero(self.exact_match as f32, total as f32),
-            div_or_zero(self.exact_match as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tnearest_match\t{}\t{:.4}\t{:.4}",
-            self.nearest_match,
-            div_or_zero(self.nearest_match as f32, total as f32),
-            div_or_zero(self.nearest_match as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tmultimatch\t{}\t{:.4}\t{:.4}",
-            self.multimatch,
-            div_or_zero(self.multimatch as f32, total as f32),
-            div_or_zero(self.multimatch as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\texact_recombination\t{}\t{:.4}\t{:.4}",
-            self.exact_recombination,
-            div_or_zero(self.exact_recombination as f32, total as f32),
-            div_or_zero(self.exact_recombination as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tnearest_recombination\t{}\t{:.4}\t{:.4}",
-            self.nearest_recombination,
-            div_or_zero(self.nearest_recombination as f32, total as f32),
-            div_or_zero(self.nearest_recombination as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tmismatch\t{}\t{:.4}\t{:.4}",
-            self.mismatch,
-            div_or_zero(self.mismatch as f32, total as f32),
-            div_or_zero(self.mismatch as f32, unfiltered_total as f32),
-        )?;
-        writeln!(
-            writer,
-            "unfiltered\tnonmatch\t{}\t{:.4}\t{:.4}",
-            self.nonmatch,
-            div_or_zero(self.nonmatch as f32, total as f32),
-            div_or_zero(self.nonmatch as f32, unfiltered_total as f32),
-        )?;
-
-        write!(writer, "{}", self.filtered_reads.to_long_tsv_lines(total))?;
-
-        writer.flush()?;
-        Ok(())
     }
 }
 

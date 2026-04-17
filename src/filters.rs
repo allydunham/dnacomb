@@ -8,13 +8,11 @@
 use bio::bio_types::alignment::Alignment;
 use bio::io::fastq::Record;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 
 use crate::errors::ReadCountError;
 use crate::groups::ReadGroup;
 use crate::seqs::{ReadPair, SeqPair};
-use crate::utils::{div_or_zero, mean_quality};
+use crate::utils::mean_quality;
 
 /// Function filtering based on a read pair
 type ReadFilter = fn(&Record, Option<&Record>, &FilterConfig) -> Option<FilterReason>;
@@ -41,8 +39,11 @@ pub struct FilterMeta {
 }
 
 impl FilterReason {
-    const N_REASONS: usize = FilterReason::ALL_FILTERS.len();
-    const ALL_FILTERS: &[FilterReason] = &[
+    /// Number of filter reasons defined
+    pub const N_REASONS: usize = FilterReason::ALL_FILTERS.len();
+
+    /// List of all FilterReasons for iteration
+    pub const ALL_FILTERS: &[FilterReason] = &[
         FilterReason::EmptyRead,
         FilterReason::ShortRead,
         FilterReason::LongRead,
@@ -50,6 +51,7 @@ impl FilterReason {
         FilterReason::BadAlignment,
     ];
 
+    /// Get index of reason as enum integer and ALL_REASONS index
     #[inline]
     pub const fn as_index(self) -> usize {
         self as usize
@@ -259,6 +261,11 @@ impl FilteredCounts {
         self.0[r.as_index()]
     }
 
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &u64> {
+        self.0.iter()
+    }
+
     fn increment_count(&mut self, r: FilterReason) {
         self.0[r.as_index()] += 1;
     }
@@ -273,57 +280,6 @@ impl FilteredCounts {
         for i in 0..FilterReason::N_REASONS {
             self.0[i] += new_counts.0[i]
         }
-    }
-
-    /// Headers for the TSV produced by to_tsv_line
-    fn wide_tsv_headers() -> String {
-        let ids: Vec<&str> = FilterReason::ALL_FILTERS
-            .iter()
-            .map(|r| r.meta().id)
-            .collect();
-
-        format!("count\tproportion\t{}", ids.join("\t"))
-    }
-
-    /// TSV line giving the total and counts of each reason for a given
-    fn to_wide_tsv_line(&self, total: f32) -> String {
-        let string_counts: Vec<String> = self.0.iter().map(|i| i.to_string()).collect();
-
-        format!(
-            "{}\t{:.4}\t{}",
-            self.total(),
-            self.total() as f32 / total,
-            string_counts.join("\t"),
-        )
-    }
-
-    /// Generate a string of TSV lines representing total counts
-    ///
-    /// Creates a TSV string with columns for filter reason, count and
-    /// proportion of the supplied total read count. Mainly for use
-    /// when outputting from ReadSummary
-    pub fn to_long_tsv_lines(&self, total: u64) -> String {
-        let filtered_total = self.total();
-
-        let mut out = String::with_capacity(300);
-
-        out.push_str(&format!(
-            "filtered\ttotal\t{}\t{:.4}\t1.000\n",
-            filtered_total,
-            div_or_zero(filtered_total as f32, total as f32),
-        ));
-
-        for r in FilterReason::ALL_FILTERS {
-            out.push_str(&format!(
-                "filtered\t{}\t{}\t{:.4}\t{:.4}\n",
-                r.meta().id,
-                self.get(r),
-                div_or_zero(self.get(r) as f32, total as f32),
-                div_or_zero(self.get(r) as f32, filtered_total as f32),
-            ));
-        }
-
-        out
     }
 }
 
@@ -463,14 +419,11 @@ impl FilteredReads {
         Ok(())
     }
 
-    /// Write a TSV file listing the filtered reads
+    /// Produce a vector of filtered reads to iterate over
     ///
-    /// Writes a TSV with columns for forward sequence, reverse sequence,
-    /// total count, frequency, then one for each filter reason count.
-    pub fn write_filter_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
-        let total = self.total() as f32;
-
-        let mut writer = BufWriter::new(file);
+    /// Generate an optionally sorted vector of SeqPairs with their ReadGroup and counts for
+    /// each filter reason.
+    pub fn to_vector(&self, sort: bool) -> Vec<(&SeqPair, &ReadGroup, &FilteredCounts)> {
         let mut keys: Vec<(&SeqPair, u64)> = self
             .counts
             .iter()
@@ -482,69 +435,19 @@ impl FilteredReads {
             keys.sort_unstable_by_key(|x| std::cmp::Reverse(x.1));
         }
 
-        // Write header
-        writeln!(
-            writer,
-            "group\tforward\treverse\t{}",
-            FilteredCounts::wide_tsv_headers()
-        )?;
+        keys.iter()
+            .flat_map(|(k, _)| {
+                let groups = self
+                    .counts
+                    .get(k)
+                    .expect("Key missing despite coming from FilteredReads");
 
-        for (key, _) in keys {
-            let groups = self
-                .counts
-                .get(key)
-                .expect("Count key from extracted key list missing from FilteredReads");
-
-            for (group, counts) in groups {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}",
-                    group,
-                    key.forward.to_str_or_log(),
-                    match &key.reverse {
-                        Some(x) => x.to_str_or_log(),
-                        None => "".to_string(),
-                    },
-                    counts.to_wide_tsv_line(total),
-                )?;
-            }
-        }
-
-        writer.flush()?;
-        Ok(())
-    }
-
-    /// Generate a string of TSV lines representing the total filter counts
-    ///
-    /// Creates a TSV string with columns for filter reason, count and
-    /// proportion of the supplied total read count. Mainly for use
-    /// when outputting from ReadSummary
-    pub fn to_summary_tsv_lines(&self, total: u64) -> String {
-        let filtered_total = self.total();
-
-        let mut out = String::with_capacity(300);
-
-        out.push_str(&format!(
-            "filtered\ttotal\t{}\t{:.4}\t1.000\n",
-            filtered_total,
-            filtered_total as f32 / total as f32,
-        ));
-
-        for r in FilterReason::ALL_FILTERS {
-            out.push_str(&format!(
-                "filtered\t{}\t{}\t{:.4}\t{:.4}\n",
-                r.meta().id,
-                self.totals.get(r),
-                self.totals.get(r) as f32 / total as f32,
-                self.totals.get(r) as f32 / filtered_total as f32,
-            ));
-        }
-
-        out
+                groups.iter().map(move |(g, c)| (*k, g, c))
+            })
+            .collect()
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;

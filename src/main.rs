@@ -8,13 +8,15 @@ use std::fs;
 use std::process::exit;
 use std::str;
 
-use dnacomb::ObservedCombinations;
 use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
 use dnacomb::lib_spec::LibrarySpec;
 use dnacomb::library::{DistanceMetric, Library};
 use dnacomb::logging::ProgressStyle;
 use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat, SeqPath};
+use dnacomb::{
+    ObservedCombinations, write_counts, write_filter_summary, write_library_counts, write_summary,
+};
 
 /// Fast general purpose read counter supporting complex structured reads
 ///
@@ -438,7 +440,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(count_path)?,
             false => fs::File::create_new(count_path)?,
         };
-        counts.write_tsv(count_file, args.sort)?;
+        write_counts(&counts, count_file, args.sort)?;
     }
 
     // Write library count table if applicable
@@ -451,7 +453,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(library_summary_path)?,
             false => fs::File::create_new(library_summary_path)?,
         };
-        counts.write_summary_tsv(library_summary_file, args.sort)?;
+        write_library_counts(&counts, library_summary_file, args.sort)?;
     }
 
     // Calculate and output summary statistics
@@ -462,7 +464,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(read_summary_path)?,
             false => fs::File::create_new(read_summary_path)?,
         };
-        read_summary.write_tsv(summary_file)?;
+        write_summary(&read_summary, summary_file)?;
     }
 
     // Write filter count table
@@ -472,7 +474,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(filtered_path)?,
             false => fs::File::create_new(filtered_path)?,
         };
-        counts.write_filtered_tsv(filtered_file, args.sort)?;
+        write_filter_summary(counts.filtered_reads(), filtered_file, args.sort)?;
     }
 
     Ok(())

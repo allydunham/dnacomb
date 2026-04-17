@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::errors::{LibraryError, seq_to_string_or_log};
+use crate::errors::LibraryError;
 use crate::groups::ReadGroup;
-use crate::interning::{LibraryID, RegionID, library_id_to_str, seq_to_bytes};
+use crate::interning::{LibraryID, RegionID, library_id_to_str};
 use crate::library::{DistanceMetric, Library};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
 use crate::seqs::SeqPair;
@@ -196,55 +196,6 @@ impl ObservedCombination {
             distance: comb_dist,
         }
     }
-
-    /// Generate tsv line(s) corresponding to this combination. Each read group
-    /// the combination is observed is given a separate line
-    pub fn to_tsv(&self, region_ids: &Vec<RegionID>) -> Result<String, LibraryError> {
-        // Line has \t separated format:
-        // group forward reverse [{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
-
-        let mut output = String::with_capacity(100 * self.counts.len());
-
-        for (group, count) in self.counts.iter() {
-            // Read group
-            output.push_str(&group.to_string());
-            output.push('\t');
-
-            match &self.sequence {
-                Some(seq) => {
-                    output.push_str(&seq_to_string_or_log(&seq_to_bytes(seq.forward).to_vec()));
-                    output.push('\t');
-                    match seq.reverse {
-                        Some(rev) => {
-                            output.push_str(&seq_to_string_or_log(&seq_to_bytes(rev).to_vec()));
-                            output.push('\t');
-                        }
-                        None => output.push('\t'),
-                    }
-                }
-                None => output.push_str("\t\t"),
-            }
-
-            // Region seq/nearest match(s)/distance per region
-            for reg_id in region_ids {
-                let region = self.regions.get(reg_id);
-
-                match region {
-                    None => output.push_str("\t\t\t\t"), // Missing regions 4 blanks
-                    Some(r) => {
-                        output.push_str(&r.lock().unwrap().to_tsv_chunk());
-                        output.push('\t');
-                    }
-                }
-            }
-
-            output.push_str(&self.library_matches.to_tsv_chunk()?);
-            output.push_str(&count.to_string());
-            output.push('\n');
-        }
-
-        Ok(output)
-    }
 }
 
 /// Status of the match between ObservedCombination and a Library
@@ -280,7 +231,7 @@ pub enum CombinationMatch {
 
 impl CombinationMatch {
     /// Extract the relevant ID string from the match
-    fn id_string(&self) -> Result<String, LibraryError> {
+    pub fn id_string(&self) -> Result<String, LibraryError> {
         Ok(match self {
             CombinationMatch::Match { inds, .. } => inds
                 .iter()
@@ -308,66 +259,6 @@ impl CombinationMatch {
                 names.join("/")
             }
             _ => "".to_string(),
-        })
-    }
-
-    /// Output a TSV chunk for the combination match status
-    ///
-    /// Has the \t separated format:
-    /// status combination_distance combinations_in_library combination_indexes
-    fn to_tsv_chunk(&self) -> Result<String, LibraryError> {
-        let name = self.id_string()?;
-
-        Ok(match self {
-            CombinationMatch::Uncompared => "uncompared\t\t\t\t".to_string(),
-            CombinationMatch::Match { distance, .. } => format!("match\t{distance}\t1\t{name}\t"),
-            CombinationMatch::MultiMatch { inds, distance } => {
-                // Number of matches is the product of sub-library matches as all combinations possible
-                let n_matches = inds
-                    .iter()
-                    .map(|x| match x {
-                        Some(x) => x.len(),
-                        None => 1,
-                    })
-                    .reduce(|x, y| x * y)
-                    .unwrap_or(0);
-
-                format!("match\t{}\t{}\t{}\t", distance, n_matches, name)
-            }
-            CombinationMatch::Recombination { distance } => {
-                format!("recombination\t{distance}\t0\t\t",)
-            }
-            CombinationMatch::Mismatch => "mismatch\t\t0\t\t".to_string(),
-            CombinationMatch::Nonmatch => "nonmatch\t\t0\t\t".to_string(),
-        })
-    }
-
-    /// Output a summary TSV chunk for the combination match status
-    ///
-    /// Has the \t separated format:
-    /// status combinations_in_library combination_indexes
-    pub fn to_summary_tsv_chunk(&self) -> Result<String, LibraryError> {
-        let name = self.id_string()?;
-
-        Ok(match self {
-            CombinationMatch::Uncompared => "uncompared\t\t\t".to_string(),
-            CombinationMatch::Match { .. } => format!("match\t1\t{name}\t"),
-            CombinationMatch::MultiMatch { inds, .. } => {
-                // Number of matches is the product of sub-library matches as all combinations possible
-                let n_matches = inds
-                    .iter()
-                    .map(|x| match x {
-                        Some(x) => x.len(),
-                        None => 1,
-                    })
-                    .reduce(|x, y| x * y)
-                    .unwrap_or(0);
-
-                format!("match\t{}\t{}\t", n_matches, name)
-            }
-            CombinationMatch::Recombination { .. } => "recombination\t0\t\t".to_string(),
-            CombinationMatch::Mismatch => "mismatch\t0\t\t".to_string(),
-            CombinationMatch::Nonmatch => "nonmatch\t0\t\t".to_string(),
         })
     }
 }
