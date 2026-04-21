@@ -111,7 +111,7 @@ impl ObservedCombinations {
                         match old_comb.counts.get_mut(group) {
                             Some(old_count) => *old_count += new_count,
                             None => {
-                                old_comb.counts.insert(*group, *new_count);
+                                old_comb.counts.insert(group.clone(), *new_count);
                             }
                         }
                     }
@@ -131,7 +131,7 @@ impl ObservedCombinations {
                             }),
                         };
 
-                        new_comb.regions.insert(reg_key.id, arc.clone());
+                        new_comb.regions.insert(reg_key.id.clone(), arc.clone());
                     }
 
                     self.combinations.insert(comb_key, new_comb);
@@ -174,21 +174,24 @@ impl ObservedCombinations {
 
                 for reg_key in &comb_key.regions {
                     if !self.region_ids.contains(&reg_key.id) {
-                        return Err(ReadCountError::UnexpectedRegion { region: reg_key.id }.into());
+                        return Err(ReadCountError::UnexpectedRegion {
+                            region: reg_key.id.clone(),
+                        }
+                        .into());
                     }
 
                     match self.regions.get(reg_key) {
                         None => {
                             let new_reg = Arc::new(Mutex::new(ObservedRegion::new(
-                                reg_key.id,
-                                &reg_key.sequence,
+                                reg_key.id.clone(),
+                                reg_key.sequence.clone(),
                                 reg_key.completeness,
                             )));
                             self.regions.insert(reg_key.clone(), new_reg.clone());
-                            reg_map.insert(reg_key.id, new_reg.clone());
+                            reg_map.insert(reg_key.id.clone(), new_reg.clone());
                         }
                         Some(r) => {
-                            reg_map.insert(reg_key.id, r.clone());
+                            reg_map.insert(reg_key.id.clone(), r.clone());
                         }
                     }
                 }
@@ -260,7 +263,7 @@ impl ObservedCombinations {
         if increment {
             match hit {
                 CacheHit::Comb(ref k) => {
-                    self.add_or_increment_combination(k, record.group)?;
+                    self.add_or_increment_combination(k, record.group.clone())?;
                 }
                 CacheHit::Filter(r) => {
                     self.update_filter_count(record, r);
@@ -403,11 +406,13 @@ impl ObservedCombinations {
                 // match count, etc. to summarise the library and store NoLibrary
                 // region seqs to capture e.g. barcodes.
                 match comb.regions.get(reg) {
-                    None => key.regions.push((*reg, LibraryRegionMatch::Unmatched)),
+                    None => key
+                        .regions
+                        .push((reg.clone(), LibraryRegionMatch::Unmatched)),
                     Some(x) => {
                         let or = x.lock().unwrap();
                         key.regions.push((
-                            *reg,
+                            reg.clone(),
                             LibraryRegionMatch::from_region_match(&or.nearest_matches),
                         ))
                     }
@@ -629,7 +634,7 @@ impl ReadSummary {
     /// Inititalise an empty ReadSummary
     ///
     /// Useful shortcut for using it as a counter
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             uncompared: 0,
             exact_match: 0,
@@ -663,5 +668,540 @@ impl ReadSummary {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+
+    use crate::combination::{CombinationKey, CombinationMatch};
+    use crate::filters::{FilterConfig, FilterReason};
+    use crate::groups::ReadGroup;
+    use crate::interning::{region_id_from_str, seq_from_bytes};
+    use crate::library::{DistanceMetric, Library, SubLibrary};
+    use crate::region::{RegionCompleteness, RegionKey};
+    use crate::seqs::{ReadPair, SeqPair};
+
+    use bio::io::fastq;
+    use std::collections::HashMap;
+
+    fn filter_config() -> FilterConfig {
+        FilterConfig::new(None, None, None, None, true)
+    }
+
+    fn make_counts(region_ids: &[&str]) -> ObservedCombinations {
+        ObservedCombinations::new(
+            region_ids.iter().map(|x| region_id_from_str(x)).collect(),
+            filter_config(),
+        )
+    }
+
+    fn reg(id: &str, seq: &[u8], completeness: RegionCompleteness) -> RegionKey {
+        RegionKey::new(region_id_from_str(id), seq_from_bytes(seq), completeness)
+    }
+
+    fn comb_key(sequence: Option<SeqPair>, regs: Vec<RegionKey>) -> CombinationKey {
+        CombinationKey::new(sequence, regs)
+    }
+
+    fn seqpair(fwd: &[u8], rev: Option<&[u8]>) -> SeqPair {
+        SeqPair::new(fwd.to_vec(), rev.map(|x| x.to_vec()))
+    }
+
+    fn readpair(fwd: &[u8], rev: Option<&[u8]>, group: ReadGroup) -> ReadPair {
+        let f_qual = vec![b'I'; fwd.len()];
+        let forward = fastq::Record::with_attrs("f", None, fwd, &f_qual);
+        let reverse = rev.map(|r| {
+            let r_qual = vec![b'I'; r.len()];
+            fastq::Record::with_attrs("r", None, r, &r_qual)
+        });
+
+        ReadPair {
+            forward,
+            reverse,
+            group,
+        }
+    }
+
+    /// Simple one-sublibrary library:
+    /// seq1 = r1:AAAA, r2:CCCC
+    /// seq2 = r1:AAAT, r2:CCCC
+    /// seq3 = r1:GGGG, r2:TTTT
+    fn make_library() -> Library {
+        let mut map: HashMap<_, Vec<Vec<u8>>> = HashMap::new();
+        map.insert(
+            region_id_from_str("r1"),
+            vec![b"AAAA".to_vec(), b"AAAT".to_vec(), b"GGGG".to_vec()],
+        );
+        map.insert(
+            region_id_from_str("r2"),
+            vec![b"CCCC".to_vec(), b"CCCC".to_vec(), b"TTTT".to_vec()],
+        );
+
+        let ids = Some(vec![
+            "seq1".to_string(),
+            "seq2".to_string(),
+            "seq3".to_string(),
+        ]);
+
+        let sub = SubLibrary::new(map, ids, HashMap::new(), 2, None).unwrap();
+        Library::new(vec![sub]).unwrap()
+    }
+
+    #[test]
+    fn add_or_increment_combination_accumulates_counts_by_group() {
+        let mut counts = make_counts(&["r1", "r2"]);
+        let key = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+
+        counts
+            .add_or_increment_combination(&key, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&key, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&key, ReadGroup::grouped("g1"))
+            .unwrap();
+
+        assert_eq!(counts.len(), 1);
+
+        let vec = counts.to_vector(false);
+        assert_eq!(vec.len(), 1);
+
+        let comb = vec[0];
+        assert_eq!(comb.total_count(), 3);
+        assert_eq!(comb.counts.get(&ReadGroup::ungrouped()), Some(&2));
+        assert_eq!(comb.counts.get(&ReadGroup::grouped("g1")), Some(&1));
+    }
+
+    #[test]
+    fn add_or_increment_combination_deduplicates_shared_regions() {
+        let mut counts = make_counts(&["r1", "r2"]);
+
+        let key1 = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+        let key2 = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"TTTT", RegionCompleteness::Complete),
+            ],
+        );
+
+        counts
+            .add_or_increment_combination(&key1, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&key2, ReadGroup::ungrouped())
+            .unwrap();
+
+        let combs = counts.to_vector(false);
+        assert_eq!(combs.len(), 2);
+
+        let c1 = combs
+            .iter()
+            .find(|c| {
+                c.regions[&region_id_from_str("r2")]
+                    .lock()
+                    .unwrap()
+                    .seq
+                    .to_str_or_log()
+                    == "CCCC"
+            })
+            .unwrap();
+
+        let c2 = combs
+            .iter()
+            .find(|c| {
+                c.regions[&region_id_from_str("r2")]
+                    .lock()
+                    .unwrap()
+                    .seq
+                    .to_str_or_log()
+                    == "TTTT"
+            })
+            .unwrap();
+
+        let r1_a = c1.regions.get(&region_id_from_str("r1")).unwrap();
+        let r1_b = c2.regions.get(&region_id_from_str("r1")).unwrap();
+
+        assert!(
+            Arc::ptr_eq(r1_a, r1_b),
+            "shared identical region should be deduplicated"
+        );
+    }
+
+    #[test]
+    fn add_or_increment_combination_rejects_unexpected_region() {
+        let mut counts = make_counts(&["r1"]);
+        let key = comb_key(None, vec![reg("r2", b"AAAA", RegionCompleteness::Complete)]);
+
+        let err = counts
+            .add_or_increment_combination(&key, ReadGroup::ungrouped())
+            .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("unexpected region") || msg.contains("Unexpected"));
+    }
+
+    #[test]
+    fn merge_combines_counts_and_new_combinations() {
+        let mut a = make_counts(&["r1", "r2"]);
+        let mut b = make_counts(&["r1", "r2"]);
+
+        let shared = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+        let unique = comb_key(
+            None,
+            vec![
+                reg("r1", b"GGGG", RegionCompleteness::Complete),
+                reg("r2", b"TTTT", RegionCompleteness::Complete),
+            ],
+        );
+
+        a.add_or_increment_combination(&shared, ReadGroup::ungrouped())
+            .unwrap();
+        a.add_or_increment_combination(&shared, ReadGroup::grouped("g1"))
+            .unwrap();
+
+        b.add_or_increment_combination(&shared, ReadGroup::ungrouped())
+            .unwrap();
+        b.add_or_increment_combination(&unique, ReadGroup::grouped("g2"))
+            .unwrap();
+
+        a.merge(b).unwrap();
+
+        assert_eq!(a.len(), 2);
+
+        let vec = a.to_vector(true);
+        let shared_comb = vec
+            .iter()
+            .find(|c| {
+                c.regions[&region_id_from_str("r1")]
+                    .lock()
+                    .unwrap()
+                    .seq
+                    .to_str_or_log()
+                    == "AAAA"
+            })
+            .unwrap();
+
+        assert_eq!(shared_comb.total_count(), 3);
+        assert_eq!(shared_comb.counts.get(&ReadGroup::ungrouped()), Some(&2));
+        assert_eq!(shared_comb.counts.get(&ReadGroup::grouped("g1")), Some(&1));
+
+        let unique_comb = vec
+            .iter()
+            .find(|c| {
+                c.regions[&region_id_from_str("r1")]
+                    .lock()
+                    .unwrap()
+                    .seq
+                    .to_str_or_log()
+                    == "GGGG"
+            })
+            .unwrap();
+
+        assert_eq!(unique_comb.total_count(), 1);
+        assert_eq!(unique_comb.counts.get(&ReadGroup::grouped("g2")), Some(&1));
+    }
+
+    #[test]
+    fn merge_rejects_different_region_ids() {
+        let mut a = make_counts(&["r1", "r2"]);
+        let b = make_counts(&["r1"]);
+
+        let err = a.merge(b).unwrap_err();
+        assert!(err.to_string().contains("different region_ids"));
+    }
+
+    #[test]
+    fn merge_rejects_different_filter_config() {
+        let mut a = ObservedCombinations::new(
+            vec![region_id_from_str("r1")],
+            FilterConfig::new(None, None, None, None, true),
+        );
+        let b = ObservedCombinations::new(
+            vec![region_id_from_str("r1")],
+            FilterConfig::new(Some(20.0), None, None, None, true),
+        );
+
+        let err = a.merge(b).unwrap_err();
+        assert!(err.to_string().contains("different FilterConfigs"));
+    }
+
+    #[test]
+    fn merge_rejects_after_library_comparison() {
+        let mut a = make_counts(&["r1", "r2"]);
+        let b = make_counts(&["r1", "r2"]);
+
+        let key = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+        a.add_or_increment_combination(&key, ReadGroup::ungrouped())
+            .unwrap();
+
+        a.compare_to_library(make_library(), None, DistanceMetric::Hamming, 1, 1)
+            .unwrap();
+
+        let err = a.merge(b).unwrap_err();
+        assert!(err.to_string().contains("library comparison"));
+    }
+
+    #[test]
+    fn cache_combination_hit_replays_counts_when_incrementing() {
+        let mut counts = make_counts(&["r1"]);
+        let record = readpair(b"AAAA", None, ReadGroup::grouped("g1"));
+        let key = comb_key(
+            Some(seqpair(b"AAAA", None)),
+            vec![reg("r1", b"AAAA", RegionCompleteness::Complete)],
+        );
+
+        counts.cache(record.key(), CacheHit::Comb(key.clone()));
+
+        let hit = counts.check_cache(&record, true).unwrap();
+        assert!(matches!(hit, Some(CacheHit::Comb(_))));
+        assert_eq!(counts.len(), 1);
+
+        let comb = counts.to_vector(false)[0];
+        assert_eq!(comb.total_count(), 1);
+        assert_eq!(comb.counts.get(&ReadGroup::grouped("g1")), Some(&1));
+    }
+
+    #[test]
+    fn cache_filter_hit_replays_filtered_counts_when_incrementing() {
+        let mut counts = make_counts(&["r1"]);
+        let record = readpair(b"", None, ReadGroup::ungrouped());
+
+        counts.cache(record.key(), CacheHit::Filter(FilterReason::EmptyRead));
+
+        let hit = counts.check_cache(&record, true).unwrap();
+        assert!(matches!(
+            hit,
+            Some(CacheHit::Filter(FilterReason::EmptyRead))
+        ));
+        assert_eq!(counts.total_filtered(), 1);
+        assert_eq!(
+            counts.filtered_reads().totals.get(&FilterReason::EmptyRead),
+            1
+        );
+    }
+
+    #[test]
+    fn cache_hit_without_increment_does_not_modify_state() {
+        let mut counts = make_counts(&["r1"]);
+        let record = readpair(b"AAAA", None, ReadGroup::ungrouped());
+        let key = comb_key(None, vec![reg("r1", b"AAAA", RegionCompleteness::Complete)]);
+
+        counts.cache(record.key(), CacheHit::Comb(key));
+
+        let hit = counts.check_cache(&record, false).unwrap();
+        assert!(hit.is_some());
+        assert_eq!(counts.len(), 0);
+        assert_eq!(counts.total_filtered(), 0);
+    }
+
+    #[test]
+    fn check_cache_returns_none_for_missing_entry() {
+        let mut counts = make_counts(&["r1"]);
+        let record = readpair(b"AAAA", None, ReadGroup::ungrouped());
+
+        let hit = counts.check_cache(&record, true).unwrap();
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn summarise_counts_all_categories_correctly() {
+        let mut counts = make_counts(&["r1", "r2"]);
+        let lib = make_library();
+
+        // Make seqs against our simple library
+        // seq1 = r1:AAAA, r2:CCCC
+        // seq2 = r1:AAAT, r2:CCCC
+        // seq3 = r1:GGGG, r2:TTTT
+        let key = |r1: &[u8], r2: &[u8]| {
+            comb_key(
+                None,
+                vec![
+                    reg("r1", r1, RegionCompleteness::Complete),
+                    reg("r2", r2, RegionCompleteness::Complete),
+                ],
+            )
+        };
+
+        let keys = vec![
+            key(b"AAAA", b"CCCC"),                                                  // Match
+            key(b"GGGA", b"TTTA"),                                                  // Nearest Match
+            key(b"AAAG", b"CCCC"),                                                  // Multi-Match
+            key(b"AAAA", b"TTTT"),                                                  // Recombination
+            key(b"AAAG", b"TTTT"),     // Nearest Recombination
+            key(b"GGGG", b"GCGCGCGC"), // Mismatch
+            comb_key(None, vec![reg("r1", b"AAAA", RegionCompleteness::Complete)]), // Nonmatch
+        ];
+
+        for k in keys {
+            counts
+                .add_or_increment_combination(&k, ReadGroup::ungrouped())
+                .unwrap();
+        }
+
+        counts.update_filter_count(
+            &readpair(b"", None, ReadGroup::ungrouped()),
+            FilterReason::EmptyRead,
+        );
+        counts.update_filter_count(
+            &readpair(b"", None, ReadGroup::ungrouped()),
+            FilterReason::EmptyRead,
+        );
+
+        counts
+            .compare_to_library(lib, None, DistanceMetric::Hamming, 2, 1)
+            .unwrap();
+
+        let summary = counts.summarise();
+
+        assert_eq!(summary.uncompared, 0);
+        assert_eq!(summary.exact_match, 1);
+        assert_eq!(summary.nearest_match, 1);
+        assert_eq!(summary.multimatch, 1);
+        assert_eq!(summary.exact_recombination, 1);
+        assert_eq!(summary.nearest_recombination, 1);
+        assert_eq!(summary.mismatch, 1);
+        assert_eq!(summary.nonmatch, 1);
+
+        assert_eq!(summary.filtered_reads.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(summary.total_unfiltered(), 7);
+        assert_eq!(summary.total(), 9);
+    }
+
+    #[test]
+    fn to_library_vector_errors_before_compare() {
+        let counts = make_counts(&["r1"]);
+        let err = counts.to_library_vector(false).unwrap_err();
+        assert!(err.to_string().contains("compare before summarising"));
+    }
+
+    #[test]
+    fn compare_to_library_builds_summary_and_sets_compared_flag() {
+        let mut counts = make_counts(&["r1", "r2"]);
+
+        let exact1 = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+        let exact2 = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAT", RegionCompleteness::Complete),
+                reg("r2", b"CCCC", RegionCompleteness::Complete),
+            ],
+        );
+        let recomb = comb_key(
+            None,
+            vec![
+                reg("r1", b"AAAA", RegionCompleteness::Complete),
+                reg("r2", b"TTTT", RegionCompleteness::Complete),
+            ],
+        );
+
+        counts
+            .add_or_increment_combination(&exact1, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&exact1, ReadGroup::grouped("g1"))
+            .unwrap();
+        counts
+            .add_or_increment_combination(&exact2, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&recomb, ReadGroup::grouped("g2"))
+            .unwrap();
+
+        assert!(!counts.is_compared_to_library());
+
+        counts
+            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, 1)
+            .unwrap();
+
+        assert!(counts.is_compared_to_library());
+
+        let lib_vec = counts.to_library_vector(true).unwrap();
+        assert_eq!(lib_vec.len(), 3);
+
+        let total_counts: u32 = lib_vec.iter().map(|x| x.total_count()).sum();
+        assert_eq!(total_counts, 4);
+
+        assert!(
+            lib_vec
+                .iter()
+                .any(|x| matches!(x.library_matches, CombinationMatch::Match { .. }))
+        );
+        assert!(
+            lib_vec
+                .iter()
+                .any(|x| matches!(x.library_matches, CombinationMatch::Recombination { .. }))
+        );
+    }
+
+    #[test]
+    fn compare_to_library_collapses_same_library_summary_across_observed_combinations() {
+        let mut counts = make_counts(&["r1", "r2"]);
+
+        // These two differ at observed sequence level but both nearest-match to seq3 with Hamming distance 2:
+        // seq1 = r1:AAAA, r2:CCCC
+        // seq2 = r1:AAAT, r2:CCCC
+        // seq3 = r1:GGGG, r2:TTTT
+        let a = comb_key(
+            None,
+            vec![
+                reg("r1", b"AGGG", RegionCompleteness::Complete),
+                reg("r2", b"TTAT", RegionCompleteness::Complete),
+            ],
+        );
+        let b = comb_key(
+            None,
+            vec![
+                reg("r1", b"GGCG", RegionCompleteness::Complete),
+                reg("r2", b"TGTT", RegionCompleteness::Complete),
+            ],
+        );
+
+        counts
+            .add_or_increment_combination(&a, ReadGroup::ungrouped())
+            .unwrap();
+        counts
+            .add_or_increment_combination(&b, ReadGroup::ungrouped())
+            .unwrap();
+
+        counts
+            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, 1)
+            .unwrap();
+
+        // The two sequences should have collapsed
+        let lib_vec = counts.to_library_vector(false).unwrap();
+        assert_eq!(lib_vec.len(), 1);
+
+        // With the total count maintained
+        let total_counts: u32 = lib_vec.iter().map(|x| x.total_count()).sum();
+        assert_eq!(total_counts, 2);
+    }
 }

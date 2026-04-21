@@ -26,6 +26,7 @@ use crate::combination::CombinationKey;
 use crate::combinations::{CacheHit, ObservedCombinations};
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
 use crate::filters::FilterConfig;
+use crate::interning::seq_from_bytes;
 use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadPairProducer, ThreadedReadPairParser};
@@ -240,8 +241,6 @@ fn regions_from_alignment_path(
                     .to_string(),
             });
         }
-
-        // TODO - need to work out partial matches properly (both alignment end and region expected length?) and need to deal with different alignment operations
 
         // Check break conditions
         if reg_idx == region_positions.len() {
@@ -971,9 +970,9 @@ fn count_single_align<T: ReadPairProducer>(
                 match record.forward.seq().get((pos.0 - 1)..(pos.1 - 1)) {
                     Some(s) => {
                         comb_key.regions.push(RegionKey::new(
-                            *id,
+                            id.clone(),
                             // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                            s.to_vec(),
+                            seq_from_bytes(s),
                             pos.2,
                         ));
                     }
@@ -999,7 +998,7 @@ fn count_single_align<T: ReadPairProducer>(
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1163,9 +1162,9 @@ fn count_paired_align<T: ReadPairProducer>(
                     match r_read.get((r.0 - 1)..(r.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                *id,
+                                id.clone(),
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                s.to_vec(),
+                                seq_from_bytes(s),
                                 r.2,
                             ));
                         }
@@ -1193,9 +1192,9 @@ fn count_paired_align<T: ReadPairProducer>(
                     match f_read.get((f.0 - 1)..(f.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                *id,
+                                id.clone(),
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                s.to_vec(),
+                                seq_from_bytes(s),
                                 f.2,
                             ));
                         }
@@ -1269,14 +1268,18 @@ fn count_paired_align<T: ReadPairProducer>(
                         Some((r_reg_seq.to_vec(), r_reg_qual.to_vec(), r.2)),
                         *len,
                     )? {
-                        Some((seq, comp)) => comb_key.regions.push(RegionKey::new(*id, seq, comp)),
+                        Some((seq, comp)) => comb_key.regions.push(RegionKey::new(
+                            id.clone(),
+                            seq_from_bytes(&seq),
+                            comp,
+                        )),
                         None => continue,
                     };
                 }
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1357,13 +1360,13 @@ fn count_single_pattern<T: ReadPairProducer>(
             },
             zip(&regions, region_matches)
                 .filter_map(|(id, reg)| match reg {
-                    Some(r) => Some(RegionKey::new(*id, r.0, r.2)),
+                    Some(r) => Some(RegionKey::new(id.clone(), seq_from_bytes(&r.0), r.2)),
                     None => None,
                 })
                 .collect(),
         );
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1477,13 +1480,15 @@ fn count_paired_pattern<T: ReadPairProducer>(
 
         for (id, len, fwd, rev) in izip!(&regions, &region_lengths, f_matches, r_matches) {
             if let Some(merged) = merge_seqs(fwd, rev, *len)? {
-                comb_key
-                    .regions
-                    .push(RegionKey::new(*id, merged.0, merged.1));
+                comb_key.regions.push(RegionKey::new(
+                    id.clone(),
+                    seq_from_bytes(&merged.0),
+                    merged.1,
+                ));
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1597,12 +1602,14 @@ fn count_single_inframe<T: ReadPairProducer>(
                 break;
             }
 
-            comb_key
-                .regions
-                .push(RegionKey::new(*id, reg_seq, complete));
+            comb_key.regions.push(RegionKey::new(
+                id.clone(),
+                seq_from_bytes(&reg_seq),
+                complete,
+            ));
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1812,12 +1819,16 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
             // Determine which read to use
             match merge_seqs(fwd, rev, *len)? {
-                Some((seq, comp)) => comb_key.regions.push(RegionKey::new(*id, seq, comp)),
+                Some((seq, comp)) => {
+                    comb_key
+                        .regions
+                        .push(RegionKey::new(id.clone(), seq_from_bytes(&seq), comp))
+                }
                 None => continue,
             }
         }
 
-        counts.add_or_increment_combination(&comb_key, record.group)?;
+        counts.add_or_increment_combination(&comb_key, record.group.clone())?;
 
         if cache {
             counts.cache(record.into_seqpair(), CacheHit::Comb(comb_key));
@@ -1869,8 +1880,330 @@ fn count_raw<T: ReadPairProducer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::ReadPairError;
+    use crate::filters::FilterConfig;
+    use crate::groups::ReadGroup;
     use crate::lib_spec::FlankingSequences;
+    use crate::parsing::ReadPairProducer;
     use crate::region::RegionCompleteness;
+    use bio::alignment::AlignmentOperation;
+    use bio::io::fastq;
+    use regex::Regex;
+
+    struct MockProducer {
+        items: std::vec::IntoIter<Result<ReadPair, ReadPairError>>,
+        has_reverse: bool,
+        group: Option<Regex>,
+        max_reads: u64,
+        read_count: u64,
+    }
+
+    impl MockProducer {
+        fn new(items: Vec<Result<ReadPair, ReadPairError>>, has_reverse: bool) -> Self {
+            Self {
+                items: items.into_iter(),
+                has_reverse,
+                group: None,
+                max_reads: 0,
+                read_count: 0,
+            }
+        }
+    }
+
+    impl Iterator for MockProducer {
+        type Item = Result<ReadPair, ReadPairError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let next = self.items.next();
+            if next.is_some() {
+                self.read_count += 1;
+            }
+            next
+        }
+    }
+
+    impl ReadPairProducer for MockProducer {
+        fn has_reverse(&self) -> bool {
+            self.has_reverse
+        }
+
+        fn group(&self) -> &Option<Regex> {
+            &self.group
+        }
+
+        fn max_reads(&self) -> u64 {
+            self.max_reads
+        }
+
+        fn read_count(&self) -> u64 {
+            self.read_count
+        }
+    }
+
+    fn make_record(id: &str, seq: &[u8], qual: &[u8]) -> fastq::Record {
+        fastq::Record::with_attrs(id, None, seq, qual)
+    }
+
+    fn make_readpair(
+        f_seq: &[u8],
+        f_qual: &[u8],
+        r_seq: Option<&[u8]>,
+        r_qual: Option<&[u8]>,
+    ) -> ReadPair {
+        ReadPair {
+            forward: make_record("f", f_seq, f_qual),
+            reverse: r_seq.map(|seq| make_record("r", seq, r_qual.expect("reverse qual required"))),
+            group: ReadGroup::ungrouped(),
+        }
+    }
+
+    #[test]
+    fn alignment_scorer_scores_standard_n_and_mismatch_cases() {
+        let scorer = AlignmentScorer::new(6, -2, -3, -10, -4);
+
+        assert_eq!(scorer.score(b'A', b'A'), 6);
+        assert_eq!(scorer.score(b'N', b'A'), -2);
+        assert_eq!(scorer.score(b'A', b'N'), -2);
+        assert_eq!(scorer.score(b'A', b'T'), -3);
+    }
+
+    #[test]
+    fn regions_from_alignment_path_maps_complete_region() {
+        let region_positions = vec![(1, 5)];
+        let path = vec![
+            (1, 1, AlignmentOperation::Match),
+            (2, 2, AlignmentOperation::Match),
+            (3, 3, AlignmentOperation::Match),
+            (4, 4, AlignmentOperation::Match),
+            (5, 5, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], Some((1, 5, RegionCompleteness::Complete)));
+    }
+
+    #[test]
+    fn regions_from_alignment_path_marks_partial_5prime_when_alignment_starts_inside_region() {
+        let region_positions = vec![(2, 5)];
+        let path = vec![
+            (1, 3, AlignmentOperation::Match),
+            (2, 4, AlignmentOperation::Match),
+            (3, 5, AlignmentOperation::Match),
+            (4, 6, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out[0], Some((1, 3, RegionCompleteness::Partial5Prime)));
+    }
+
+    #[test]
+    fn regions_from_alignment_path_leaves_fully_deleted_region_unmapped() {
+        let region_positions = vec![(1, 3)];
+        let path = vec![
+            (1, 1, AlignmentOperation::Del),
+            (1, 2, AlignmentOperation::Del),
+            (1, 3, AlignmentOperation::Match),
+            (2, 4, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out, vec![None]);
+    }
+
+    #[test]
+    fn merge_seqs_returns_present_side_when_other_missing() {
+        let fwd = Some((
+            b"ACGT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+        let out = merge_seqs(fwd.clone(), None, 4).unwrap();
+        assert_eq!(out, Some((b"ACGT".to_vec(), RegionCompleteness::Complete)));
+
+        let rev = Some((
+            b"TGCA".to_vec(),
+            b"####".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+        let out = merge_seqs(None, rev, 4).unwrap();
+        assert_eq!(
+            out,
+            Some((b"TGCA".to_vec(), RegionCompleteness::Partial5Prime))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_prefers_higher_quality_for_duplicate_complete_observations() {
+        let low = Some((
+            b"AAAA".to_vec(),
+            b"!!!!".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+        let high = Some((
+            b"TTTT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+
+        let out = merge_seqs(low, high, 4).unwrap();
+        assert_eq!(out, Some((b"TTTT".to_vec(), RegionCompleteness::Complete)));
+    }
+
+    #[test]
+    fn merge_seqs_combines_non_overlapping_partials_into_missing_center() {
+        let fwd = Some((
+            b"AAA".to_vec(),
+            b"III".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+        let rev = Some((
+            b"TT".to_vec(),
+            b"II".to_vec(),
+            RegionCompleteness::Partial3Prime,
+        ));
+
+        let out = merge_seqs(fwd, rev, 6).unwrap();
+        assert_eq!(
+            out,
+            Some((
+                b"AAA/TT".to_vec(),
+                RegionCompleteness::MissingCenter { split_ind: 3 },
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_combines_overlapping_partials_into_overlapping() {
+        let fwd = Some((
+            b"AAAA".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+        let rev = Some((
+            b"TTTT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Partial3Prime,
+        ));
+
+        let out = merge_seqs(fwd, rev, 6).unwrap();
+        assert_eq!(
+            out,
+            Some((
+                b"AAAA/TTTT".to_vec(),
+                RegionCompleteness::Overlapping { split_ind: 4 },
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_rejects_already_merged_inputs() {
+        let bad1 = Some((
+            b"AA/TT".to_vec(),
+            b"IIIII".to_vec(),
+            RegionCompleteness::MissingCenter { split_ind: 2 },
+        ));
+
+        let bad2 = Some((
+            b"AA/TT".to_vec(),
+            b"IIIII".to_vec(),
+            RegionCompleteness::MissingCenter { split_ind: 2 },
+        ));
+
+        let err = merge_seqs(bad1, bad2, 4).unwrap_err().to_string();
+        assert!(err.contains("already merged") || err.contains("MissingCenter"));
+    }
+
+    #[test]
+    fn count_reads_rejects_zero_threads() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::FullRead,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            0,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("Threads must be >0"));
+    }
+
+    #[test]
+    fn count_reads_align_mode_requires_alignment_scorer() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::Align,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("no AlignmentScorer passed"));
+    }
+
+    #[test]
+    fn count_reads_pattern_mode_requires_length_and_tolerance() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::Pattern,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            Some(10),
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("pattern length and/or tolerance is missing"));
+    }
+
+    #[test]
+    fn count_reads_full_read_mode_counts_unfiltered_reads_without_libspec() {
+        let read = make_readpair(b"ACGT", b"IIII", None, None);
+        let reads = MockProducer::new(vec![Ok(read)], false);
+
+        let counts = count_reads(
+            reads,
+            &None,
+            CountMode::FullRead,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.total_filtered(), 0);
+        assert_eq!(counts.to_vector(false)[0].total_count(), 1);
+    }
 
     #[test]
     fn test_perfect_flank_matching() {
@@ -1915,7 +2248,6 @@ mod tests {
             assert!(false, "match_flank_patterns returned Err(...)")
         }
     }
-
     #[test]
     fn test_flank_matching_with_mismatches() {
         let _ = env_logger::try_init();

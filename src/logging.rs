@@ -268,3 +268,349 @@ impl Default for ProgressStyle {
         ProgressStyle::new(Some(Arc::new(|msg| info!("{}", msg))), false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    // ---------- PROGRESS STYLE ----------
+    #[test]
+    fn progress_style_new() {
+        let style = ProgressStyle::new(None, false);
+        assert!(!style.use_thread_id);
+        assert!(style.log_fn.is_none());
+    }
+
+    #[test]
+    fn progress_style_new_with_log_fn() {
+        let log_fn = Arc::new(|_: &str| {});
+        let style = ProgressStyle::new(Some(log_fn), true);
+        assert!(style.use_thread_id);
+        assert!(style.log_fn.is_some());
+    }
+
+    #[test]
+    fn progress_style_default() {
+        let style = ProgressStyle::default();
+        assert!(!style.use_thread_id);
+        assert!(style.log_fn.is_some());
+    }
+
+    #[test]
+    fn progress_style_clone() {
+        let log_fn = Arc::new(|_: &str| {});
+        let style1 = ProgressStyle::new(Some(log_fn), true);
+        let style2 = style1.clone();
+        assert_eq!(style1.use_thread_id, style2.use_thread_id);
+    }
+
+    // Progress - None
+    #[test]
+    fn progress_none_inc() {
+        let mut progress = Progress::none();
+        progress.inc(100); // Should not panic
+    }
+
+    #[test]
+    fn progress_none_finish() {
+        let progress = Progress::none();
+        progress.finish(); // Should not panic
+    }
+
+    // Progress - Log
+    #[test]
+    fn progress_log_new() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut progress = Progress::log("Processing", "Done", false, Some(100), 10, log_fn);
+
+        progress.inc(10);
+
+        let logged = messages.lock().unwrap();
+        assert!(logged.len() > 0);
+    }
+
+    #[test]
+    fn progress_log_increments() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut progress = Progress::log("Processing", "Done", false, Some(100), 10, log_fn);
+
+        for _ in 0..5 {
+            progress.inc(10);
+        }
+
+        let logged = messages.lock().unwrap();
+        // Should have logged at least once (at 50 items)
+        assert!(logged.len() > 0);
+    }
+
+    #[test]
+    fn progress_log_finish() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut progress = Progress::log("Processing", "Complete", false, Some(100), 50, log_fn);
+
+        progress.inc(100);
+        progress.finish();
+
+        let logged = messages.lock().unwrap();
+        let final_msg = logged.last().unwrap();
+        assert!(final_msg.contains("Complete"));
+        assert!(final_msg.contains("100"));
+    }
+
+    #[test]
+    fn progress_from_style_with_log_fn() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let style = ProgressStyle::new(Some(log_fn), false);
+        let mut progress = Progress::from_style(&style, "Processing", "Done", Some(100), 20);
+
+        progress.inc(20);
+
+        let logged = messages.lock().unwrap();
+        assert!(logged.len() > 0);
+    }
+
+    #[test]
+    fn progress_from_style_without_log_fn() {
+        let style = ProgressStyle::new(None, false);
+        let mut progress = Progress::from_style(&style, "Processing", "Done", Some(100), 20);
+
+        progress.inc(100); // Should not panic
+        progress.finish(); // Should not panic
+    }
+
+    // Logprogress
+    #[test]
+    fn logprogress_new() {
+        let log_fn = Arc::new(|_: &str| {});
+        let log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        assert_eq!(log_progress.message, "msg");
+        assert_eq!(log_progress.final_message, "final");
+        assert_eq!(log_progress.current, 0);
+        assert_eq!(log_progress.total, Some(100));
+        assert_eq!(log_progress.log_interval, 10);
+    }
+
+    #[test]
+    fn logprogress_new_with_thread_id() {
+        let log_fn = Arc::new(|_: &str| {});
+        let log_progress = LogProgress::new("msg", "final", true, None, 5, log_fn);
+
+        assert!(!log_progress.thread_id.is_empty());
+        assert!(log_progress.thread_id.contains("["));
+        assert!(log_progress.thread_id.contains("]"));
+    }
+
+    #[test]
+    fn logprogress_new_without_thread_id() {
+        let log_fn = Arc::new(|_: &str| {});
+        let log_progress = LogProgress::new("msg", "final", false, None, 5, log_fn);
+
+        assert_eq!(log_progress.thread_id, "");
+    }
+
+    #[test]
+    #[should_panic(expected = "assertion")]
+    fn logprogress_zero_log_interval_panics() {
+        let log_fn = Arc::new(|_: &str| {});
+        LogProgress::new("msg", "final", false, None, 0, log_fn);
+    }
+
+    #[test]
+    fn logprogress_inc_single() {
+        let log_fn = Arc::new(|_: &str| {});
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        log_progress.inc(1);
+        assert_eq!(log_progress.current, 1);
+    }
+
+    #[test]
+    fn logprogress_inc_multiple() {
+        let log_fn = Arc::new(|_: &str| {});
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        log_progress.inc(5);
+        assert_eq!(log_progress.current, 5);
+        log_progress.inc(3);
+        assert_eq!(log_progress.current, 8);
+    }
+
+    #[test]
+    fn logprogress_inc_triggers_log() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        log_progress.inc(10);
+
+        let logged = messages.lock().unwrap();
+        assert_eq!(logged.len(), 1);
+        assert!(logged[0].contains("msg"));
+    }
+
+    #[test]
+    fn logprogress_inc_at_interval_boundary() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        log_progress.inc(9);
+        let logged_count_9 = messages.lock().unwrap().len();
+        assert_eq!(logged_count_9, 0);
+
+        log_progress.inc(1);
+        let logged_count_10 = messages.lock().unwrap().len();
+        assert_eq!(logged_count_10, 1);
+    }
+
+    #[test]
+    fn logprogress_inc_multiple_boundaries() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 5, log_fn);
+
+        for _ in 0..4 {
+            log_progress.inc(5);
+        }
+
+        let logged = messages.lock().unwrap();
+        assert_eq!(logged.len(), 4);
+    }
+
+    #[test]
+    fn logprogress_inc_large_amount() {
+        let log_fn = Arc::new(|_: &str| {});
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(1000), 10, log_fn);
+
+        log_progress.inc(500);
+        assert_eq!(log_progress.current, 500);
+    }
+
+    #[test]
+    fn logprogress_output_contains_message() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress =
+            LogProgress::new("Processing reads", "final", false, Some(100), 10, log_fn);
+        log_progress.inc(10);
+
+        let logged = messages.lock().unwrap();
+        assert!(logged[0].contains("Processing reads"));
+    }
+
+    // Edge cases
+    #[test]
+    fn logprogress_zero_current() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+        log_progress.finish();
+
+        let logged = messages.lock().unwrap();
+        assert_eq!(logged.len(), 1);
+        assert!(logged[0].contains("0/100"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn logprogress_exceed_total() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+        log_progress.inc(50);
+        log_progress.inc(60);
+    }
+
+    #[test]
+    fn logprogress_exact_total() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 100, log_fn);
+        log_progress.inc(100);
+        log_progress.finish();
+
+        let logged = messages.lock().unwrap();
+        let final_msg = logged.last().unwrap();
+        assert!(final_msg.contains("100/100"));
+        assert!(final_msg.contains("100%"));
+    }
+
+    // Thread ID
+    #[test]
+    fn logprogress_with_thread_id_in_output() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", true, Some(100), 10, log_fn);
+        log_progress.inc(10);
+
+        let logged = messages.lock().unwrap();
+        assert!(logged[0].contains("["));
+        assert!(logged[0].contains("]"));
+    }
+}

@@ -161,7 +161,7 @@ impl ObservedCombination {
                     // Identify the union of inds the multimatch covers
                     let mut match_ind_union: HashSet<LibraryID> = HashSet::new();
                     for mat in seq_matches {
-                        match_ind_union.extend(mat.ids.iter());
+                        match_ind_union.extend(mat.ids.clone().into_iter());
                     }
 
                     // Set as the search space or remove anything not overlapping it
@@ -201,7 +201,7 @@ impl ObservedCombination {
                 // Can unwrap because we know x.len() == 1
                 inds: candidate_matches
                     .iter()
-                    .map(|x| x.as_ref().map(|x| *x.iter().next().unwrap()))
+                    .map(|x| x.as_ref().map(|x| x.iter().next().unwrap().clone()))
                     .collect(),
                 distance: comb_dist,
             };
@@ -269,7 +269,7 @@ impl CombinationMatch {
             CombinationMatch::Match { inds, .. } => inds
                 .iter()
                 .map(|id| match id {
-                    Some(id) => Ok(library_id_to_str(*id).to_string()),
+                    Some(id) => Ok(library_id_to_str(id).to_string()),
                     None => Ok("".to_string()),
                 })
                 .collect::<Result<Vec<String>, LibraryError>>()?
@@ -282,7 +282,7 @@ impl CombinationMatch {
                     names.push(match ids {
                         Some(ids) => ids
                             .iter()
-                            .map(|id| library_id_to_str(*id))
+                            .map(library_id_to_str)
                             .collect::<Vec<_>>()
                             .join(","),
                         None => "".to_string(),
@@ -303,7 +303,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::SubLibrary;
-    use crate::interning::{RegionID, region_id_from_str};
+    use crate::interning::{RegionID, library_id_from_str, region_id_from_str, seq_from_bytes};
     use crate::region::RegionCompleteness;
 
     // Library members
@@ -517,7 +517,7 @@ mod tests {
                 region_id_from_str(id),
                 Arc::new(Mutex::new(ObservedRegion::new(
                     region_id_from_str(id),
-                    seq,
+                    seq_from_bytes(seq),
                     comp,
                 ))),
             );
@@ -576,5 +576,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_combination_key_equality() {
+        let key1 = CombinationKey::new(None, vec![]);
+        let key2 = CombinationKey::new(None, vec![]);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_combination_key_inequality() {
+        let seq_pair = SeqPair::new(b"ATCG".to_vec(), None);
+        let key1 = CombinationKey::new(Some(seq_pair.clone()), vec![]);
+        let key2 = CombinationKey::new(None, vec![]);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_observed_combination_new() {
+        let combo = ObservedCombination::new(HashMap::new(), None);
+        assert_eq!(combo.total_count(), 0);
+        assert!(combo.counts.is_empty());
+        assert!(combo.sequence.is_none());
+    }
+
+    #[test]
+    fn test_total_count_single_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::ungrouped());
+        combo.increment_count(ReadGroup::ungrouped());
+        assert_eq!(combo.total_count(), 2);
+    }
+
+    #[test]
+    fn test_total_count_multiple_groups() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::ungrouped());
+        combo.increment_count(ReadGroup::grouped("0"));
+        combo.increment_count(ReadGroup::grouped("0"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.total_count(), 4);
+    }
+
+    #[test]
+    fn test_increment_count_new_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.counts.get(&ReadGroup::grouped("1")), Some(&1));
+    }
+
+    #[test]
+    fn test_increment_count_existing_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::grouped("1"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.counts.get(&ReadGroup::grouped("1")), Some(&3));
+    }
+
+    #[test]
+    fn test_combination_match_id_string_match() {
+        let inds = vec![
+            Some(library_id_from_str("seq1")),
+            Some(library_id_from_str("seq2")),
+        ];
+        let mat = CombinationMatch::Match { inds, distance: 0 };
+        let id_str = mat.id_string().unwrap();
+        assert_eq!(id_str, "seq1/seq2");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_match_with_none() {
+        let inds = vec![Some(library_id_from_str("seq1")), None];
+        let mat = CombinationMatch::Match { inds, distance: 0 };
+        let id_str = mat.id_string().unwrap();
+        assert_eq!(id_str, "seq1/");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_multimatch() {
+        let ids1: HashSet<_> = vec![library_id_from_str("seq1"), library_id_from_str("seq2")]
+            .into_iter()
+            .collect();
+        let ids2: HashSet<_> = vec![library_id_from_str("seq3")].into_iter().collect();
+        let inds = vec![Some(ids1), Some(ids2)];
+        let mat = CombinationMatch::MultiMatch { inds, distance: 1 };
+        let id_str = mat.id_string().unwrap();
+        // Note: HashSet iteration order is non-deterministic, so just check it contains both
+        assert!(id_str.contains("seq1") && id_str.contains("seq2"));
+        assert!(id_str.contains("seq3"));
+    }
+
+    #[test]
+    fn test_combination_match_id_string_uncompared() {
+        let mat = CombinationMatch::Uncompared;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_mismatch() {
+        let mat = CombinationMatch::Mismatch;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_nonmatch() {
+        let mat = CombinationMatch::Nonmatch;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_recombination() {
+        let mat = CombinationMatch::Recombination { distance: 5 };
+        assert_eq!(mat.id_string().unwrap(), "");
     }
 }

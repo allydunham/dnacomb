@@ -25,7 +25,7 @@ fn serialize_region_id<S>(id: &RegionID, serializer: S) -> Result<S::Ok, S::Erro
 where
     S: Serializer,
 {
-    let s = region_id_to_str(*id);
+    let s = region_id_to_str(id);
     s.serialize(serializer)
 }
 
@@ -144,7 +144,7 @@ impl Region {
             } => {
                 if min_length > max_length {
                     return Err(LibSpecError::MinGreaterThanMax {
-                        id: *id,
+                        id: id.clone(),
                         min: *min_length,
                         max: *max_length,
                     });
@@ -281,7 +281,7 @@ impl LibrarySpec {
             }
         }
 
-        Err(LibSpecError::MissingRegion { id: *id })
+        Err(LibSpecError::MissingRegion { id: id.clone() })
     }
 
     /// Return per-region maximum library-match distances defined in the spec.
@@ -298,7 +298,7 @@ impl LibrarySpec {
                 } => match max_distance {
                     None => (),
                     Some(x) => {
-                        max_dists.insert(*id, *x);
+                        max_dists.insert(id.clone(), *x);
                     }
                 },
             }
@@ -338,10 +338,12 @@ impl LibrarySpec {
             if observed_regions.contains(region.id()) {
                 errors.push(format!(
                     "{}",
-                    LibSpecError::DuplicateRegion { id: *region.id() }
+                    LibSpecError::DuplicateRegion {
+                        id: region.id().clone()
+                    }
                 ))
             }
-            observed_regions.insert(*region.id());
+            observed_regions.insert(region.id().clone());
 
             match region.validate() {
                 Ok(_) => {}
@@ -356,7 +358,9 @@ impl LibrarySpec {
                 if last_variable {
                     errors.push(format!(
                         "{}",
-                        LibSpecError::NeighbouringVariable { id: *region.id() }
+                        LibSpecError::NeighbouringVariable {
+                            id: region.id().clone()
+                        }
                     ))
                 }
                 last_variable = true;
@@ -495,7 +499,7 @@ impl LibrarySpec {
             start += r.len()
         }
 
-        Err(LibSpecError::MissingRegion { id: *region })
+        Err(LibSpecError::MissingRegion { id: region.clone() })
     }
 
     /// Return the variable-region IDs in construct order.
@@ -503,7 +507,7 @@ impl LibrarySpec {
         self.regions
             .iter()
             .filter(|x| x.is_variable())
-            .map(|x| *x.id())
+            .map(|x| x.id().clone())
             .collect()
     }
 
@@ -686,5 +690,437 @@ impl FromStr for LibrarySpec {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+
+    fn create_test_region_fixed(id: &str, seq: &[u8]) -> Region {
+        Region::Fixed {
+            id: region_id_from_str(id),
+            seq: seq.to_vec(),
+        }
+    }
+
+    fn create_test_region_library(
+        id: &str,
+        min_len: usize,
+        max_len: usize,
+        max_dist: Option<u64>,
+    ) -> Region {
+        Region::Library {
+            id: region_id_from_str(id),
+            min_length: min_len,
+            max_length: max_len,
+            max_distance: max_dist,
+        }
+    }
+
+    fn create_test_spec(
+        regions: Vec<Region>,
+        forward_start: &str,
+        forward_len: u32,
+        reverse_start: &str,
+        reverse_len: u32,
+    ) -> LibrarySpec {
+        LibrarySpec {
+            id: "test_spec".to_string(),
+            forward_start_region: region_id_from_str(forward_start),
+            forward_read_length: forward_len,
+            reverse_start_region: region_id_from_str(reverse_start),
+            reverse_read_length: reverse_len,
+            regions,
+        }
+    }
+
+    #[test]
+    fn test_region_fixed_id() {
+        let region = create_test_region_fixed("r1", b"ATCG");
+        assert_eq!(*region.id(), region_id_from_str("r1"));
+    }
+
+    #[test]
+    fn test_region_fixed_len() {
+        let region = create_test_region_fixed("r1", b"ATCG");
+        assert_eq!(region.len(), 4);
+    }
+
+    #[test]
+    fn test_region_fixed_is_empty() {
+        let region_empty = create_test_region_fixed("r1", b"");
+        let region_full = create_test_region_fixed("r2", b"ATCG");
+        assert!(region_empty.is_empty());
+        assert!(!region_full.is_empty());
+    }
+
+    #[test]
+    fn test_region_fixed_is_not_variable() {
+        let region = create_test_region_fixed("r1", b"ATCG");
+        assert!(!region.is_variable());
+    }
+
+    #[test]
+    fn test_region_library_id() {
+        let region = create_test_region_library("lib1", 10, 20, None);
+        assert_eq!(*region.id(), region_id_from_str("lib1"));
+    }
+
+    #[test]
+    fn test_region_library_len_returns_max() {
+        let region = create_test_region_library("lib1", 10, 20, None);
+        assert_eq!(region.len(), 20);
+    }
+
+    #[test]
+    fn test_region_library_is_variable() {
+        let region = create_test_region_library("lib1", 10, 20, None);
+        assert!(region.is_variable());
+    }
+
+    #[test]
+    fn test_region_library_validate_valid() {
+        let region = create_test_region_library("lib1", 10, 20, None);
+        assert!(region.validate().is_ok());
+    }
+
+    #[test]
+    fn test_region_library_validate_min_greater_than_max() {
+        let region = create_test_region_library("lib1", 30, 20, None);
+        assert!(region.validate().is_err());
+    }
+
+    #[test]
+    fn test_region_library_validate_equal_min_max() {
+        let region = create_test_region_library("lib1", 20, 20, None);
+        assert!(region.validate().is_ok());
+    }
+
+    #[test]
+    fn test_template_sequence_all_fixed() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATG"),
+            create_test_region_fixed("r2", b"TAG"),
+        ];
+        let spec = create_test_spec(regions, "r1", 10, "r2", 10);
+        let template = spec.template_sequence();
+        assert_eq!(template, b"ATGTAG");
+    }
+
+    #[test]
+    fn test_template_sequence_mixed() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATG"),
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_fixed("r2", b"TAG"),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "r2", 20);
+        let template = spec.template_sequence();
+        assert_eq!(template, b"ATGNNNNNNNNNNTAG");
+    }
+
+    #[test]
+    fn test_expected_forward_read() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 3, 10, None),
+            create_test_region_fixed("r2", b"TAGA"),
+        ];
+        let spec = create_test_spec(regions, "r1", 10, "r2", 10);
+        let read = spec.expected_forward_read();
+        assert_eq!(read.len(), 10);
+        assert!(read.starts_with(b"ATGC"));
+    }
+
+    #[test]
+    fn test_expected_forward_read_from_middle_region() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_fixed("r2", b"GGGG"),
+            create_test_region_library("lib1", 2, 5, None),
+        ];
+        let spec = create_test_spec(regions, "r2", 8, "r1", 8);
+        let read = spec.expected_forward_read();
+        assert!(read.starts_with(b"GGGG"));
+    }
+
+    #[test]
+    fn test_expected_reverse_read() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 3, 10, None),
+            create_test_region_fixed("r2", b"TAGA"),
+        ];
+        let spec = create_test_spec(regions, "r1", 10, "r2", 10);
+        let read = spec.expected_reverse_read();
+        assert_eq!(read.len(), 10);
+    }
+
+    #[test]
+    fn test_template_position_single_region() {
+        let regions = vec![create_test_region_fixed("r1", b"ATGC")];
+        let spec = create_test_spec(regions, "r1", 10, "r1", 10);
+        let (start, end) = spec.template_position(&region_id_from_str("r1")).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 4);
+    }
+
+    #[test]
+    fn test_template_position_multiple_regions() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_fixed("r2", b"GGGG"),
+            create_test_region_library("lib1", 5, 10, None),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "lib1", 20);
+        let (start, end) = spec.template_position(&region_id_from_str("r2")).unwrap();
+        assert_eq!(start, 4);
+        assert_eq!(end, 8);
+
+        let (start, end) = spec.template_position(&region_id_from_str("lib1")).unwrap();
+        assert_eq!(start, 8);
+        assert_eq!(end, 18);
+    }
+
+    #[test]
+    fn test_template_position_missing_region() {
+        let regions = vec![create_test_region_fixed("r1", b"ATGC")];
+        let spec = create_test_spec(regions, "r1", 10, "r1", 10);
+        assert!(
+            spec.template_position(&region_id_from_str("missing"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_variable_regions() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_fixed("r2", b"GGGG"),
+            create_test_region_library("lib2", 3, 8, None),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "r2", 20);
+        let var_regions = spec.variable_regions();
+        assert_eq!(var_regions.len(), 2);
+        assert_eq!(var_regions[0], region_id_from_str("lib1"));
+        assert_eq!(var_regions[1], region_id_from_str("lib2"));
+    }
+
+    #[test]
+    fn test_get_max_distances() {
+        let regions = vec![
+            create_test_region_library("lib1", 5, 10, Some(2)),
+            create_test_region_library("lib2", 3, 8, None),
+            create_test_region_library("lib3", 5, 10, Some(5)),
+        ];
+        let spec = create_test_spec(regions, "lib1", 20, "lib3", 20);
+        let distances = spec.get_max_distances();
+        assert_eq!(distances.len(), 2);
+        assert_eq!(distances.get(&region_id_from_str("lib1")), Some(&2));
+        assert_eq!(distances.get(&region_id_from_str("lib3")), Some(&5));
+        assert_eq!(distances.get(&region_id_from_str("lib2")), None);
+    }
+
+    #[test]
+    fn test_validate_valid_spec() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_fixed("r2", b"GGGG"),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "r2", 20);
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_missing_forward_start() {
+        let regions = vec![create_test_region_fixed("r1", b"ATGC")];
+        let spec = create_test_spec(regions, "missing", 10, "r1", 10);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_missing_reverse_start() {
+        let regions = vec![create_test_region_fixed("r1", b"ATGC")];
+        let spec = create_test_spec(regions, "r1", 10, "missing", 10);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_duplicate_regions() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_fixed("r1", b"GGGG"),
+        ];
+        let spec = create_test_spec(regions, "r1", 10, "r1", 10);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_adjacent_variable_regions() {
+        let regions = vec![
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_library("lib2", 3, 8, None),
+        ];
+        let spec = create_test_spec(regions, "lib1", 20, "lib2", 20);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_library_region() {
+        let regions = vec![create_test_region_library("lib1", 20, 10, None)];
+        let spec = create_test_spec(regions, "lib1", 20, "lib1", 20);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_flanking_regions_internal() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_fixed("r2", b"GGGG"),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "r2", 20);
+        let flanks = spec
+            .flanking_regions(&region_id_from_str("lib1"), 3)
+            .unwrap();
+        match flanks {
+            FlankingSequences::Internal(before, after) => {
+                assert_eq!(before, b"TGC");
+                assert_eq!(after, b"GGG");
+            }
+            _ => panic!("Expected Internal flanks"),
+        }
+    }
+
+    #[test]
+    fn test_flanking_regions_open_start() {
+        let regions = vec![
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_fixed("r2", b"GGGG"),
+        ];
+        let spec = create_test_spec(regions, "lib1", 20, "r2", 20);
+        let flanks = spec
+            .flanking_regions(&region_id_from_str("lib1"), 3)
+            .unwrap();
+        match flanks {
+            FlankingSequences::OpenStart(after) => {
+                assert_eq!(after, b"GGG");
+            }
+            _ => panic!("Expected OpenStart flanks"),
+        }
+    }
+
+    #[test]
+    fn test_flanking_regions_open_end() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 5, 10, None),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "lib1", 20);
+        let flanks = spec
+            .flanking_regions(&region_id_from_str("lib1"), 3)
+            .unwrap();
+        match flanks {
+            FlankingSequences::OpenEnd(before) => {
+                assert_eq!(before, b"TGC");
+            }
+            _ => panic!("Expected OpenEnd flanks"),
+        }
+    }
+
+    #[test]
+    fn test_flanking_regions_unflanked() {
+        let regions = vec![create_test_region_library("lib1", 5, 10, None)];
+        let spec = create_test_spec(regions, "lib1", 20, "lib1", 20);
+        let flanks = spec
+            .flanking_regions(&region_id_from_str("lib1"), 3)
+            .unwrap();
+        match flanks {
+            FlankingSequences::Unflanked => {}
+            _ => panic!("Expected Unflanked"),
+        }
+    }
+
+    #[test]
+    fn test_variable_length_regions() {
+        let regions = vec![
+            create_test_region_library("lib1", 5, 10, None),
+            create_test_region_library("lib2", 8, 8, None),
+            create_test_region_library("lib3", 3, 7, None),
+            create_test_region_fixed("r1", b"ATGC"),
+        ];
+        let spec = create_test_spec(regions, "lib1", 20, "r1", 20);
+        assert_eq!(spec.variable_length_regions(), 2);
+    }
+
+    #[test]
+    fn test_get_region_exists() {
+        let regions = vec![
+            create_test_region_fixed("r1", b"ATGC"),
+            create_test_region_library("lib1", 5, 10, None),
+        ];
+        let spec = create_test_spec(regions, "r1", 20, "lib1", 20);
+        let region = spec.get_region(&region_id_from_str("lib1")).unwrap();
+        assert!(region.is_variable());
+    }
+
+    #[test]
+    fn test_get_region_missing() {
+        let regions = vec![create_test_region_fixed("r1", b"ATGC")];
+        let spec = create_test_spec(regions, "r1", 20, "r1", 20);
+        assert!(spec.get_region(&region_id_from_str("missing")).is_err());
+    }
+
+    #[test]
+    fn test_validate_flank_seqs_valid_internal() {
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"ATG".to_vec()),
+            FlankingSequences::Internal(b"GC".to_vec(), b"TA".to_vec()),
+            FlankingSequences::OpenEnd(b"G".to_vec()),
+        ];
+        assert!(LibrarySpec::validate_flank_seqs(&flanks).is_ok());
+    }
+
+    #[test]
+    fn test_validate_flank_seqs_invalid_open_start_middle() {
+        let flanks = vec![
+            FlankingSequences::Internal(b"ATG".to_vec(), b"CG".to_vec()),
+            FlankingSequences::OpenStart(b"TA".to_vec()),
+        ];
+        assert!(LibrarySpec::validate_flank_seqs(&flanks).is_err());
+    }
+
+    #[test]
+    fn test_validate_flank_seqs_invalid_open_end_middle() {
+        let flanks = vec![
+            FlankingSequences::OpenEnd(b"ATG".to_vec()),
+            FlankingSequences::Internal(b"CG".to_vec(), b"TA".to_vec()),
+        ];
+        assert!(LibrarySpec::validate_flank_seqs(&flanks).is_err());
+    }
+
+    #[test]
+    fn test_validate_flank_seqs_invalid_unflanked() {
+        let flanks = vec![
+            FlankingSequences::Internal(b"ATG".to_vec(), b"CG".to_vec()),
+            FlankingSequences::Unflanked,
+        ];
+        assert!(LibrarySpec::validate_flank_seqs(&flanks).is_err());
+    }
+
+    #[test]
+    fn test_flanking_regions_display() {
+        let unflanked = FlankingSequences::Unflanked;
+        assert_eq!(format!("{}", unflanked), "Unflanked");
+
+        let open_start = FlankingSequences::OpenStart(b"ATG".to_vec());
+        let open_start_str = format!("{}", open_start);
+        assert!(open_start_str.contains("Open"));
+
+        let open_end = FlankingSequences::OpenEnd(b"TAG".to_vec());
+        let open_end_str = format!("{}", open_end);
+        assert!(open_end_str.contains("Open"));
+
+        let internal = FlankingSequences::Internal(b"ATG".to_vec(), b"TAG".to_vec());
+        let internal_str = format!("{}", internal);
+        assert!(!internal_str.contains("Open"));
+    }
 }

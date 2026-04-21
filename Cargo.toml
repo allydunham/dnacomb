@@ -54,6 +54,7 @@ lasso       = { version = "0.7", optional = true, features = ["multi-threaded"] 
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = { version = "3.27" }
 
 [[bench]]
 name = "library_benchmark"

@@ -26,7 +26,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                exact_match,
+                &exact_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
             );
@@ -37,7 +37,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                exact_match,
+                &exact_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
             );
@@ -48,7 +48,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                exact_match,
+                &exact_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,
             );
@@ -59,7 +59,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                partial_match,
+                &partial_match,
                 library::DistanceMetric::Hamming,
                 library::PartialMatching::Full,
             );
@@ -70,7 +70,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                partial_match,
+                &partial_match,
                 library::DistanceMetric::Levenshtein,
                 library::PartialMatching::Full,
             );
@@ -81,7 +81,7 @@ fn bench_lookup(c: &mut Criterion) {
         b.iter(|| {
             let _ = lib.lookup(
                 &region,
-                partial_match,
+                &partial_match,
                 library::DistanceMetric::BoundedLevenshtein,
                 library::PartialMatching::Full,
             );

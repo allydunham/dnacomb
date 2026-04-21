@@ -4,7 +4,6 @@
 //! extraction but before full combination-level summarisation. It captures both
 //! the observed sequence itself and how completely that region was observed,
 //! along with optional comparison to an expected library.
-use bio::bio_types::sequence::Sequence;
 use itertools::Itertools;
 use std::sync::Arc;
 
@@ -23,12 +22,12 @@ use crate::seq_diff::SequenceDiff;
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct RegionKey {
     pub id: RegionID,
-    pub sequence: Sequence,
+    pub sequence: SeqHandle,
     pub completeness: RegionCompleteness,
 }
 
 impl RegionKey {
-    pub fn new(id: RegionID, sequence: Sequence, completeness: RegionCompleteness) -> Self {
+    pub fn new(id: RegionID, sequence: SeqHandle, completeness: RegionCompleteness) -> Self {
         Self {
             id,
             sequence,
@@ -64,10 +63,10 @@ pub struct ObservedRegion {
 
 impl ObservedRegion {
     /// Create a new observed region in the uncompared state.
-    pub fn new(id: RegionID, seq: &[u8], complete: RegionCompleteness) -> Self {
+    pub fn new(id: RegionID, seq: SeqHandle, complete: RegionCompleteness) -> Self {
         Self {
             id,
-            seq: seq_from_bytes(seq),
+            seq,
             completeness: complete,
             nearest_matches: RegionMatch::Uncompared,
         }
@@ -75,12 +74,12 @@ impl ObservedRegion {
 
     /// Length of the observed sequence.
     pub fn len(&self) -> usize {
-        seq_to_bytes(self.seq).len()
+        seq_to_bytes(&self.seq).len()
     }
 
     /// Return `true` if the observed sequence is empty.
     pub fn is_empty(&self) -> bool {
-        seq_to_bytes(self.seq).is_empty()
+        seq_to_bytes(&self.seq).is_empty()
     }
 
     /// Return `true` if library comparison has already been performed for this region.
@@ -108,7 +107,7 @@ impl ObservedRegion {
     ) -> RegionMatch {
         let lib_match = match self.completeness {
             RegionCompleteness::Complete => {
-                match library.lookup(&self.id, self.seq, distance_metric, PartialMatching::Full) {
+                match library.lookup(&self.id, &self.seq, distance_metric, PartialMatching::Full) {
                     // lookup can only return Err(LibraryError::MissingRegion) which implies the
                     // region isn't in the library. Needs changing if more errors are added to it.
                     Err(_) => return RegionMatch::NoLibrary { seq: None },
@@ -118,7 +117,7 @@ impl ObservedRegion {
             RegionCompleteness::Partial5Prime => {
                 match library.lookup(
                     &self.id,
-                    self.seq,
+                    &self.seq,
                     distance_metric,
                     PartialMatching::ThreePrimeOnly,
                 ) {
@@ -131,7 +130,7 @@ impl ObservedRegion {
             RegionCompleteness::Partial3Prime => {
                 match library.lookup(
                     &self.id,
-                    self.seq,
+                    &self.seq,
                     distance_metric,
                     PartialMatching::FivePrimeOnly,
                 ) {
@@ -143,20 +142,20 @@ impl ObservedRegion {
             }
             RegionCompleteness::MissingCenter { split_ind }
             | RegionCompleteness::Overlapping { split_ind } => {
-                let seq = seq_to_bytes(self.seq);
+                let seq = seq_to_bytes(&self.seq);
                 let left_seq = seq_from_bytes(&seq[0..split_ind]);
                 let right_seq = seq_from_bytes(&seq[split_ind + 1..seq.len()]);
 
                 let left_match = library.lookup(
                     &self.id,
-                    left_seq,
+                    &left_seq,
                     distance_metric,
                     PartialMatching::FivePrimeOnly,
                 );
 
                 let right_match = library.lookup(
                     &self.id,
-                    right_seq,
+                    &right_seq,
                     distance_metric,
                     PartialMatching::ThreePrimeOnly,
                 );
@@ -178,7 +177,7 @@ impl ObservedRegion {
                     RegionMatch::Match {
                         seq_match: x.matches[0].clone(),
                         distance: x.distance,
-                        diff: SequenceDiff::compute_ids(self.seq, x.matches[0].sequence),
+                        diff: SequenceDiff::compute_ids(&self.seq, &x.matches[0].sequence),
                     }
                 } else if x.matches.len() > max_matches {
                     RegionMatch::Overmatched {
@@ -191,7 +190,7 @@ impl ObservedRegion {
                         diffs: x
                             .matches
                             .iter()
-                            .map(|m| SequenceDiff::compute_ids(self.seq, m.sequence))
+                            .map(|m| SequenceDiff::compute_ids(&self.seq, &m.sequence))
                             .collect(),
                         seq_matches: x.matches,
                     }
@@ -382,12 +381,17 @@ impl RegionMatch {
 
 #[cfg(test)]
 mod tests {
-    use crate::interning::{region_id_from_str, region_id_to_str};
+    use std::collections::HashSet;
+
+    use crate::{
+        interning::{library_id_from_str, region_id_from_str, region_id_to_str},
+        seq_diff::EditOperation,
+    };
 
     use super::*;
 
     fn make_region(id: &str, seq: &[u8], c: RegionCompleteness) -> ObservedRegion {
-        ObservedRegion::new(region_id_from_str(id), seq, c)
+        ObservedRegion::new(region_id_from_str(id), seq_from_bytes(seq), c)
     }
 
     /// Creating a Complete region should preserve id, bytes, length, and completeness.
@@ -395,8 +399,8 @@ mod tests {
     fn new_complete_region_holds_data() {
         let r = make_region("barcode", b"ACGTACGT", RegionCompleteness::Complete);
 
-        assert_eq!(region_id_to_str(r.id).to_string(), "barcode");
-        assert_eq!(seq_to_bytes(r.seq).as_ref(), b"ACGTACGT");
+        assert_eq!(region_id_to_str(&r.id).to_string(), "barcode");
+        assert_eq!(seq_to_bytes(&r.seq).as_ref(), b"ACGTACGT");
         assert_eq!(r.len(), 8);
         assert!(matches!(r.completeness, RegionCompleteness::Complete));
     }
@@ -405,10 +409,10 @@ mod tests {
     #[test]
     fn empty_sequence_is_valid() {
         let r = make_region("empty", b"", RegionCompleteness::Complete);
-        assert_eq!(region_id_to_str(r.id).to_string(), "empty");
+        assert_eq!(region_id_to_str(&r.id).to_string(), "empty");
         assert_eq!(r.len(), 0);
         assert!(r.is_empty());
-        assert_eq!(seq_to_bytes(r.seq).as_ref(), b"");
+        assert_eq!(seq_to_bytes(&r.seq).as_ref(), b"");
     }
 
     /// Byte content must be preserved exactly; no implicit normalisation should occur.
@@ -417,7 +421,7 @@ mod tests {
         let weird = b"ACGTNN--acgt\x00\xff";
         let r = make_region("weird", weird, RegionCompleteness::Complete);
         assert_eq!(
-            seq_to_bytes(r.seq).as_ref(),
+            seq_to_bytes(&r.seq).as_ref(),
             weird,
             "region bytes changed unexpectedly"
         );
@@ -432,7 +436,7 @@ mod tests {
         let r = make_region("id", &buf, RegionCompleteness::Complete);
         buf[0] = b'T'; // mutate the source buffer
         assert_eq!(
-            seq_to_bytes(r.seq).as_ref(),
+            seq_to_bytes(&r.seq).as_ref(),
             b"AAAA",
             "region leaked aliasing to input slice"
         );
@@ -450,7 +454,400 @@ mod tests {
         let r2 = make_region("big", &big, RegionCompleteness::Complete);
         assert_eq!(r2.len(), 100_000);
         // spot-check end bytes to ensure contiguous storage
-        assert_eq!(seq_to_bytes(r2.seq).as_ref()[0], b'G');
-        assert_eq!(seq_to_bytes(r2.seq).as_ref()[99_999], b'G');
+        assert_eq!(seq_to_bytes(&r2.seq).as_ref()[0], b'G');
+        assert_eq!(seq_to_bytes(&r2.seq).as_ref()[99_999], b'G');
+    }
+
+    #[test]
+    fn region_key_new() {
+        let id = region_id_from_str("r1");
+        let key = RegionKey::new(id, seq_from_bytes(b"ACGT"), RegionCompleteness::Complete);
+        assert_eq!(&region_id_to_str(&key.id).to_string(), "r1");
+        assert_eq!(key.sequence.to_str_or_log(), "ACGT");
+        assert!(matches!(key.completeness, RegionCompleteness::Complete));
+    }
+
+    #[test]
+    fn region_key_equality_all_same() {
+        let id = region_id_from_str("r1");
+        let key1 = RegionKey::new(
+            id.clone(),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        let key2 = RegionKey::new(
+            id.clone(),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn region_key_inequality_different_id() {
+        let key1 = RegionKey::new(
+            region_id_from_str("r1"),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        let key2 = RegionKey::new(
+            region_id_from_str("r2"),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn region_key_inequality_different_sequence() {
+        let id = region_id_from_str("r1");
+        let key1 = RegionKey::new(
+            id.clone(),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        let key2 = RegionKey::new(id, seq_from_bytes(b"GGGG"), RegionCompleteness::Complete);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn region_key_inequality_different_completeness() {
+        let id = region_id_from_str("r1");
+        let key1 = RegionKey::new(
+            id.clone(),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        let key2 = RegionKey::new(
+            id,
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Partial5Prime,
+        );
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn region_key_hash_consistency() {
+        use std::collections::HashSet;
+
+        let id = region_id_from_str("r1");
+        let key1 = RegionKey::new(
+            id.clone(),
+            seq_from_bytes(b"ACGT"),
+            RegionCompleteness::Complete,
+        );
+        let key2 = RegionKey::new(id, seq_from_bytes(b"ACGT"), RegionCompleteness::Complete);
+
+        let mut set = HashSet::new();
+        set.insert(key1);
+        assert!(set.contains(&key2));
+    }
+
+    #[test]
+    fn region_is_compared_to_library_uncompared() {
+        let r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        assert!(!r.is_compared_to_library());
+    }
+
+    #[test]
+    fn region_is_compared_after_match() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Unmatched;
+        assert!(r.is_compared_to_library());
+    }
+
+    #[test]
+    fn region_is_compared_after_unmatched() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Unmatched;
+        assert!(r.is_compared_to_library());
+    }
+
+    #[test]
+    fn region_is_compared_after_no_library() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::NoLibrary { seq: None };
+        assert!(r.is_compared_to_library());
+    }
+
+    #[test]
+    fn region_to_strings_uncompared() {
+        let r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_to_strings_partial_5prime() {
+        let r = make_region("r1", b"GT", RegionCompleteness::Partial5Prime);
+        let (seq, _, _, _, _) = r.to_strings();
+        assert_eq!(seq, "^GT");
+    }
+
+    #[test]
+    fn region_to_strings_partial_3prime() {
+        let r = make_region("r1", b"AC", RegionCompleteness::Partial3Prime);
+        let (seq, _, _, _, _) = r.to_strings();
+        assert_eq!(seq, "AC^");
+    }
+
+    #[test]
+    fn region_to_strings_unmatched() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Unmatched;
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_to_strings_no_library() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::NoLibrary { seq: None };
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_to_strings_single_match() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Match {
+            seq_match: Arc::new(LibraryRegion {
+                ids: HashSet::from([library_id_from_str("lib1")]),
+                inds: HashSet::from([1]),
+                sequence: seq_from_bytes(b"ACGT"),
+            }),
+            distance: 0,
+            diff: SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]),
+        };
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "ACGT");
+        assert_eq!(diff, "2A>G");
+        assert_eq!(dist, "0");
+        assert_eq!(count, "1");
+    }
+
+    #[test]
+    fn region_to_strings_overmatched() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Overmatched {
+            distance: 2,
+            matches: 50,
+        };
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "2");
+        assert_eq!(count, "50");
+    }
+
+    #[test]
+    fn region_match_to_strings_uncompared() {
+        let m = RegionMatch::Uncompared;
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_match_to_strings_unmatched() {
+        let m = RegionMatch::Unmatched;
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_match_to_strings_no_library() {
+        let m = RegionMatch::NoLibrary { seq: None };
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "");
+        assert_eq!(count, "0");
+    }
+
+    #[test]
+    fn region_match_to_strings_single_match() {
+        let m = RegionMatch::Match {
+            seq_match: Arc::new(LibraryRegion {
+                ids: HashSet::from([library_id_from_str("lib1")]),
+                inds: HashSet::from([1]),
+                sequence: seq_from_bytes(b"ACGT"),
+            }),
+            distance: 0,
+            diff: SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]),
+        };
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(diff, "2A>G");
+        assert_eq!(dist, "0");
+        assert_eq!(count, "1");
+    }
+
+    #[test]
+    fn region_match_to_strings_multi_match() {
+        let l1 = Arc::new(LibraryRegion {
+            ids: HashSet::from([library_id_from_str("lib1")]),
+            inds: HashSet::from([1]),
+            sequence: seq_from_bytes(b"ACGT"),
+        });
+
+        let l2 = Arc::new(LibraryRegion {
+            ids: HashSet::from([library_id_from_str("lib2")]),
+            inds: HashSet::from([1]),
+            sequence: seq_from_bytes(b"CCGT"),
+        });
+
+        let d1 = SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]);
+
+        let d2 = SequenceDiff::new(vec![EditOperation::Sub(2, b'C', b'G')]);
+
+        let m = RegionMatch::MultiMatch {
+            seq_matches: vec![l1, l2],
+            distance: 1,
+            diffs: vec![d1, d2],
+        };
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "ACGT,CCGT");
+        assert_eq!(diff, "2A>G,3C>G");
+        assert_eq!(dist, "1");
+        assert_eq!(count, "2");
+    }
+
+    #[test]
+    fn region_match_to_strings_overmatched() {
+        let m = RegionMatch::Overmatched {
+            distance: 5,
+            matches: 100,
+        };
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "");
+        assert_eq!(diff, "");
+        assert_eq!(dist, "5");
+        assert_eq!(count, "100");
+    }
+
+    #[test]
+    fn region_match_equality_match_same_distance() {
+        let l = Arc::new(LibraryRegion {
+            ids: HashSet::from([library_id_from_str("lib1")]),
+            inds: HashSet::from([1]),
+            sequence: seq_from_bytes(b"ACGT"),
+        });
+
+        let d = SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]);
+
+        let m1 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 0,
+            diff: d.clone(),
+        };
+
+        let m2 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 0,
+            diff: d.clone(),
+        };
+
+        assert_eq!(m1, m2);
+    }
+
+    #[test]
+    fn region_match_inequality_match_different_distance() {
+        let l = Arc::new(LibraryRegion {
+            ids: HashSet::from([library_id_from_str("lib1")]),
+            inds: HashSet::from([1]),
+            sequence: seq_from_bytes(b"ACGT"),
+        });
+
+        let d = SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]);
+
+        let m1 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 0,
+            diff: d.clone(),
+        };
+
+        let m2 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 1,
+            diff: d.clone(),
+        };
+
+        assert_ne!(m1, m2);
+    }
+
+    #[test]
+    fn region_match_hash_consistency() {
+        use std::collections::HashSet;
+
+        let l = Arc::new(LibraryRegion {
+            ids: HashSet::from([library_id_from_str("lib1")]),
+            inds: HashSet::from([1]),
+            sequence: seq_from_bytes(b"ACGT"),
+        });
+
+        let d = SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]);
+
+        let m1 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 0,
+            diff: d.clone(),
+        };
+
+        let m2 = RegionMatch::Match {
+            seq_match: l.clone(),
+            distance: 0,
+            diff: d.clone(),
+        };
+
+        let mut set = HashSet::new();
+        set.insert(m1);
+        assert!(set.contains(&m2));
+    }
+
+    #[test]
+    fn region_len_consistency_with_seq() {
+        let r = make_region("r1", b"ACGTACGTACGT", RegionCompleteness::Complete);
+        assert_eq!(r.len(), 12);
+        assert_eq!(r.len(), seq_to_bytes(&r.seq).len());
+    }
+
+    #[test]
+    fn region_is_empty_true() {
+        let r = make_region("r1", b"", RegionCompleteness::Complete);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn region_is_empty_false() {
+        let r = make_region("r1", b"A", RegionCompleteness::Complete);
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn region_clone_yields_equal_ids() {
+        let r1 = make_region("region1", b"ACGT", RegionCompleteness::Complete);
+        let r1_id = r1.id.clone();
+        let recovered = region_id_to_str(&r1_id);
+        assert_eq!(&*recovered, "region1");
     }
 }

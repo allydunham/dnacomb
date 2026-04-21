@@ -86,7 +86,7 @@ impl SequenceDiff {
 
     /// Compute diff between observed and expected sequences from SeqHandles
     #[inline]
-    pub fn compute_ids(observed: SeqHandle, expected: SeqHandle) -> Self {
+    pub fn compute_ids(observed: &SeqHandle, expected: &SeqHandle) -> Self {
         Self::compute(&seq_to_bytes(observed), &seq_to_bytes(expected))
     }
 
@@ -594,5 +594,306 @@ mod tests {
             "1A>T;2_3_insG;5_5_delC",
             "Display format incorrect"
         );
+    }
+
+    #[test]
+    fn edit_operation_equality_sub() {
+        let op1 = EditOperation::Sub(0, b'A', b'T');
+        let op2 = EditOperation::Sub(0, b'A', b'T');
+        let op3 = EditOperation::Sub(1, b'A', b'T');
+        assert_eq!(op1, op2);
+        assert_ne!(op1, op3);
+    }
+
+    #[test]
+    fn edit_operation_equality_ins() {
+        let op1 = EditOperation::Ins(2, vec![b'G', b'T']);
+        let op2 = EditOperation::Ins(2, vec![b'G', b'T']);
+        let op3 = EditOperation::Ins(2, vec![b'G']);
+        assert_eq!(op1, op2);
+        assert_ne!(op1, op3);
+    }
+
+    #[test]
+    fn edit_operation_equality_del() {
+        let op1 = EditOperation::Del(5, vec![b'C', b'A']);
+        let op2 = EditOperation::Del(5, vec![b'C', b'A']);
+        let op3 = EditOperation::Del(5, vec![b'C']);
+        assert_eq!(op1, op2);
+        assert_ne!(op1, op3);
+    }
+
+    #[test]
+    fn edit_operation_hash_consistency() {
+        use std::collections::HashSet;
+
+        let op1 = EditOperation::Sub(0, b'A', b'T');
+        let op2 = EditOperation::Sub(0, b'A', b'T');
+
+        let mut set = HashSet::new();
+        set.insert(op1);
+        assert!(set.contains(&op2));
+    }
+
+    #[test]
+    fn edit_operation_clone() {
+        let op1 = EditOperation::Del(5, vec![b'A', b'T', b'G']);
+        let op2 = op1.clone();
+        assert_eq!(op1, op2);
+    }
+
+    #[test]
+    fn sequence_diff_equality_empty() {
+        let diff1 = SequenceDiff::new(vec![]);
+        let diff2 = SequenceDiff::new(vec![]);
+        assert_eq!(diff1, diff2);
+    }
+
+    #[test]
+    fn sequence_diff_equality_same_ops() {
+        let ops1 = vec![
+            EditOperation::Sub(0, b'A', b'T'),
+            EditOperation::Ins(2, vec![b'G']),
+        ];
+        let ops2 = vec![
+            EditOperation::Sub(0, b'A', b'T'),
+            EditOperation::Ins(2, vec![b'G']),
+        ];
+        let diff1 = SequenceDiff::new(ops1);
+        let diff2 = SequenceDiff::new(ops2);
+        assert_eq!(diff1, diff2);
+    }
+
+    #[test]
+    fn sequence_diff_inequality_different_ops() {
+        let ops1 = vec![EditOperation::Sub(0, b'A', b'T')];
+        let ops2 = vec![EditOperation::Sub(1, b'A', b'T')];
+        let diff1 = SequenceDiff::new(ops1);
+        let diff2 = SequenceDiff::new(ops2);
+        assert_ne!(diff1, diff2);
+    }
+
+    #[test]
+    fn sequence_diff_inequality_different_order() {
+        let ops1 = vec![
+            EditOperation::Sub(0, b'A', b'T'),
+            EditOperation::Ins(2, vec![b'G']),
+        ];
+        let ops2 = vec![
+            EditOperation::Ins(2, vec![b'G']),
+            EditOperation::Sub(0, b'A', b'T'),
+        ];
+        let diff1 = SequenceDiff::new(ops1);
+        let diff2 = SequenceDiff::new(ops2);
+        assert_ne!(diff1, diff2);
+    }
+
+    #[test]
+    fn sequence_diff_hash_consistency() {
+        use std::collections::HashSet;
+
+        let ops = vec![EditOperation::Sub(0, b'A', b'T')];
+        let diff1 = SequenceDiff::new(ops.clone());
+        let diff2 = SequenceDiff::new(ops);
+
+        let mut set = HashSet::new();
+        set.insert(diff1);
+        assert!(set.contains(&diff2));
+    }
+
+    #[test]
+    fn sequence_diff_clone() {
+        let ops = vec![
+            EditOperation::Sub(0, b'A', b'T'),
+            EditOperation::Del(5, vec![b'C']),
+        ];
+        let diff1 = SequenceDiff::new(ops);
+        let diff2 = diff1.clone();
+        assert_eq!(diff1, diff2);
+    }
+
+    #[test]
+    fn sequence_diff_compute_ids() {
+        use crate::interning::seq_from_bytes;
+
+        let obs_handle = seq_from_bytes(b"ACGT");
+        let exp_handle = seq_from_bytes(b"TCGT");
+        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle);
+
+        assert_eq!(diff.to_string(), "1T>A");
+    }
+
+    #[test]
+    fn sequence_diff_compute_ids_identical() {
+        use crate::interning::seq_from_bytes;
+
+        let obs_handle = seq_from_bytes(b"ACGTACGT");
+        let exp_handle = seq_from_bytes(b"ACGTACGT");
+        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle);
+
+        assert!(diff.operations.is_empty());
+        assert_eq!(diff.to_string(), "");
+    }
+
+    #[test]
+    fn edit_operation_hgvs_sub_with_non_dna_bases() {
+        // Should handle non-standard bases gracefully
+        let op = EditOperation::Sub(10, b'X', b'Y');
+        assert_eq!(op.to_hgvs_string(), "11X>Y");
+    }
+
+    #[test]
+    fn edit_operation_hgvs_del_single_vs_multiple() {
+        let op_single = EditOperation::Del(2, vec![b'C']);
+        let op_multi = EditOperation::Del(2, vec![b'C', b'A', b'T']);
+
+        assert_eq!(op_single.to_hgvs_string(), "2_2_delC");
+        assert_eq!(op_multi.to_hgvs_string(), "2_4_delCAT");
+    }
+
+    #[test]
+    fn edit_operation_hgvs_ins_position_zero() {
+        let op = EditOperation::Ins(0, vec![b'A', b'T']);
+        assert_eq!(op.to_hgvs_string(), "0_1_insAT");
+    }
+
+    #[test]
+    fn sequence_diff_large_identical() {
+        let large = vec![b'A'; 500];
+        let diff = SequenceDiff::compute(&large, &large);
+        assert!(diff.operations.is_empty());
+    }
+
+    #[test]
+    fn sequence_diff_large_single_sub_at_start() {
+        let mut large_obs = vec![b'A'; 500];
+        let large_exp = vec![b'A'; 500];
+        large_obs[0] = b'T';
+
+        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        assert_eq!(diff.operations.len(), 1);
+        assert_eq!(diff.to_string(), "1A>T");
+    }
+
+    #[test]
+    fn sequence_diff_large_single_sub_at_end() {
+        let mut large_obs = vec![b'A'; 500];
+        let large_exp = vec![b'A'; 500];
+        large_obs[499] = b'T';
+
+        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        assert_eq!(diff.operations.len(), 1);
+        assert_eq!(diff.to_string(), "500A>T");
+    }
+
+    #[test]
+    fn sequence_diff_large_with_multiple_edits() {
+        let mut large_obs = vec![b'A'; 100];
+        let large_exp = vec![b'A'; 100];
+        large_obs[0] = b'T';
+        large_obs[50] = b'C';
+        large_obs[99] = b'G';
+
+        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        assert_eq!(diff.operations.len(), 3);
+        assert!(diff.to_string().contains("1A>T"));
+        assert!(diff.to_string().contains("51A>C"));
+        assert!(diff.to_string().contains("100A>G"));
+    }
+
+    #[test]
+    fn sequence_diff_many_consecutive_substitutions() {
+        let obs = b"TTTTTTTTTT";
+        let exp = b"AAAAAAAAAA";
+        let diff = SequenceDiff::compute(obs, exp);
+
+        // Should have 10 separate substitutions
+        assert_eq!(diff.operations.len(), 10);
+        for (i, op) in diff.operations.iter().enumerate() {
+            assert!(matches!(op, EditOperation::Sub(pos, b'A', b'T') if *pos == i));
+        }
+    }
+
+    #[test]
+    fn sequence_diff_alternating_pattern() {
+        let obs = b"ACACAC";
+        let exp = b"AGAGAG";
+        let diff = SequenceDiff::compute(obs, exp);
+
+        assert_eq!(diff.operations.len(), 3);
+        assert_eq!(diff.to_string(), "2G>C;4G>C;6G>C");
+    }
+
+    #[test]
+    fn sequence_diff_with_ambiguous_bases() {
+        let obs = b"ACNGT";
+        let exp = b"ACXGT";
+        let diff = SequenceDiff::compute(obs, exp);
+
+        assert_eq!(diff.operations.len(), 1);
+        assert_eq!(diff.to_string(), "3X>N");
+    }
+
+    #[test]
+    fn sequence_diff_insertion_multiple_same_base() {
+        let obs = b"AAAAA";
+        let exp = b"A";
+        let diff = SequenceDiff::compute(obs, exp);
+
+        assert_eq!(diff.operations.len(), 1);
+        assert_eq!(diff.to_string(), "0_1_insAAAA");
+    }
+
+    #[test]
+    fn sequence_diff_deletion_multiple_same_base() {
+        let obs = b"A";
+        let exp = b"AAAAA";
+        let diff = SequenceDiff::compute(obs, exp);
+
+        assert_eq!(diff.operations.len(), 1);
+        assert_eq!(diff.to_string(), "0_3_delAAAA");
+    }
+
+    #[test]
+    fn sequence_diff_display_empty() {
+        let diff = SequenceDiff::new(vec![]);
+        assert_eq!(format!("{}", diff), "");
+    }
+
+    #[test]
+    fn sequence_diff_display_single_op() {
+        let ops = vec![EditOperation::Sub(5, b'G', b'C')];
+        let diff = SequenceDiff::new(ops);
+        assert_eq!(format!("{}", diff), "6G>C");
+    }
+
+    #[test]
+    fn sequence_diff_display_many_ops() {
+        let ops = (0..100)
+            .map(|i| EditOperation::Sub(i, b'A', b'T'))
+            .collect();
+        let diff = SequenceDiff::new(ops);
+        let output = format!("{}", diff);
+
+        assert!(output.contains("1A>T"));
+        assert!(output.contains("100A>T"));
+        assert_eq!(output.matches(';').count(), 99);
+    }
+
+    #[test]
+    fn sequence_diff_display_semicolon_separation() {
+        let ops = vec![
+            EditOperation::Sub(0, b'A', b'T'),
+            EditOperation::Ins(2, vec![b'G']),
+            EditOperation::Del(5, vec![b'C']),
+        ];
+        let diff = SequenceDiff::new(ops);
+        let output = format!("{}", diff);
+
+        let parts: Vec<&str> = output.split(';').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "1A>T");
+        assert_eq!(parts[1], "2_3_insG");
+        assert_eq!(parts[2], "5_5_delC");
     }
 }

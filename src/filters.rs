@@ -347,7 +347,7 @@ impl FilteredReads {
                     let mut new_counts = FilteredCounts::new();
                     new_counts.increment_count(reason);
 
-                    groups.insert(*group, new_counts);
+                    groups.insert(group.clone(), new_counts);
                 }
             },
             None => {
@@ -355,7 +355,7 @@ impl FilteredReads {
                 new_counts.increment_count(reason);
 
                 let mut new_groups = HashMap::new();
-                new_groups.insert(*group, new_counts);
+                new_groups.insert(group.clone(), new_counts);
 
                 self.counts.insert(key.clone(), new_groups);
             }
@@ -760,5 +760,360 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_filter_reason_as_index() {
+        assert_eq!(FilterReason::EmptyRead.as_index(), 0);
+        assert_eq!(FilterReason::ShortRead.as_index(), 1);
+        assert_eq!(FilterReason::LongRead.as_index(), 2);
+        assert_eq!(FilterReason::LowMeanQuality.as_index(), 3);
+        assert_eq!(FilterReason::BadAlignment.as_index(), 4);
+    }
+
+    // Smoke test that meta-data is consistent - this is in outputs so want to
+    // be delibrate about changes
+    #[test]
+    fn test_filter_reason_meta_empty_read() {
+        let meta = FilterReason::EmptyRead.meta();
+        assert_eq!(meta.id, "empty_read");
+        assert_eq!(meta.label, "Read length = 0");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_short_read() {
+        let meta = FilterReason::ShortRead.meta();
+        assert_eq!(meta.id, "short_read");
+        assert_eq!(meta.label, "Read length < minimum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_long_read() {
+        let meta = FilterReason::LongRead.meta();
+        assert_eq!(meta.id, "long_read");
+        assert_eq!(meta.label, "Read length > maximum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_low_mean_quality() {
+        let meta = FilterReason::LowMeanQuality.meta();
+        assert_eq!(meta.id, "low_mean_quality");
+        assert_eq!(meta.label, "Mean quality < minimum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_bad_alignment() {
+        let meta = FilterReason::BadAlignment.meta();
+        assert_eq!(meta.id, "bad_alignment");
+        assert_eq!(meta.label, "Alignment quality < tolerance");
+    }
+
+    #[test]
+    fn test_filter_reason_n_reasons() {
+        assert_eq!(FilterReason::N_REASONS, 5);
+    }
+
+    #[test]
+    fn test_filter_reason_all_filters_len() {
+        assert_eq!(FilterReason::ALL_FILTERS.len(), 5);
+    }
+
+    // ---------- ALIGNMENT TOLERANCE ----------
+    #[test]
+    fn test_alignment_tolerance_valid() {
+        let tol = AlignmentTolerance::new(0.8, 100, 120).unwrap();
+        assert_eq!(tol.tolerance, 0.8);
+        assert_eq!(tol.expected_f_score, 100);
+        assert_eq!(tol.expected_r_score, 120);
+        assert_eq!(tol.minimum_f_score, 80);
+        assert_eq!(tol.minimum_r_score, 96);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_zero() {
+        let tol = AlignmentTolerance::new(0.0, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 0);
+        assert_eq!(tol.minimum_r_score, 0);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_one() {
+        let tol = AlignmentTolerance::new(1.0, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 100);
+        assert_eq!(tol.minimum_r_score, 100);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_below_range() {
+        let result = AlignmentTolerance::new(-0.1, 100, 100);
+        assert!(result.is_err());
+        match result {
+            Err(ReadCountError::FilterConfigError { desc }) => {
+                assert!(desc.contains("between 0 and 1"));
+            }
+            _ => panic!("Expected FilterConfigError"),
+        }
+    }
+
+    #[test]
+    fn test_alignment_tolerance_above_range() {
+        let result = AlignmentTolerance::new(1.1, 100, 100);
+        assert!(result.is_err());
+        match result {
+            Err(ReadCountError::FilterConfigError { desc }) => {
+                assert!(desc.contains("between 0 and 1"));
+            }
+            _ => panic!("Expected FilterConfigError"),
+        }
+    }
+
+    #[test]
+    fn test_alignment_tolerance_fractional() {
+        let tol = AlignmentTolerance::new(0.5, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 50);
+        assert_eq!(tol.minimum_r_score, 50);
+    }
+
+    // ---------- FILTERED COUNTS ----------
+    #[test]
+    fn test_filtered_counts_new() {
+        let counts = FilteredCounts::new();
+        assert_eq!(counts.total(), 0);
+        for reason in FilterReason::ALL_FILTERS {
+            assert_eq!(counts.get(reason), 0);
+        }
+    }
+
+    #[test]
+    fn test_filtered_counts_get() {
+        let mut counts = FilteredCounts::new();
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::ShortRead);
+
+        assert_eq!(counts.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts.get(&FilterReason::ShortRead), 1);
+        assert_eq!(counts.get(&FilterReason::LongRead), 0);
+    }
+
+    #[test]
+    fn test_filtered_counts_total() {
+        let mut counts = FilteredCounts::new();
+        assert_eq!(counts.total(), 0);
+
+        counts.increment_count(FilterReason::EmptyRead);
+        assert_eq!(counts.total(), 1);
+
+        counts.increment_count(FilterReason::ShortRead);
+        counts.increment_count(FilterReason::LongRead);
+        assert_eq!(counts.total(), 3);
+    }
+
+    #[test]
+    fn test_filtered_counts_iter() {
+        let mut counts = FilteredCounts::new();
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::ShortRead);
+
+        let vec: Vec<u64> = counts.iter().copied().collect();
+        assert_eq!(vec[0], 1); // empty
+        assert_eq!(vec[1], 1); // short
+        assert_eq!(vec[2], 0); // long
+        assert_eq!(vec[3], 0); // quality
+        assert_eq!(vec[4], 0); // alignment
+    }
+
+    #[test]
+    fn test_filtered_counts_merge() {
+        let mut counts1 = FilteredCounts::new();
+        counts1.increment_count(FilterReason::EmptyRead);
+        counts1.increment_count(FilterReason::ShortRead);
+
+        let mut counts2 = FilteredCounts::new();
+        counts2.increment_count(FilterReason::EmptyRead);
+        counts2.increment_count(FilterReason::LongRead);
+
+        counts1.merge(counts2);
+        assert_eq!(counts1.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts1.get(&FilterReason::ShortRead), 1);
+        assert_eq!(counts1.get(&FilterReason::LongRead), 1);
+    }
+
+    #[test]
+    fn test_filtered_counts_default() {
+        let counts = FilteredCounts::default();
+        assert_eq!(counts.total(), 0);
+    }
+
+    // ---------- FILTERED READS ----------
+    #[test]
+    fn test_filtered_reads_new() {
+        let cfg = FilterConfig::new(None, None, None, None, false);
+        let fr = FilteredReads::new(cfg.clone());
+        assert_eq!(fr.config, cfg);
+        assert_eq!(fr.total(), 0);
+        assert!(fr.counts.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_new_read() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp = rp("ACTG", "FFFF", None, None);
+
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+
+        assert_eq!(fr.total(), 1);
+        let key = rp.key();
+        assert!(fr.counts.contains_key(&key));
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_existing_read() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp = rp("ACTG", "FFFF", None, None);
+
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+        fr.increment_count(&rp, FilterReason::ShortRead);
+
+        assert_eq!(fr.total(), 3);
+        let key = rp.key();
+        let groups = fr.counts.get(&key).unwrap();
+        let counts = groups.get(&ReadGroup::ungrouped()).unwrap();
+        assert_eq!(counts.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts.get(&FilterReason::ShortRead), 1);
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_different_groups() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs("f", None, b"ACTG", b"FFFF"),
+            reverse: None,
+            group: ReadGroup::grouped("0"),
+        };
+        let rp2 = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs("f", None, b"ACTG", b"FFFF"),
+            reverse: None,
+            group: ReadGroup::grouped("1"),
+        };
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp2, FilterReason::EmptyRead);
+
+        assert_eq!(fr.total(), 2);
+        let key = rp1.key();
+        let groups = fr.counts.get(&key).unwrap();
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_filter_readpair_no_increment() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, true));
+        let rp = rp("", "", None, None);
+
+        let result = fr.filter_readpair(&rp, false);
+        assert_eq!(result, Some(FilterReason::EmptyRead));
+        assert_eq!(fr.total(), 0); // Not incremented
+    }
+
+    #[test]
+    fn test_filtered_reads_filter_alignment_no_increment() {
+        let cfg = FilterConfig::new(
+            None,
+            Some(AlignmentTolerance::new(0.8, 100, 100).unwrap()),
+            None,
+            None,
+            false,
+        );
+        let mut fr = FilteredReads::new(cfg);
+        let rp = rp("ACTG", "FFFF", None, None);
+        let aln = Alignment {
+            score: 50,
+            ..Default::default()
+        };
+
+        let result = fr.filter_alignment(&rp, &aln, None, false);
+        assert_eq!(result, Some(FilterReason::BadAlignment));
+        assert_eq!(fr.total(), 0); // Not incremented
+    }
+
+    #[test]
+    fn test_filtered_reads_merge_same_config() {
+        let cfg = FilterConfig::new(None, None, None, None, false);
+        let mut fr1 = FilteredReads::new(cfg.clone());
+        let mut fr2 = FilteredReads::new(cfg.clone());
+
+        let rp = rp("ACTG", "FFFF", None, None);
+        fr1.increment_count(&rp, FilterReason::EmptyRead);
+        fr2.increment_count(&rp, FilterReason::ShortRead);
+
+        let result = fr1.merge(fr2);
+        assert!(result.is_ok());
+        assert_eq!(fr1.total(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_merge_different_config() {
+        let cfg1 = FilterConfig::new(None, None, None, None, false);
+        let cfg2 = FilterConfig::new(Some(20.0), None, None, None, false);
+
+        let mut fr1 = FilteredReads::new(cfg1);
+        let fr2 = FilteredReads::new(cfg2);
+
+        let result = fr1.merge(fr2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_empty() {
+        let fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let vec = fr.to_vector(false);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_unsorted() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = rp("ACTG", "FFFF", None, None);
+        let rp2 = rp("GGGG", "FFFF", None, None);
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp2, FilterReason::ShortRead);
+
+        let vec = fr.to_vector(false);
+        assert_eq!(vec.len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_sorted() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = rp("ACTG", "FFFF", None, None);
+        let rp2 = rp("GGGG", "FFFF", None, None);
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp1, FilterReason::ShortRead);
+        fr.increment_count(&rp2, FilterReason::LongRead);
+
+        let vec = fr.to_vector(true);
+        assert_eq!(vec.len(), 2);
+        // First entry should be rp1 with total 2, second rp2 with total 1
+        assert_eq!(vec[0].2.total(), 2);
+        assert_eq!(vec[1].2.total(), 1);
+    }
+
+    #[test]
+    fn test_filter_config_equality() {
+        let cfg1 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        let cfg2 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        assert_eq!(cfg1, cfg2);
+    }
+
+    #[test]
+    fn test_filter_config_inequality() {
+        let cfg1 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        let cfg2 = FilterConfig::new(Some(30.0), None, Some(50), Some(300), true);
+        assert_ne!(cfg1, cfg2);
     }
 }

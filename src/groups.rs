@@ -25,7 +25,7 @@ mod enabled {
     /// Internally this uses a NonZeroU32 for Option niche optimisation and the
     /// first 2 bits are reserved for the sentinel values.
     #[repr(transparent)]
-    #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+    #[derive(Debug, Clone, Eq, PartialEq, Hash)]
     pub struct ReadGroup(NonZeroU32);
 
     impl ReadGroup {
@@ -52,7 +52,7 @@ mod enabled {
         pub fn grouped(s: &str) -> Self {
             // Send string to the interner, retrieving the ID and interning if necessary
             let group_id = group_id_from_str(s);
-            ReadGroup(group_id_to_raw(group_id))
+            ReadGroup(group_id_to_raw(&group_id))
         }
 
         /// Return `true` if this read belongs to the `ungrouped` sentinel class.
@@ -81,7 +81,7 @@ mod enabled {
     impl fmt::Display for ReadGroup {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             if self.is_match() {
-                write!(f, "{}", group_id_to_str(group_id_from_raw(self.0)))
+                write!(f, "{}", group_id_to_str(&group_id_from_raw(self.0)))
             } else if self.is_unmatched() {
                 write!(f, "_unmatched_")
             } else if self.is_ungrouped() {
@@ -182,6 +182,140 @@ mod tests {
         assert_eq!(g.to_string(), "poolA");
     }
 
+    #[test]
+    fn readgroup_grouped_multiple_names() {
+        let g1 = ReadGroup::grouped("pool_1");
+        let g2 = ReadGroup::grouped("pool_2");
+        let g3 = ReadGroup::grouped("pool_1");
+
+        assert_eq!(g1.to_string(), "pool_1");
+        assert_eq!(g2.to_string(), "pool_2");
+        assert_eq!(g1.to_string(), g3.to_string());
+    }
+
+    #[test]
+    fn readgroup_grouped_empty_string() {
+        let g = ReadGroup::grouped("");
+        assert!(g.is_match());
+        assert_eq!(g.to_string(), "");
+    }
+
+    #[test]
+    fn readgroup_grouped_special_chars() {
+        let g = ReadGroup::grouped("pool-A_123.xyz");
+        assert!(g.is_match());
+        assert_eq!(g.to_string(), "pool-A_123.xyz");
+    }
+
+    #[test]
+    fn readgroup_grouped_whitespace() {
+        let g = ReadGroup::grouped("pool A");
+        assert!(g.is_match());
+        assert_eq!(g.to_string(), "pool A");
+    }
+
+    #[test]
+    fn readgroup_ungrouped_predicates() {
+        let ug = ReadGroup::ungrouped();
+        assert!(ug.is_ungrouped());
+        assert!(!ug.is_unmatched());
+        assert!(!ug.is_match());
+    }
+
+    #[test]
+    fn readgroup_unmatched_predicates() {
+        let um = ReadGroup::unmatched();
+        assert!(!um.is_ungrouped());
+        assert!(um.is_unmatched());
+        assert!(!um.is_match());
+    }
+
+    #[test]
+    fn readgroup_grouped_predicates() {
+        let m = ReadGroup::grouped("test");
+        assert!(!m.is_ungrouped());
+        assert!(!m.is_unmatched());
+        assert!(m.is_match());
+    }
+
+    #[test]
+    fn readgroup_equality_ungrouped() {
+        let ug1 = ReadGroup::ungrouped();
+        let ug2 = ReadGroup::ungrouped();
+        assert_eq!(ug1, ug2);
+    }
+
+    #[test]
+    fn readgroup_equality_unmatched() {
+        let um1 = ReadGroup::unmatched();
+        let um2 = ReadGroup::unmatched();
+        assert_eq!(um1, um2);
+    }
+
+    #[test]
+    fn readgroup_equality_grouped_same() {
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = ReadGroup::grouped("pool_A");
+        assert_eq!(g1, g2);
+    }
+
+    #[test]
+    fn readgroup_equality_grouped_different() {
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = ReadGroup::grouped("pool_B");
+        assert_ne!(g1, g2);
+    }
+
+    #[test]
+    fn readgroup_inequality_sentinels() {
+        let ug = ReadGroup::ungrouped();
+        let um = ReadGroup::unmatched();
+        assert_ne!(ug, um);
+    }
+
+    #[test]
+    fn readgroup_inequality_sentinel_vs_grouped() {
+        let ug = ReadGroup::ungrouped();
+        let m = ReadGroup::grouped("ungrouped");
+        assert_ne!(ug, m);
+
+        let um = ReadGroup::unmatched();
+        let m2 = ReadGroup::grouped("unmatched");
+        assert_ne!(um, m2);
+    }
+
+    #[test]
+    fn readgroup_hash_consistency() {
+        use std::collections::HashSet;
+
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = ReadGroup::grouped("pool_A");
+
+        let mut set = HashSet::new();
+        set.insert(g1);
+        assert!(set.contains(&g2));
+    }
+
+    #[test]
+    fn readgroup_hash_different_values() {
+        use std::collections::HashSet;
+
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = ReadGroup::grouped("pool_B");
+
+        let mut set = HashSet::new();
+        set.insert(g1);
+        set.insert(g2);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn readgroup_clone_equality() {
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = g1.clone();
+        assert_eq!(g1, g2);
+    }
+
     #[cfg(feature = "interning")]
     #[test]
     fn niche_optimization_verified() {
@@ -193,23 +327,23 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "interning")]
+    #[cfg(not(feature = "interning"))]
     #[test]
-    fn readgroup_predicates() {
-        let ug = ReadGroup::ungrouped();
-        let um = ReadGroup::unmatched();
-        let m = ReadGroup::grouped("test");
+    fn readgroup_non_interning_backend_clone() {
+        let g1 = ReadGroup::grouped("pool_A");
+        let g2 = g1.clone();
+        assert_eq!(g1, g2);
+        match g1 {
+            ReadGroup::Match(ref s) => assert_eq!(s, "pool_A"),
+            _ => panic!("Expected Match variant"),
+        }
+    }
 
-        assert!(ug.is_ungrouped());
-        assert!(!ug.is_unmatched());
-        assert!(!ug.is_match());
-
-        assert!(!um.is_ungrouped());
-        assert!(um.is_unmatched());
-        assert!(!um.is_match());
-
-        assert!(!m.is_ungrouped());
-        assert!(!m.is_unmatched());
-        assert!(m.is_match());
+    #[cfg(not(feature = "interning"))]
+    #[test]
+    fn readgroup_non_interning_backend_size() {
+        // Non-interning backend uses String, so will be larger
+        let _g = ReadGroup::grouped("pool_A");
+        assert!(std::mem::size_of::<ReadGroup>() > 4);
     }
 }

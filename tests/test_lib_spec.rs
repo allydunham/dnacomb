@@ -4,9 +4,16 @@ use dnacomb::lib_spec;
 
 #[test]
 fn load_lib_spec() {
-    let path = "config/grna_sensor.json";
+    let paths = vec![
+        "config/grna_no_id.json",
+        "config/grna_sensor.json",
+        "config/grna.json",
+        "config/pegrna.json",
+    ];
 
-    let ls = lib_spec::LibrarySpec::from_file(path, None, None, None, None);
+    for path in paths {
+        let ls = lib_spec::LibrarySpec::from_file(path, None, None, None, None);
 
-    assert!(!ls.is_err(), "Error: {:?}", ls);
+        assert!(!ls.is_err(), "Error in {path}: {:?}", ls);
+    }
 }

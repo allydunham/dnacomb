@@ -63,7 +63,7 @@ mod enabled {
     /// The returned value is cheap to clone and may share storage with other
     /// equal handles.
     #[inline]
-    pub fn seq_to_bytes(h: SeqHandle) -> Arc<[u8]> {
+    pub fn seq_to_bytes(h: &SeqHandle) -> Arc<[u8]> {
         SEQ_INTERNER.resolve(h)
     }
 
@@ -95,7 +95,7 @@ mod enabled {
     /// `SeqHandle` itself. In non-interning mode it is a thin wrapper around an owned
     /// Vec<u8>
     #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SeqHandle(NonZeroU32);
 
     impl SeqHandle {
@@ -104,7 +104,7 @@ mod enabled {
         /// This is mainly useful for diagnostics and internal plumbing rather
         /// than normal library use.
         #[inline]
-        pub fn get(self) -> u32 {
+        pub fn get(&self) -> u32 {
             self.0.get()
         }
 
@@ -120,19 +120,19 @@ mod enabled {
         }
 
         #[inline]
-        fn index0(self) -> usize {
+        fn index0(&self) -> usize {
             (self.0.get() - 1) as usize
         }
 
         /// Length of the referenced sequence in bases/bytes.
         #[inline]
-        pub fn len(self) -> usize {
+        pub fn len(&self) -> usize {
             seq_to_bytes(self).len()
         }
 
         /// Return `true` if the referenced sequence is empty.
         #[inline]
-        pub fn is_empty(self) -> bool {
+        pub fn is_empty(&self) -> bool {
             seq_to_bytes(self).is_empty()
         }
 
@@ -141,7 +141,7 @@ mod enabled {
         /// This is intended for diagnostics and table writing; non-UTF-8 content
         /// yields an empty string after logging a warning.
         #[inline]
-        pub fn to_str_or_log(self) -> String {
+        pub fn to_str_or_log(&self) -> String {
             seq_to_string_or_log(&seq_to_bytes(self).to_vec())
         }
     }
@@ -268,7 +268,7 @@ mod enabled {
 
         /// Resolve a handle back to its canonical shared byte sequence.
         #[inline]
-        pub fn resolve(&self, id: SeqHandle) -> Arc<[u8]> {
+        pub fn resolve(&self, id: &SeqHandle) -> Arc<[u8]> {
             self.reverse.read()[id.index0()].clone()
         }
 
@@ -316,7 +316,7 @@ mod enabled {
 
     /// Interned identifier for a read-group label string.
     #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct GroupID(GroupKey);
 
     /// Get a GroupID for a read group string, interning it if it's new
@@ -327,7 +327,7 @@ mod enabled {
 
     /// Resolve GroupID to owned string (Arc<str>)
     #[inline]
-    pub fn group_id_to_str(id: GroupID) -> Arc<str> {
+    pub fn group_id_to_str(id: &GroupID) -> Arc<str> {
         Arc::<str>::from(GROUP_IDS.resolve(&id.0))
     }
 
@@ -339,7 +339,7 @@ mod enabled {
 
     /// Resolve GroupID to raw int
     #[inline]
-    pub fn group_id_to_raw(id: GroupID) -> NonZeroU32 {
+    pub fn group_id_to_raw(id: &GroupID) -> NonZeroU32 {
         id.0.0
     }
 
@@ -349,10 +349,10 @@ mod enabled {
 
     /// Global interned Library ID
     #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct LibraryID(Spur);
 
-    /// Get a LibraryID for a Group ID, interning it if it's new
+    /// Get a LibraryID for a string name, interning it if it's new
     #[inline]
     pub fn library_id_from_str(s: &str) -> LibraryID {
         LibraryID(LIB_IDS.get_or_intern(s))
@@ -360,7 +360,7 @@ mod enabled {
 
     /// Resolve Library ID to owned string (Arc<str>)
     #[inline]
-    pub fn library_id_to_str(id: LibraryID) -> Arc<str> {
+    pub fn library_id_to_str(id: &LibraryID) -> Arc<str> {
         Arc::<str>::from(LIB_IDS.resolve(&id.0))
     }
 
@@ -370,7 +370,7 @@ mod enabled {
 
     /// Global interned region ID
     #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
     pub struct RegionID(Spur);
 
     /// Get a RegionHandle for a region ID, interning it if it's new
@@ -381,13 +381,15 @@ mod enabled {
 
     /// Resolve region handle to owned string (Arc<str>).
     #[inline]
-    pub fn region_id_to_str(id: RegionID) -> Arc<str> {
+    pub fn region_id_to_str(id: &RegionID) -> Arc<str> {
         Arc::<str>::from(REGIONS.resolve(&id.0))
     }
 }
 
 #[cfg(not(feature = "interning"))]
 mod disabled {
+    use crate::errors::seq_to_string_or_log;
+
     use super::Arc;
 
     /// Shared owned sequence handle used when interning is disabled.
@@ -395,8 +397,38 @@ mod disabled {
     /// Unlike the interned backend, identical sequences are not guaranteed to
     /// share a global canonical ID, but equality and hashing still behave by
     /// sequence content so the public API remains semantically compatible.
-    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Eq, PartialEq, Hash, Debug)]
     pub struct SeqHandle(pub Arc<[u8]>);
+
+    impl SeqHandle {
+        /// Length of the referenced sequence in bases/bytes.
+        #[inline]
+        pub fn len(&self) -> usize {
+            seq_to_bytes(self).len()
+        }
+
+        /// Return `true` if the referenced sequence is empty.
+        #[inline]
+        pub fn is_empty(&self) -> bool {
+            seq_to_bytes(self).is_empty()
+        }
+
+        /// Convert the sequence to a UTF-8 string for output, logging failures.
+        ///
+        /// This is intended for diagnostics and table writing; non-UTF-8 content
+        /// yields an empty string after logging a warning.
+        #[inline]
+        pub fn to_str_or_log(&self) -> String {
+            seq_to_string_or_log(&seq_to_bytes(self).to_vec())
+        }
+    }
+
+    impl Clone for SeqHandle {
+        #[inline(always)]
+        fn clone(&self) -> Self {
+            SeqHandle(Arc::clone(&self.0))
+        }
+    }
 
     /// Return a handle for the given sequence bytes.
     ///
@@ -413,17 +445,40 @@ mod disabled {
     /// The returned value is cheap to clone and may share storage with other
     /// equal handles.
     #[inline]
-    pub fn seq_to_bytes(h: SeqHandle) -> Arc<[u8]> {
-        h.0
+    pub fn seq_to_bytes(h: &SeqHandle) -> Arc<[u8]> {
+        h.0.clone()
     }
 
     /// Non-interning reservation NoOp as no underlying interner)
     pub fn reserve_seq_interner(_estimated_unique: usize) {}
 
+    /// Return the number of sequence entries currently stored in the reverse map.
+    ///
+    /// In the non-interning backend this is always 0
+    #[inline]
+    pub fn num_interned_reverse() -> usize {
+        0
+    }
+
+    /// Return the number of distinct canonical sequences currently stored in the forward map.
+    ///
+    /// In the non-interning backend this is always 0
+    #[inline]
+    pub fn num_interned_forward() -> usize {
+        0
+    }
+
     // Group IDs (Str)
     /// Shared owned group identifier used when interning is disabled.
-    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Eq, PartialEq, Hash, Debug)]
     pub struct GroupID(pub Arc<str>);
+
+    impl Clone for GroupID {
+        #[inline(always)]
+        fn clone(&self) -> Self {
+            GroupID(Arc::clone(&self.0))
+        }
+    }
 
     /// Get a GroupHandle for a Group ID (non-interning)
     #[inline]
@@ -433,14 +488,21 @@ mod disabled {
 
     /// Resolve non-interning group handle to owned string
     #[inline]
-    pub fn group_id_to_str(h: GroupID) -> Arc<str> {
-        h.0
+    pub fn group_id_to_str(h: &GroupID) -> Arc<str> {
+        h.0.clone()
     }
 
     // Library IDs (Str)
     /// Shared owned library identifier used when interning is disabled.
-    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Eq, PartialEq, Hash, Debug)]
     pub struct LibraryID(pub Arc<str>);
+
+    impl Clone for LibraryID {
+        #[inline(always)]
+        fn clone(&self) -> Self {
+            LibraryID(Arc::clone(&self.0))
+        }
+    }
 
     /// Get a GroupHandle for a Group ID (non-interning)
     #[inline]
@@ -450,14 +512,21 @@ mod disabled {
 
     /// Resolve non-interning group handle to owned string
     #[inline]
-    pub fn library_id_to_str(h: LibraryID) -> Arc<str> {
-        h.0
+    pub fn library_id_to_str(h: &LibraryID) -> Arc<str> {
+        h.0.clone()
     }
 
     // Region IDs (Str)
     /// Shared owned region identifier used when interning is disabled.
-    #[derive(Clone, Eq, PartialEq, Hash, Debug)]
+    #[derive(Eq, PartialEq, Hash, Debug)]
     pub struct RegionID(pub Arc<str>);
+
+    impl Clone for RegionID {
+        #[inline(always)]
+        fn clone(&self) -> Self {
+            RegionID(Arc::clone(&self.0))
+        }
+    }
 
     /// Get a RegionHandle for a region ID (non-interning)
     #[inline]
@@ -467,8 +536,8 @@ mod disabled {
 
     /// Resolve non-interning region handles to owned string (Arc<str>)
     #[inline]
-    pub fn region_id_to_str(h: RegionID) -> Arc<str> {
-        h.0
+    pub fn region_id_to_str(h: &RegionID) -> Arc<str> {
+        h.0.clone()
     }
 }
 
@@ -483,7 +552,6 @@ pub use disabled::*;
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     // Common tests for interning and non-interning backends
 
@@ -491,7 +559,7 @@ mod tests {
     #[test]
     fn seq_round_trip_bytes() {
         let h = seq_from_bytes(b"ACGTN");
-        let out = seq_to_bytes(h);
+        let out = seq_to_bytes(&h);
         assert_eq!(&*out, b"ACGTN");
     }
 
@@ -499,7 +567,7 @@ mod tests {
     #[test]
     fn group_round_trip_str() {
         let g = group_id_from_str("groupA");
-        let s = group_id_to_str(g);
+        let s = group_id_to_str(&g);
         assert_eq!(&*s, "groupA");
     }
 
@@ -507,7 +575,7 @@ mod tests {
     #[test]
     fn library_round_trip_str() {
         let l = library_id_from_str("seqA");
-        let s = library_id_to_str(l);
+        let s = library_id_to_str(&l);
         assert_eq!(&*s, "seqA");
     }
 
@@ -515,7 +583,7 @@ mod tests {
     #[test]
     fn region_round_trip_str() {
         let r = region_id_from_str("Reg1");
-        let s = region_id_to_str(r);
+        let s = region_id_to_str(&r);
         assert_eq!(&*s, "Reg1");
     }
 
@@ -529,6 +597,164 @@ mod tests {
         m.insert(b.clone(), 2);
         assert_eq!(m.get(&a), Some(&1));
         assert_eq!(m.get(&b), Some(&2));
+    }
+
+    #[test]
+    fn seq_round_trip_empty() {
+        let h = seq_from_bytes(b"");
+        let out = seq_to_bytes(&h);
+        assert_eq!(&*out, b"");
+    }
+
+    #[test]
+    fn seq_len_method() {
+        let h = seq_from_bytes(b"ACGTACGT");
+        assert_eq!(h.len(), 8);
+        let h_empty = seq_from_bytes(b"");
+        assert_eq!(h_empty.len(), 0);
+    }
+
+    #[test]
+    fn seq_is_empty_method() {
+        let h = seq_from_bytes(b"A");
+        assert!(!h.is_empty());
+        let h_empty = seq_from_bytes(b"");
+        assert!(h_empty.is_empty());
+    }
+
+    #[test]
+    fn seq_to_str_or_log_valid_utf8() {
+        let h = seq_from_bytes(b"ACGT");
+        let s = h.to_str_or_log();
+        assert_eq!(s, "ACGT");
+    }
+
+    #[test]
+    fn seq_to_str_or_log_empty() {
+        let h = seq_from_bytes(b"");
+        let s = h.to_str_or_log();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn group_round_trip_empty_string() {
+        let g = group_id_from_str("");
+        let s = group_id_to_str(&g);
+        assert_eq!(&*s, "");
+    }
+
+    #[test]
+    fn group_round_trip_special_chars() {
+        let g = group_id_from_str("pool-A_123.xyz");
+        let s = group_id_to_str(&g);
+        assert_eq!(&*s, "pool-A_123.xyz");
+    }
+
+    #[test]
+    fn library_round_trip_empty_string() {
+        let l = library_id_from_str("");
+        let s = library_id_to_str(&l);
+        assert_eq!(&*s, "");
+    }
+
+    #[test]
+    fn library_round_trip_special_chars() {
+        let l = library_id_from_str("seq-001_variant.v2");
+        let s = library_id_to_str(&l);
+        assert_eq!(&*s, "seq-001_variant.v2");
+    }
+
+    #[test]
+    fn region_round_trip_empty_string() {
+        let r = region_id_from_str("");
+        let s = region_id_to_str(&r);
+        assert_eq!(&*s, "");
+    }
+
+    #[test]
+    fn region_round_trip_special_chars() {
+        let r = region_id_from_str("Region_A-1.upstream");
+        let s = region_id_to_str(&r);
+        assert_eq!(&*s, "Region_A-1.upstream");
+    }
+
+    #[test]
+    fn seq_handles_clone() {
+        let h1 = seq_from_bytes(b"ACGT");
+        let h2 = h1.clone();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn group_handles_clone() {
+        let g1 = group_id_from_str("group1");
+        let g2 = g1.clone();
+        assert_eq!(g1, g2);
+    }
+
+    #[test]
+    fn library_handles_copy_and_clone() {
+        let l1 = library_id_from_str("lib1");
+        let l2 = l1.clone();
+        assert_eq!(l1, l2);
+    }
+
+    #[test]
+    fn region_handles_copy_and_clone() {
+        let r1 = region_id_from_str("region1");
+        let r2 = r1.clone();
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn seq_handles_in_hashmap() {
+        let h1 = seq_from_bytes(b"ACGT");
+        let h2 = seq_from_bytes(b"GGGG");
+        let h3 = seq_from_bytes(b"ACGT");
+        let mut m: HashMap<SeqHandle, u32> = HashMap::new();
+        m.insert(h1, 1);
+        m.insert(h2, 2);
+        assert_eq!(m.get(&h3), Some(&1));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn group_handles_in_hashmap() {
+        let g1 = group_id_from_str("a");
+        let g2 = group_id_from_str("b");
+        let g3 = group_id_from_str("a");
+        let mut m: HashMap<GroupID, u32> = HashMap::new();
+        m.insert(g1, 1);
+        m.insert(g2, 2);
+        assert_eq!(m.get(&g3), Some(&1));
+    }
+
+    #[test]
+    fn library_handles_in_hashmap() {
+        let l1 = library_id_from_str("x");
+        let l2 = library_id_from_str("y");
+        let l3 = library_id_from_str("x");
+        let mut m: HashMap<LibraryID, u32> = HashMap::new();
+        m.insert(l1, 1);
+        m.insert(l2, 2);
+        assert_eq!(m.get(&l3), Some(&1));
+    }
+
+    #[test]
+    fn region_handles_in_hashmap() {
+        let r1 = region_id_from_str("alpha");
+        let r2 = region_id_from_str("beta");
+        let r3 = region_id_from_str("alpha");
+        let mut m: HashMap<RegionID, u32> = HashMap::new();
+        m.insert(r1, 1);
+        m.insert(r2, 2);
+        assert_eq!(m.get(&r3), Some(&1));
+    }
+
+    #[test]
+    fn reserve_seq_interner_smoke_test() {
+        // Should not panic regardless of feature
+        reserve_seq_interner(1000);
     }
 
     // Test Interning module
@@ -549,8 +775,8 @@ mod tests {
             );
 
             // Optional stronger check: resolve pointers are identical (same Arc allocation)
-            let p1 = Arc::as_ptr(&seq_to_bytes(a1));
-            let p2 = Arc::as_ptr(&seq_to_bytes(a2));
+            let p1 = Arc::as_ptr(&seq_to_bytes(&a1));
+            let p2 = Arc::as_ptr(&seq_to_bytes(&a2));
             assert_eq!(
                 p1, p2,
                 "interning enabled: resolved Arc should be same allocation"
@@ -715,8 +941,102 @@ mod tests {
                     scope.spawn(|| {
                         for _ in 0..n_iters {
                             let h = seq_from_bytes(b"GATTACA");
-                            let seq = seq_to_bytes(h);
+                            let seq = seq_to_bytes(&h);
                             assert_eq!(seq.as_ref(), b"GATTACA");
+                        }
+                    });
+                }
+            });
+        }
+
+        #[test]
+        fn seq_get_raw_value() {
+            let h = seq_from_bytes(b"ACGT");
+            let raw = h.get();
+            assert!(raw > 0, "SeqHandle should have non-zero raw value");
+        }
+
+        #[test]
+        fn seq_handles_large_sequence() {
+            let large_seq = vec![b'A'; 100_000];
+            let h = seq_from_bytes(&large_seq);
+            assert_eq!(h.len(), 100_000);
+            let resolved = seq_to_bytes(&h);
+            assert_eq!(resolved.len(), 100_000);
+        }
+
+        #[test]
+        fn seq_handles_various_bytes() {
+            // Not just valid DNA bases
+            let h = seq_from_bytes(&[0, 255, 127, 128, 1, 2]);
+            let resolved = seq_to_bytes(&h);
+            assert_eq!(resolved.as_ref(), &[0, 255, 127, 128, 1, 2]);
+        }
+
+        #[test]
+        fn multiple_different_sequences() {
+            let h1 = seq_from_bytes(b"AAA");
+            let h2 = seq_from_bytes(b"AAB");
+            let h3 = seq_from_bytes(b"ABB");
+            let h4 = seq_from_bytes(b"BBB");
+
+            assert_ne!(h1, h2);
+            assert_ne!(h2, h3);
+            assert_ne!(h3, h4);
+            assert_ne!(h1, h4);
+        }
+
+        #[test]
+        fn group_concurrent_different_strings() {
+            let n_threads = 10;
+            let n_groups = 100;
+
+            std::thread::scope(|scope| {
+                for t in 0..n_threads {
+                    scope.spawn(move || {
+                        for i in 0..n_groups {
+                            let name = format!("group_{}_{}", t, i);
+                            let id = group_id_from_str(&name);
+                            let resolved = group_id_to_str(&id);
+                            assert_eq!(&*resolved, &name);
+                        }
+                    });
+                }
+            });
+        }
+
+        #[test]
+        fn region_concurrent_different_strings() {
+            let n_threads = 10;
+            let n_regions = 100;
+
+            std::thread::scope(|scope| {
+                for t in 0..n_threads {
+                    scope.spawn(move || {
+                        for i in 0..n_regions {
+                            let name = format!("region_{}_{}", t, i);
+                            let id = region_id_from_str(&name);
+                            let resolved = region_id_to_str(&id);
+                            assert_eq!(&*resolved, &name);
+                        }
+                    });
+                }
+            });
+        }
+
+        #[test]
+        fn library_concurrent_different_strings() {
+            let n_threads = 10;
+            let n_libs = 100;
+
+            std::thread::scope(|scope| {
+                for t in 0..n_threads {
+                    scope.spawn(move || {
+                        for i in 0..n_libs {
+                            let name = format!("lib_{}_{}", t, i);
+                            let id = library_id_from_str(&name);
+                            let resolved = library_id_to_str(&id);
+                            assert_eq!(&*resolved, &name);
                         }
                     });
                 }
@@ -750,9 +1070,45 @@ mod tests {
             let r = region_id_from_str("regionX");
             let l = library_id_from_str("seqX");
 
-            assert_eq!(&*group_id_to_str(g), "hello");
-            assert_eq!(&*region_id_to_str(r), "regionX");
-            assert_eq!(&*library_id_to_str(l), "seqX");
+            assert_eq!(&*group_id_to_str(&g), "hello");
+            assert_eq!(&*region_id_to_str(&r), "regionX");
+            assert_eq!(&*library_id_to_str(&l), "seqX");
+        }
+
+        #[test]
+        fn seq_arc_equality_by_content() {
+            let a1 = seq_from_bytes(b"ACGT");
+            let a2 = seq_from_bytes(b"ACGT");
+            let a3 = seq_from_bytes(b"GGGG");
+            assert_eq!(a1, a2);
+            assert_ne!(a1, a3);
+        }
+
+        #[test]
+        fn group_arc_equality_by_content() {
+            let g1 = group_id_from_str("test");
+            let g2 = group_id_from_str("test");
+            let g3 = group_id_from_str("other");
+            assert_eq!(g1, g2);
+            assert_ne!(g1, g3);
+        }
+
+        #[test]
+        fn library_arc_equality_by_content() {
+            let l1 = library_id_from_str("test");
+            let l2 = library_id_from_str("test");
+            let l3 = library_id_from_str("other");
+            assert_eq!(l1, l2);
+            assert_ne!(l1, l3);
+        }
+
+        #[test]
+        fn region_arc_equality_by_content() {
+            let r1 = region_id_from_str("test");
+            let r2 = region_id_from_str("test");
+            let r3 = region_id_from_str("other");
+            assert_eq!(r1, r2);
+            assert_ne!(r1, r3);
         }
     }
 }

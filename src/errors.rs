@@ -83,7 +83,7 @@ impl fmt::Display for ReadCountError {
                 write!(
                     f,
                     "Added combination contains an unexpected region: {}",
-                    region_id_to_str(*region)
+                    region_id_to_str(region)
                 )
             }
             ReadCountError::BadAlignment { alignment } => {
@@ -169,7 +169,7 @@ impl fmt::Display for LibSpecError {
                 write!(
                     f,
                     "Region {}: min_length ({}) cannot be greater than max_length ({})",
-                    region_id_to_str(*id),
+                    region_id_to_str(id),
                     min,
                     max
                 )
@@ -178,14 +178,14 @@ impl fmt::Display for LibSpecError {
                 write!(
                     f,
                     "Duplciated region id {} in LibSpec",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibSpecError::MissingRegion { id } => {
                 write!(
                     f,
                     "{} not found in LibSpec Region list",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibSpecError::LibSpec { desc } => write!(f, "{}", desc),
@@ -193,7 +193,7 @@ impl fmt::Display for LibSpecError {
                 write!(
                     f,
                     "Variable region {} follows another variable region",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibSpecError::IOError(e) => write!(f, "Error reading LibSpec JSON file: {}", e),
@@ -249,21 +249,21 @@ impl fmt::Display for LibraryError {
                 write!(
                     f,
                     "Region id {} is found in multiple Libraries",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibraryError::DuplicateRegion { id } => {
                 write!(
                     f,
                     "Duplicated region id {} in Library",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibraryError::MissingRegion { id } => {
                 write!(
                     f,
                     "{} not found in Library Region list",
-                    region_id_to_str(*id)
+                    region_id_to_str(id)
                 )
             }
             LibraryError::Library { desc } => write!(f, "{}", desc),
@@ -396,5 +396,19 @@ mod tests {
         let seq: Sequence = vec![b'A', b'C', b'G', 0xC0]; // Invalid UTF-8 byte
         let string: String = "".to_string();
         assert_eq!(seq_to_string_or_log(&seq), string)
+    }
+
+    #[test]
+    fn test_libspec_error_invalid_multiple_display() {
+        let errs = vec![
+            "Error 1".to_string(),
+            "Error 2".to_string(),
+            "Error 3".to_string(),
+        ];
+        let err = LibSpecError::InvalidLibSpec { errs };
+        let msg = format!("{}", err);
+        assert!(msg.contains("Error 1"));
+        assert!(msg.contains("Error 2"));
+        assert!(msg.contains("Error 3"));
     }
 }

@@ -50,8 +50,8 @@ impl Library {
             let new_regions = lib.regions();
 
             for r in new_regions {
-                if regions.insert(*r, i).is_some() {
-                    return Err(LibraryError::DuplicateSubLibraryRegion { id: *r });
+                if regions.insert(r.clone(), i).is_some() {
+                    return Err(LibraryError::DuplicateSubLibraryRegion { id: r.clone() });
                 }
             }
         }
@@ -72,7 +72,7 @@ impl Library {
     pub fn get_sublibrary_index(&self, region: &RegionID) -> Result<usize, LibraryError> {
         match self.regions.get(region) {
             Some(x) => Ok(*x),
-            None => Err(LibraryError::MissingRegion { id: *region }),
+            None => Err(LibraryError::MissingRegion { id: region.clone() }),
         }
     }
 
@@ -89,7 +89,7 @@ impl Library {
     pub fn lookup(
         &self,
         region: &RegionID,
-        seq: SeqHandle,
+        seq: &SeqHandle,
         metric: DistanceMetric,
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
@@ -164,7 +164,7 @@ struct LibrarySequence {
 impl LibrarySequence {
     fn from_region(region: Arc<LibraryRegion>) -> Self {
         Self {
-            sequence: seq_to_bytes(region.sequence).to_vec(),
+            sequence: seq_to_bytes(&region.sequence).to_vec(),
             region,
         }
     }
@@ -327,18 +327,18 @@ impl SubLibrary {
 
             if regions
                 .insert(
-                    *key,
+                    key.clone(),
                     Vec::from_iter(reg_map.into_iter().map(|x| {
                         LibrarySequence::from_region(Arc::new(LibraryRegion {
                             sequence: x.0,
-                            ids: x.1.iter().map(|x| lib_ids[*x]).collect(),
+                            ids: x.1.iter().map(|x| lib_ids[*x].clone()).collect(),
                             inds: x.1,
                         }))
                     })),
                 )
                 .is_some()
             {
-                return Err(LibraryError::DuplicateRegion { id: *key });
+                return Err(LibraryError::DuplicateRegion { id: key.clone() });
             }
         }
 
@@ -346,7 +346,7 @@ impl SubLibrary {
         let mut exact_matches: HashMap<RegionID, HashMap<SeqHandle, Arc<LibraryRegion>>> =
             HashMap::new();
         for key in regions.keys() {
-            exact_matches.insert(*key, HashMap::new());
+            exact_matches.insert(key.clone(), HashMap::new());
             for reg in regions
                 .get(key)
                 .expect("Key known to be in regions HashMap")
@@ -354,7 +354,7 @@ impl SubLibrary {
                 exact_matches
                     .get_mut(key)
                     .expect("Key just added to exact_matchs")
-                    .insert(reg.region.sequence, reg.region.clone());
+                    .insert(reg.region.sequence.clone(), reg.region.clone());
             }
         }
 
@@ -443,13 +443,13 @@ impl SubLibrary {
     pub fn lookup(
         &self,
         region: &RegionID,
-        seq: SeqHandle,
+        seq: &SeqHandle,
         metric: DistanceMetric,
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
         // Try exact matching first - short circuit if we find the region
         if let Some(exact) = self.exact_matches.get(region) {
-            if let Some(hit) = exact.get(&seq) {
+            if let Some(hit) = exact.get(seq) {
                 return Ok(Some(LibraryMatch {
                     matches: vec![hit.clone()],
                     distance: 0,
@@ -461,7 +461,7 @@ impl SubLibrary {
         let regions: &Vec<LibrarySequence> = match self.regions.get(region) {
             Some(x) => x,
             None => {
-                return Err(LibraryError::MissingRegion { id: *region });
+                return Err(LibraryError::MissingRegion { id: region.clone() });
             }
         };
 
@@ -1046,5 +1046,850 @@ pub enum PartialMatching {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+
+    use crate::interning::{library_id_to_str, region_id_to_str};
+    use crate::lib_spec::LibrarySpec;
+
+    use std::collections::{HashMap, HashSet};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn seq(s: &[u8]) -> SeqHandle {
+        seq_from_bytes(s)
+    }
+
+    fn hit_seqs(hit: &LibraryMatch) -> HashSet<String> {
+        hit.matches
+            .iter()
+            .map(|x| x.sequence.to_str_or_log())
+            .collect()
+    }
+
+    /// Main synthetic sublibrary used for table-driven lookup tests.
+    ///
+    /// r1 rows:
+    /// seq1 = AAAA
+    /// seq2 = AAAT
+    /// seq3 = TTAA
+    /// seq4 = GGAA
+    /// seq5 = CCCC
+    ///
+    /// r2 is included just to keep the sublibrary realistic but lookup tests
+    /// below focus on r1.
+    fn make_lookup_sublib(default_max_distance: u64) -> SubLibrary {
+        let mut map: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        map.insert(
+            region_id_from_str("r1"),
+            vec![
+                b"AAAA".to_vec(),
+                b"AAAT".to_vec(),
+                b"TTAA".to_vec(),
+                b"GGAA".to_vec(),
+                b"CCCC".to_vec(),
+            ],
+        );
+        map.insert(
+            region_id_from_str("r2"),
+            vec![
+                b"CCCC".to_vec(),
+                b"CCCC".to_vec(),
+                b"GGGG".to_vec(),
+                b"TTTT".to_vec(),
+                b"AAAA".to_vec(),
+            ],
+        );
+
+        let ids = Some(vec![
+            "seq1".to_string(),
+            "seq2".to_string(),
+            "seq3".to_string(),
+            "seq4".to_string(),
+            "seq5".to_string(),
+        ]);
+
+        SubLibrary::new(map, ids, HashMap::new(), default_max_distance, None).unwrap()
+    }
+
+    fn simple_libspec_json() -> String {
+        r#"
+{
+  "id": "test",
+  "forward_start_region": "fixed_left",
+  "forward_read_length": 100,
+  "reverse_start_region": "fixed_right",
+  "reverse_read_length": 100,
+  "regions": [
+    { "id": "fixed_left", "seq_type": "Fixed", "seq": "AAAA" },
+    { "id": "r1", "seq_type": "Library", "min_length": 4, "max_length": 4, "max_distance": 1 },
+    { "id": "fixed_mid", "seq_type": "Fixed", "seq": "CCCC" },
+    { "id": "r2", "seq_type": "Library", "min_length": 4, "max_length": 4 },
+    { "id": "fixed_right", "seq_type": "Fixed", "seq": "GGGG" }
+  ]
+}
+        "#
+        .trim()
+        .to_string()
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "dnacomb_test_{}_{}_{}",
+            std::process::id(),
+            n,
+            name
+        ))
+    }
+
+    fn write_temp_file(name: &str, content: &str) -> PathBuf {
+        let path = temp_path(name);
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[derive(Debug)]
+    struct LookupCase {
+        name: &'static str,
+        metric: DistanceMetric,
+        partial: PartialMatching,
+        query: &'static [u8],
+        max_dist: u64,
+        expected: LookupExpected,
+    }
+
+    #[derive(Debug)]
+    enum LookupExpected {
+        None,
+        Hit {
+            distance: u64,
+            seqs: &'static [&'static str],
+        },
+    }
+
+    #[test]
+    fn lookup_case_table() {
+        let cases = vec![
+            // ----- Exact full -----
+            LookupCase {
+                name: "exact full unique hit",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::Full,
+                query: b"AAAA",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA"],
+                },
+            },
+            LookupCase {
+                name: "exact full miss",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::Full,
+                query: b"AAAG",
+                max_dist: 2,
+                expected: LookupExpected::None,
+            },
+            // ----- Exact five-prime -----
+            LookupCase {
+                name: "exact five-prime multimatch on prefix AA",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AA",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "exact five-prime unique hit on prefix CC",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"CC",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["CCCC"],
+                },
+            },
+            LookupCase {
+                name: "exact five-prime miss",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AT",
+                max_dist: 2,
+                expected: LookupExpected::None,
+            },
+            // ----- Exact three-prime -----
+            LookupCase {
+                name: "exact three-prime multimatch on suffix AA",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AA",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "TTAA", "GGAA"],
+                },
+            },
+            LookupCase {
+                name: "exact three-prime unique hit on suffix AT",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AT",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAT"],
+                },
+            },
+            LookupCase {
+                name: "exact three-prime miss",
+                metric: DistanceMetric::Exact,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"CG",
+                max_dist: 2,
+                expected: LookupExpected::None,
+            },
+            // ----- Hamming full -----
+            LookupCase {
+                name: "hamming full unique best hit",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::Full,
+                query: b"AAAG",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 1,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "hamming full unique exact hit",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::Full,
+                query: b"CCCC",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["CCCC"],
+                },
+            },
+            LookupCase {
+                name: "hamming full no hit beyond threshold",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::Full,
+                query: b"GGGG",
+                max_dist: 1,
+                expected: LookupExpected::None,
+            },
+            // ----- Hamming five-prime -----
+            LookupCase {
+                name: "hamming five-prime prefix exact multimatch",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "hamming five-prime one-mismatch prefix hit",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AG",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 1,
+                    seqs: &["AAAA", "GGAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "hamming five-prime query longer than region gives none",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AAAAA",
+                max_dist: 1,
+                expected: LookupExpected::None,
+            },
+            // ----- Hamming three-prime -----
+            LookupCase {
+                name: "hamming three-prime suffix exact multimatch",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "TTAA", "GGAA"],
+                },
+            },
+            LookupCase {
+                name: "hamming three-prime one-mismatch suffix hit",
+                metric: DistanceMetric::Hamming,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"GA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 1,
+                    seqs: &["AAAA", "TTAA", "GGAA"],
+                },
+            },
+            // ----- Levenshtein full -----
+            LookupCase {
+                name: "levenshtein full deletion from AAAA to AAA",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::Full,
+                query: b"AAA",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 1,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "levenshtein full exact hit",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::Full,
+                query: b"AAAT",
+                max_dist: 2,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAT"],
+                },
+            },
+            LookupCase {
+                name: "levenshtein full no hit beyond threshold",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::Full,
+                query: b"GGGGGG",
+                max_dist: 1,
+                expected: LookupExpected::None,
+            },
+            // ----- Levenshtein five-prime -----
+            LookupCase {
+                name: "levenshtein five-prime exact short prefix",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "levenshtein five-prime insertion relative to prefix",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AAA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            // ----- Levenshtein three-prime -----
+            LookupCase {
+                name: "levenshtein three-prime exact short suffix",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "TTAA", "GGAA"],
+                },
+            },
+            LookupCase {
+                name: "levenshtein three-prime exact suffix AT",
+                metric: DistanceMetric::Levenshtein,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AT",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAT"],
+                },
+            },
+            // ----- Bounded Levenshtein full -----
+            LookupCase {
+                name: "bounded levenshtein full exact hit",
+                metric: DistanceMetric::BoundedLevenshtein,
+                partial: PartialMatching::Full,
+                query: b"CCCC",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["CCCC"],
+                },
+            },
+            LookupCase {
+                name: "bounded levenshtein full one-edit hit",
+                metric: DistanceMetric::BoundedLevenshtein,
+                partial: PartialMatching::Full,
+                query: b"AAA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 1,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            LookupCase {
+                name: "bounded levenshtein full none beyond threshold",
+                metric: DistanceMetric::BoundedLevenshtein,
+                partial: PartialMatching::Full,
+                query: b"GGGGGG",
+                max_dist: 1,
+                expected: LookupExpected::None,
+            },
+            // ----- Bounded Levenshtein five-prime -----
+            LookupCase {
+                name: "bounded levenshtein five-prime exact prefix",
+                metric: DistanceMetric::BoundedLevenshtein,
+                partial: PartialMatching::FivePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+            // ----- Bounded Levenshtein three-prime -----
+            LookupCase {
+                name: "bounded levenshtein three-prime exact suffix",
+                metric: DistanceMetric::BoundedLevenshtein,
+                partial: PartialMatching::ThreePrimeOnly,
+                query: b"AA",
+                max_dist: 1,
+                expected: LookupExpected::Hit {
+                    distance: 0,
+                    seqs: &["AAAA", "TTAA", "GGAA"],
+                },
+            },
+        ];
+
+        for case in cases {
+            let sub = make_lookup_sublib(case.max_dist);
+
+            let got = sub
+                .lookup(
+                    &region_id_from_str("r1"),
+                    &seq(case.query),
+                    case.metric,
+                    case.partial,
+                )
+                .unwrap();
+
+            match (case.expected, got) {
+                (LookupExpected::None, None) => {}
+                (LookupExpected::Hit { distance, seqs }, Some(hit)) => {
+                    assert_eq!(hit.distance, distance, "distance mismatch: {}", case.name);
+
+                    let got_seqs = hit_seqs(&hit);
+                    let expected_seqs: HashSet<String> =
+                        seqs.iter().map(|x| x.to_string()).collect();
+
+                    assert_eq!(got_seqs, expected_seqs, "hit set mismatch: {}", case.name);
+                }
+                (exp, got) => {
+                    panic!(
+                        "unexpected lookup result for case {}\nexpected: {:?}\ngot: {:?}",
+                        case.name, exp, got
+                    );
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct MergeCase {
+        name: &'static str,
+        left: Option<LibraryMatch>,
+        right: Option<LibraryMatch>,
+        expected: MergeExpected,
+    }
+
+    #[derive(Debug)]
+    enum MergeExpected {
+        None,
+        Hit {
+            distance: u64,
+            seqs: &'static [&'static str],
+        },
+    }
+
+    #[test]
+    fn merge_matches_case_table() {
+        let reg_a = Arc::new(LibraryRegion {
+            sequence: seq(b"AAAA"),
+            inds: HashSet::from([0usize]),
+            ids: HashSet::from([library_id_from_str("seq1")]),
+        });
+        let reg_b = Arc::new(LibraryRegion {
+            sequence: seq(b"AAAT"),
+            inds: HashSet::from([1usize]),
+            ids: HashSet::from([library_id_from_str("seq2")]),
+        });
+        let reg_c = Arc::new(LibraryRegion {
+            sequence: seq(b"CCCC"),
+            inds: HashSet::from([2usize]),
+            ids: HashSet::from([library_id_from_str("seq3")]),
+        });
+
+        let cases = vec![
+            MergeCase {
+                name: "left none",
+                left: None,
+                right: Some(LibraryMatch {
+                    matches: vec![reg_a.clone()],
+                    distance: 1,
+                }),
+                expected: MergeExpected::None,
+            },
+            MergeCase {
+                name: "right none",
+                left: Some(LibraryMatch {
+                    matches: vec![reg_a.clone()],
+                    distance: 1,
+                }),
+                right: None,
+                expected: MergeExpected::None,
+            },
+            MergeCase {
+                name: "empty intersection",
+                left: Some(LibraryMatch {
+                    matches: vec![reg_a.clone()],
+                    distance: 1,
+                }),
+                right: Some(LibraryMatch {
+                    matches: vec![reg_c.clone()],
+                    distance: 2,
+                }),
+                expected: MergeExpected::None,
+            },
+            MergeCase {
+                name: "single overlapping hit",
+                left: Some(LibraryMatch {
+                    matches: vec![reg_a.clone(), reg_b.clone()],
+                    distance: 1,
+                }),
+                right: Some(LibraryMatch {
+                    matches: vec![reg_b.clone()],
+                    distance: 2,
+                }),
+                expected: MergeExpected::Hit {
+                    distance: 3,
+                    seqs: &["AAAT"],
+                },
+            },
+            MergeCase {
+                name: "multiple overlapping hits",
+                left: Some(LibraryMatch {
+                    matches: vec![reg_a.clone(), reg_b.clone()],
+                    distance: 2,
+                }),
+                right: Some(LibraryMatch {
+                    matches: vec![reg_a.clone(), reg_b.clone(), reg_c.clone()],
+                    distance: 1,
+                }),
+                expected: MergeExpected::Hit {
+                    distance: 3,
+                    seqs: &["AAAA", "AAAT"],
+                },
+            },
+        ];
+
+        for case in cases {
+            let got = merge_matches(case.left, case.right);
+
+            match (case.expected, got) {
+                (MergeExpected::None, None) => {}
+                (MergeExpected::Hit { distance, seqs }, Some(hit)) => {
+                    assert_eq!(hit.distance, distance, "distance mismatch: {}", case.name);
+                    let got_seqs = hit_seqs(&hit);
+                    let expected_seqs: HashSet<String> =
+                        seqs.iter().map(|x| x.to_string()).collect();
+                    assert_eq!(got_seqs, expected_seqs, "hit set mismatch: {}", case.name);
+                }
+                (exp, got) => {
+                    panic!(
+                        "unexpected merge result for case {}\nexpected: {:?}\ngot: {:?}",
+                        case.name, exp, got
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sublibrary_new_accepts_empty_library() {
+        let sub = SubLibrary::new(HashMap::new(), None, HashMap::new(), 2, None).unwrap();
+        assert!(sub.is_empty());
+        assert_eq!(sub.len(), 0);
+        assert!(sub.regions().is_empty());
+    }
+
+    #[test]
+    fn sublibrary_new_rejects_mismatched_region_lengths() {
+        let mut map: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        map.insert(
+            region_id_from_str("r1"),
+            vec![b"AAAA".to_vec(), b"CCCC".to_vec()],
+        );
+        map.insert(region_id_from_str("r2"), vec![b"GGGG".to_vec()]);
+
+        let err = SubLibrary::new(map, None, HashMap::new(), 2, None).unwrap_err();
+        assert!(err.to_string().contains("same number of sequences"));
+    }
+
+    #[test]
+    fn sublibrary_new_rejects_duplicate_ids() {
+        let mut map: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        map.insert(
+            region_id_from_str("r1"),
+            vec![b"AAAA".to_vec(), b"CCCC".to_vec()],
+        );
+
+        let err = SubLibrary::new(
+            map,
+            Some(vec!["x".to_string(), "x".to_string()]),
+            HashMap::new(),
+            2,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("IDs are not unique"));
+    }
+
+    #[test]
+    fn library_new_rejects_duplicate_region_across_sublibraries() {
+        let mut map1: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        map1.insert(region_id_from_str("r1"), vec![b"AAAA".to_vec()]);
+        let sub1 = SubLibrary::new(map1, None, HashMap::new(), 2, Some("a".to_string())).unwrap();
+
+        let mut map2: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        map2.insert(region_id_from_str("r1"), vec![b"CCCC".to_vec()]);
+        let sub2 = SubLibrary::new(map2, None, HashMap::new(), 2, Some("b".to_string())).unwrap();
+
+        let err = Library::new(vec![sub1, sub2]).unwrap_err();
+        assert!(err.to_string().contains("multiple Libraries"));
+    }
+
+    #[test]
+    fn library_dispatches_lookup_to_correct_sublibrary() {
+        let mut left_map: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        left_map.insert(region_id_from_str("r1"), vec![b"AAAA".to_vec()]);
+        let left = SubLibrary::new(
+            left_map,
+            Some(vec!["left1".to_string()]),
+            HashMap::new(),
+            1,
+            None,
+        )
+        .unwrap();
+
+        let mut right_map: HashMap<RegionID, Vec<Sequence>> = HashMap::new();
+        right_map.insert(region_id_from_str("r2"), vec![b"TTTT".to_vec()]);
+        let right = SubLibrary::new(
+            right_map,
+            Some(vec!["right1".to_string()]),
+            HashMap::new(),
+            1,
+            None,
+        )
+        .unwrap();
+
+        let lib = Library::new(vec![left, right]).unwrap();
+
+        assert_eq!(
+            lib.get_sublibrary_index(&region_id_from_str("r1")).unwrap(),
+            0
+        );
+        assert_eq!(
+            lib.get_sublibrary_index(&region_id_from_str("r2")).unwrap(),
+            1
+        );
+
+        let hit1 = lib
+            .lookup(
+                &region_id_from_str("r1"),
+                &seq(b"AAAA"),
+                DistanceMetric::Exact,
+                PartialMatching::Full,
+            )
+            .unwrap()
+            .unwrap();
+
+        let hit2 = lib
+            .lookup(
+                &region_id_from_str("r2"),
+                &seq(b"TTTT"),
+                DistanceMetric::Exact,
+                PartialMatching::Full,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(hit1.matches[0].sequence.to_str_or_log(), "AAAA");
+        assert_eq!(hit2.matches[0].sequence.to_str_or_log(), "TTTT");
+    }
+
+    #[test]
+    fn library_lookup_errors_for_missing_region() {
+        let sub = make_lookup_sublib(2);
+        let lib = Library::new(vec![sub]).unwrap();
+
+        let err = lib
+            .lookup(
+                &region_id_from_str("missing"),
+                &seq(b"AAAA"),
+                DistanceMetric::Exact,
+                PartialMatching::Full,
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn from_file_reads_ids_and_sequences() {
+        let path = write_temp_file(
+            "library.tsv",
+            "_id\tr1\tr2\nseq1\tAAAA\tCCCC\nseq2\tAAAT\tGGGG\n",
+        );
+
+        let sub = SubLibrary::from_file(
+            path.to_str().unwrap(),
+            HashMap::new(),
+            2,
+            Some("fallback".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(sub.ids.len(), 2);
+        assert_eq!(library_id_to_str(&sub.ids[0]).to_string(), "seq1");
+        assert_eq!(library_id_to_str(&sub.ids[1]).to_string(), "seq2");
+
+        let r1 = sub.library.get(&region_id_from_str("r1")).unwrap();
+        assert_eq!(r1.len(), 2);
+        assert_eq!(r1[0].sequence.to_str_or_log(), "AAAA");
+        assert_eq!(r1[1].sequence.to_str_or_log(), "AAAT");
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_file_generates_ids_when_missing() {
+        let path = write_temp_file("library_no_ids.tsv", "r1\tr2\nAAAA\tCCCC\nAAAT\tGGGG\n");
+
+        let sub = SubLibrary::from_file(
+            path.to_str().unwrap(),
+            HashMap::new(),
+            2,
+            Some("libx".to_string()),
+        )
+        .unwrap();
+
+        let ids: Vec<String> = sub
+            .ids
+            .iter()
+            .map(|x| library_id_to_str(x).to_string())
+            .collect();
+
+        assert_eq!(ids, vec!["libx_0".to_string(), "libx_1".to_string()]);
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_file_with_lib_spec_accepts_valid_library() {
+        let spec: LibrarySpec = LibrarySpec::from_str(&simple_libspec_json()).unwrap();
+
+        let path = write_temp_file(
+            "valid_library.tsv",
+            "_id\tr1\tr2\nseq1\tAAAA\tCCCC\nseq2\tAAAT\tGGGG\n",
+        );
+
+        let sub = SubLibrary::from_file_with_lib_spec(
+            path.to_str().unwrap(),
+            &spec,
+            2,
+            Some("fallback".to_string()),
+        )
+        .unwrap();
+
+        let regions: HashSet<String> = sub
+            .regions()
+            .into_iter()
+            .map(|x| region_id_to_str(x).to_string())
+            .collect();
+
+        assert!(regions.contains("r1"));
+        assert!(regions.contains("r2"));
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_file_with_lib_spec_rejects_unknown_region_column() {
+        let spec: LibrarySpec = LibrarySpec::from_str(&simple_libspec_json()).unwrap();
+
+        let path = write_temp_file("invalid_library.tsv", "_id\tr1\tr3\nseq1\tAAAA\tCCCC\n");
+
+        let err = SubLibrary::from_file_with_lib_spec(
+            path.to_str().unwrap(),
+            &spec,
+            2,
+            Some("fallback".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("don't match variable LibSpec region ids")
+        );
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_file_with_lib_spec_rejects_reserved_id_region_name() {
+        let bad_spec = r#"
+{
+  "id": "test",
+  "forward_start_region": "fixed_left",
+  "forward_read_length": 100,
+  "reverse_start_region": "fixed_right",
+  "reverse_read_length": 100,
+  "regions": [
+    { "id": "fixed_left", "seq_type": "Fixed", "seq": "AAAA" },
+    { "id": "_id", "seq_type": "Library", "min_length": 4, "max_length": 4 },
+    { "id": "fixed_right", "seq_type": "Fixed", "seq": "GGGG" }
+  ]
+}
+        "#;
+
+        let spec: LibrarySpec = LibrarySpec::from_str(bad_spec).unwrap();
+        let path = write_temp_file("reserved_id.tsv", "_id\t_id\nseq1\tAAAA\n");
+
+        let err = SubLibrary::from_file_with_lib_spec(
+            path.to_str().unwrap(),
+            &spec,
+            2,
+            Some("fallback".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("reserved"));
+
+        fs::remove_file(path).ok();
+    }
 }

@@ -50,7 +50,7 @@ pub fn write_counts(
     // Write header
     write!(writer, "group\tforward\treverse\t")?;
     for r in &combinations.region_ids {
-        let s = region_id_to_str(*r);
+        let s = region_id_to_str(r);
         write!(
             writer,
             "{s}\t{s}_nearest\t{s}_variants\t{s}_distance\t{s}_n_matches\t"
@@ -65,7 +65,7 @@ pub fn write_counts(
     for comb in combinations.to_vector(sort) {
         // Fwd/Rev sequences if tracked
         let (fwd, rev) = match &comb.sequence {
-            Some(seq) => match seq.reverse {
+            Some(seq) => match &seq.reverse {
                 Some(rev) => (seq.forward.to_str_or_log(), rev.to_str_or_log()),
                 None => (seq.forward.to_str_or_log(), "".to_string()),
             },
@@ -149,7 +149,7 @@ pub fn write_library_counts(
     // Write headers
     write!(writer, "group\t")?;
     for r in combinations.region_ids.iter() {
-        write!(writer, "{}\t", region_id_to_str(*r))?;
+        write!(writer, "{}\t", region_id_to_str(r))?;
     }
     writeln!(
         writer,
@@ -335,7 +335,9 @@ pub fn write_filter_summary(
             "{}\t{}\t{}\t{}\t{:.4}\t{}",
             group,
             read.forward.to_str_or_log(),
-            read.reverse.map_or("".to_string(), |x| x.to_str_or_log()),
+            read.reverse
+                .clone()
+                .map_or("".to_string(), |x| x.to_str_or_log()),
             counts.total(),
             div_or_zero(counts.total() as f32, total),
             counts.iter().join("\t")
@@ -344,4 +346,227 @@ pub fn write_filter_summary(
 
     writer.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use tempfile::NamedTempFile;
+
+    use crate::combinations::{ObservedCombinations, ReadSummary};
+    use crate::filters::FilteredReads;
+    use crate::interning::{RegionID, region_id_from_str};
+    use crate::library::Library;
+    use crate::{DistanceMetric, FilterConfig};
+
+    fn empty_filter_config() -> FilterConfig {
+        FilterConfig::new(None, None, None, None, true)
+    }
+
+    fn empty_combs(r: Vec<RegionID>) -> ObservedCombinations {
+        ObservedCombinations::new(r, empty_filter_config())
+    }
+
+    // Write summary row
+    #[test]
+    fn write_summary_row_normal() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(&mut buf, "test_group", "metric_x", 100, 1000, 500)?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "test_group\tmetric_x\t100\t0.1000\t0.2000\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_row_zero_count() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(&mut buf, "group", "metric", 0, 100, 100)?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "group\tmetric\t0\t0.0000\t0.0000\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_row_count_equals_total() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(&mut buf, "group", "metric", 100, 100, 100)?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "group\tmetric\t100\t1.0000\t1.0000\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_row_zero_denominators() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(&mut buf, "group", "metric", 0, 0, 0)?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "group\tmetric\t0\t0.0000\t0.0000\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_row_large_numbers() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(
+            &mut buf, "group", "metric", 1_000_000, 10_000_000, 5_000_000,
+        )?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "group\tmetric\t1000000\t0.1000\t0.2000\n");
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_row_fractional_results() -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        write_summary_row(&mut buf, "group", "metric", 1, 3, 7)?;
+
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "group\tmetric\t1\t0.3333\t0.1429\n");
+        Ok(())
+    }
+
+    // Write counts header
+    #[test]
+    fn write_counts_header_structure() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+
+        let combinations = empty_combs(vec![
+            region_id_from_str("region1"),
+            region_id_from_str("region2"),
+        ]);
+
+        write_counts(&combinations, file.reopen()?, false)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let header = content.lines().next().unwrap();
+        assert_eq!(
+            header,
+            "group\tforward\treverse\tregion1\tregion1_nearest\tregion1_variants\tregion1_distance\tregion1_n_matches\tregion2\tregion2_nearest\tregion2_variants\tregion2_distance\tregion2_n_matches\tcombination_status\tcombination_distance\tcombinations_in_library\tcombination_id\tcount"
+        );
+
+        Ok(())
+    }
+
+    // Library counts
+    #[test]
+    fn write_library_counts_header_structure() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+
+        let mut combinations = empty_combs(vec![region_id_from_str("region1")]);
+
+        combinations.compare_to_library(
+            Library::new(Vec::new()).unwrap(),
+            None,
+            DistanceMetric::Hamming,
+            1,
+            1,
+        )?;
+
+        write_library_counts(&combinations, file.reopen()?, false)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let header = content.lines().next().unwrap();
+        assert_eq!(
+            header,
+            "group\tregion1\tcombination_status\tcombinations_in_library\tcombination_id\tcount"
+        );
+
+        Ok(())
+    }
+
+    // Summary
+    #[test]
+    fn write_summary_basic_structure() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+        let summary = ReadSummary::empty();
+
+        write_summary(&summary, file.reopen()?)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        // All lines should always be present
+        assert_eq!(lines.len(), 17);
+
+        let header = lines[0];
+        assert_eq!(
+            header,
+            "group\tmetric\tcount\toverall_proportion\tgroup_proportion"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn write_summary_all_rows_present() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+        let mut summary = ReadSummary::empty();
+        summary.exact_match = 50;
+        summary.nearest_match = 30;
+        summary.mismatch = 20;
+
+        write_summary(&summary, file.reopen()?)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines.len(), 17);
+
+        assert!(content.contains("50"));
+        assert!(content.contains("30"));
+        assert!(content.contains("20"));
+        assert!(content.contains("100"));
+
+        Ok(())
+    }
+
+    // Filter summary
+    #[test]
+    fn write_filter_summary_header() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+        let filtered = FilteredReads::new(empty_filter_config());
+
+        write_filter_summary(&filtered, file.reopen()?, false)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let header = content.lines().next().unwrap();
+        assert_eq!(
+            header,
+            "group\tforward\treverse\tcount\tproportion\tempty_read\tshort_read\tlong_read	low_mean_quality\tbad_alignment"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn write_filter_summary_empty() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+        let filtered = FilteredReads::new(empty_filter_config());
+
+        write_filter_summary(&filtered, file.reopen()?, false)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        // Should have header + no data lines if empty
+        assert_eq!(lines.len(), 1);
+
+        Ok(())
+    }
 }

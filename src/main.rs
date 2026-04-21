@@ -567,3 +567,278 @@ fn check_simd_features() {
 fn check_simd_features() {
     log::info!("SIMD features are not available on this architecture.");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ---------- CLI PARSING ----------
+    #[test]
+    fn cli_parse_minimal_args() {
+        let args = Cli::try_parse_from(vec!["prog", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.forward, "forward.fq");
+        assert!(cli.reverse.is_none());
+        assert_eq!(cli.output, "read_counts");
+    }
+
+    #[test]
+    fn cli_parse_with_reverse() {
+        let args = Cli::try_parse_from(vec!["prog", "forward.fq", "reverse.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.forward, "forward.fq");
+        assert_eq!(cli.reverse.as_ref().unwrap(), "reverse.fq");
+    }
+
+    #[test]
+    fn cli_parse_with_library_spec() {
+        let args = Cli::try_parse_from(vec!["prog", "-l", "spec.json", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.library_spec.unwrap(), "spec.json");
+    }
+
+    #[test]
+    fn cli_parse_with_output_prefix() {
+        let args = Cli::try_parse_from(vec!["prog", "-o", "my_output", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.output, "my_output");
+    }
+
+    #[test]
+    fn cli_parse_with_format() {
+        let args = Cli::try_parse_from(vec!["prog", "-f", "Fasta", "forward.fa"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.format, SeqFormat::Fasta);
+    }
+
+    #[test]
+    fn cli_parse_with_compression() {
+        let args = Cli::try_parse_from(vec!["prog", "-z", "Gzip", "forward.fq.gz"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.gzip, Compression::Gzip);
+    }
+
+    #[test]
+    fn cli_parse_with_mode() {
+        let args = Cli::try_parse_from(vec!["prog", "-m", "pattern", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.mode, CountMode::Pattern);
+    }
+
+    #[test]
+    fn cli_parse_with_distance_metric() {
+        let args = Cli::try_parse_from(vec!["prog", "-d", "Levenshtein", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.distance_metric, DistanceMetric::Levenshtein);
+    }
+
+    #[test]
+    fn cli_parse_sorting_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-s", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.sort);
+    }
+
+    #[test]
+    fn cli_parse_verbose_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-v", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn cli_parse_overwrite_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-w", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.overwrite);
+    }
+
+    #[test]
+    fn cli_parse_full_seq_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-F", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.full_seq);
+    }
+
+    #[test]
+    fn cli_parse_grouping_regex() {
+        let args = Cli::try_parse_from(vec!["prog", "-g", r"([A-Z]+)_", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.group.as_ref().unwrap(), r"([A-Z]+)_");
+    }
+
+    #[test]
+    fn cli_parse_quality_threshold() {
+        let args = Cli::try_parse_from(vec!["prog", "-q", "20.5", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.mean_quality_threshold.unwrap(), 20.5);
+    }
+
+    #[test]
+    fn cli_parse_alignment_tolerance() {
+        let args = Cli::try_parse_from(vec!["prog", "-r", "0.9", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.alignment_tolerance.unwrap(), 0.9);
+    }
+
+    #[test]
+    fn cli_parse_read_length_filters() {
+        let args = Cli::try_parse_from(vec!["prog", "-L", "50", "-M", "200", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.minimum_read_length.unwrap(), 50);
+        assert_eq!(cli.maximum_read_length.unwrap(), 200);
+    }
+
+    #[test]
+    fn cli_parse_pattern_length_and_tolerance() {
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "--pattern-length",
+            "15",
+            "--pattern-tolerance",
+            "2",
+            "forward.fq",
+        ]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.pattern_length, 15);
+        assert_eq!(cli.pattern_tolerance, 2);
+    }
+
+    #[test]
+    fn cli_parse_alignment_scores() {
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "--match-score",
+            "5",
+            "--mismatch-score",
+            "-4",
+            "--gap-open-score",
+            "-8",
+            "forward.fq",
+        ]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.match_score, 5);
+        assert_eq!(cli.mismatch_score, -4);
+        assert_eq!(cli.gap_open_score, -8);
+    }
+
+    #[test]
+    fn cli_parse_threads() {
+        let args = Cli::try_parse_from(vec!["prog", "-T", "8", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.threads, 8);
+    }
+
+    #[test]
+    fn cli_parse_max_reads() {
+        let args = Cli::try_parse_from(vec!["prog", "--max-reads", "1000", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.max_reads, 1000);
+    }
+
+    #[test]
+    fn cli_parse_default_phred() {
+        let args = Cli::try_parse_from(vec!["prog", "--default-phred", "35", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.default_phred, 35);
+    }
+
+    #[test]
+    fn cli_parse_no_cache_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "--no-cache", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.no_cache);
+    }
+
+    #[test]
+    fn cli_parse_library_files() {
+        let args = Cli::try_parse_from(vec!["prog", "-c", "lib1.tsv", "lib2.tsv", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        let libs = cli.library.unwrap();
+        assert_eq!(libs.len(), 2);
+        assert_eq!(libs[0], "lib1.tsv");
+        assert_eq!(libs[1], "lib2.tsv");
+    }
+
+    // Alignment tolerance
+    #[test]
+    fn alignment_tolerance_zero_fraction() -> anyhow::Result<()> {
+        let tolerance = AlignmentTolerance::new(0.0, 100, 80)?;
+        assert_eq!(tolerance.forward_threshold(), 0);
+        assert_eq!(tolerance.reverse_threshold(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn alignment_tolerance_full_fraction() -> anyhow::Result<()> {
+        let tolerance = AlignmentTolerance::new(1.0, 100, 80)?;
+        assert_eq!(tolerance.forward_threshold(), 100);
+        assert_eq!(tolerance.reverse_threshold(), 80);
+        Ok(())
+    }
+
+    #[test]
+    fn alignment_tolerance_half_fraction() -> anyhow::Result<()> {
+        let tolerance = AlignmentTolerance::new(0.5, 100, 80)?;
+        assert_eq!(tolerance.forward_threshold(), 50);
+        assert_eq!(tolerance.reverse_threshold(), 40);
+        Ok(())
+    }
+
+    #[test]
+    fn alignment_tolerance_fractional() -> anyhow::Result<()> {
+        let tolerance = AlignmentTolerance::new(0.75, 100, 100)?;
+        assert_eq!(tolerance.forward_threshold(), 75);
+        assert_eq!(tolerance.reverse_threshold(), 75);
+        Ok(())
+    }
+
+    // Alignment scorer
+    #[test]
+    fn alignment_scorer_defaults() {
+        let scorer = AlignmentScorer::new(6, -2, -3, -10, -4);
+        let scoring = scorer.get_scoring();
+        assert_eq!(scoring.match_score, 6);
+        assert_eq!(scoring.mismatch_score, -3);
+    }
+
+    #[test]
+    fn alignment_scorer_custom_values() {
+        let scorer = AlignmentScorer::new(10, -1, -5, -8, -2);
+        let scoring = scorer.get_scoring();
+        assert_eq!(scoring.match_score, 10);
+        assert_eq!(scoring.mismatch_score, -5);
+    }
+
+    // Simd detection
+    #[test]
+    fn check_simd_features_runs() {
+        // Just verify the function runs without panicking
+        check_simd_features();
+    }
+}
