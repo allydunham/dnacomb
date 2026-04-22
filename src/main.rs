@@ -3,7 +3,6 @@
 //! This binary wires together argument parsing, input validation, read parsing,
 //! counting, optional library comparison, and TSV output generation.
 use anyhow::Error;
-use bio::alignment::pairwise::Aligner;
 use clap::{ArgAction, Parser};
 use log::{self, LevelFilter, debug, error, info, warn};
 use regex::Regex;
@@ -392,7 +391,21 @@ fn run(args: Cli) -> Result<(), Error> {
             );
             None
         }
-        (Some(l), Some(t)) => calculate_alignment_tolerance(l, &alignment_scorer, &reader, t)?,
+        (Some(l), Some(t)) => {
+            let r = if reader.has_reverse() {
+                Some(l.expected_reverse_read())
+            } else {
+                None
+            };
+
+            Some(AlignmentTolerance::from_expected_reads(
+            &l.expected_forward_read(),
+            r.as_ref(),
+            &l.template_sequence(),
+            &alignment_scorer,
+            t,
+            true
+        )?)},
     };
 
     let filter_config = FilterConfig::new(
@@ -489,55 +502,6 @@ fn run(args: Cli) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-/// Convert a user-supplied alignment tolerance fraction into absolute alignment
-/// score thresholds for forward and reverse reads.
-///
-/// Expected read sequences are derived from the LibSpec and aligned to the full
-/// template using the configured alignment scoring scheme. The observed alignment
-/// thresholds are then set as `tolerance * expected_score`.
-fn calculate_alignment_tolerance(
-    lib_spec: &LibrarySpec,
-    alignment_scorer: &AlignmentScorer,
-    reader: &ReadPairParser,
-    tolerance: f32,
-) -> Result<Option<AlignmentTolerance>, anyhow::Error> {
-    let exp_f_read = lib_spec.expected_forward_read();
-
-    // Initialise aligner
-    let scoring = alignment_scorer.get_scoring();
-    let mut aligner = Aligner::with_capacity_and_scoring(400, 150, scoring);
-    let template = lib_spec.template_sequence();
-
-    let f_alignment = aligner.semiglobal(&exp_f_read, &template);
-
-    info!(
-        "Expected Fwd Alignment:\nScore: {}, Cigar: {}\n{}",
-        f_alignment.score,
-        f_alignment.cigar(false),
-        f_alignment.pretty(&exp_f_read, &template, 100),
-    );
-
-    let mut r_score = 0;
-    if reader.has_reverse() {
-        let exp_r_read = lib_spec.expected_reverse_read();
-        let r_alignment = aligner.semiglobal(&exp_r_read, &template);
-        r_score = r_alignment.score;
-
-        info!(
-            "Expected Rev Alignment:\nScore: {}, Cigar: {}\n{}",
-            r_alignment.score,
-            r_alignment.cigar(false),
-            r_alignment.pretty(&exp_r_read, &template, 100),
-        );
-    }
-
-    Ok(Some(AlignmentTolerance::new(
-        tolerance,
-        f_alignment.score,
-        r_score,
-    )?))
 }
 
 /// Log whether SIMD-accelerated distance calculations are available and enabled
@@ -783,56 +747,6 @@ mod tests {
         assert_eq!(libs.len(), 2);
         assert_eq!(libs[0], "lib1.tsv");
         assert_eq!(libs[1], "lib2.tsv");
-    }
-
-    // Alignment tolerance
-    #[test]
-    fn alignment_tolerance_zero_fraction() -> anyhow::Result<()> {
-        let tolerance = AlignmentTolerance::new(0.0, 100, 80)?;
-        assert_eq!(tolerance.forward_threshold(), 0);
-        assert_eq!(tolerance.reverse_threshold(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn alignment_tolerance_full_fraction() -> anyhow::Result<()> {
-        let tolerance = AlignmentTolerance::new(1.0, 100, 80)?;
-        assert_eq!(tolerance.forward_threshold(), 100);
-        assert_eq!(tolerance.reverse_threshold(), 80);
-        Ok(())
-    }
-
-    #[test]
-    fn alignment_tolerance_half_fraction() -> anyhow::Result<()> {
-        let tolerance = AlignmentTolerance::new(0.5, 100, 80)?;
-        assert_eq!(tolerance.forward_threshold(), 50);
-        assert_eq!(tolerance.reverse_threshold(), 40);
-        Ok(())
-    }
-
-    #[test]
-    fn alignment_tolerance_fractional() -> anyhow::Result<()> {
-        let tolerance = AlignmentTolerance::new(0.75, 100, 100)?;
-        assert_eq!(tolerance.forward_threshold(), 75);
-        assert_eq!(tolerance.reverse_threshold(), 75);
-        Ok(())
-    }
-
-    // Alignment scorer
-    #[test]
-    fn alignment_scorer_defaults() {
-        let scorer = AlignmentScorer::new(6, -2, -3, -10, -4);
-        let scoring = scorer.get_scoring();
-        assert_eq!(scoring.match_score, 6);
-        assert_eq!(scoring.mismatch_score, -3);
-    }
-
-    #[test]
-    fn alignment_scorer_custom_values() {
-        let scorer = AlignmentScorer::new(10, -1, -5, -8, -2);
-        let scoring = scorer.get_scoring();
-        assert_eq!(scoring.match_score, 10);
-        assert_eq!(scoring.mismatch_score, -5);
     }
 
     // Simd detection

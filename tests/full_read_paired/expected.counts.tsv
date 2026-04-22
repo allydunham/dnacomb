@@ -1,0 +1,4 @@
+group	forward	reverse	combination_status	combination_distance	combinations_in_library	combination_id	count
+	GAAAGGACGAAACACCTTTG	ATGTCGTAAAGTAGTTGTTT		uncompared					5
+	AAGAGCTAAGCTGGAAACAG	AAGAGCTAAGCTGGAAACAG		uncompared					3
+	ATGTCGTAAAGTAGTTGTTT	AAGAGCTAAGCTGGAAACAG		uncompared					2

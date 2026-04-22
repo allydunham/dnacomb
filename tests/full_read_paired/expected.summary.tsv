@@ -1,0 +1,17 @@
+group	metric	count	overall_proportion	group_proportion
+all	total	10	1.0000	1.0000
+unfiltered	total	10	1.0000	1.0000
+unfiltered	uncompared	10	1.0000	1.0000
+unfiltered	exact_match	0	0.0000	0.0000
+unfiltered	nearest_match	0	0.0000	0.0000
+unfiltered	multimatch	0	0.0000	0.0000
+unfiltered	exact_recombination	0	0.0000	0.0000
+unfiltered	nearest_recombination	0	0.0000	0.0000
+unfiltered	mismatch	0	0.0000	0.0000
+unfiltered	nonmatch	0	0.0000	0.0000
+filtered	total	0	0.0000	0.0000
+filtered	empty_read	0	0.0000	0.0000
+filtered	short_read	0	0.0000	0.0000
+filtered	long_read	0	0.0000	0.0000
+filtered	low_mean_quality	0	0.0000	0.0000
+filtered	bad_alignment	0	0.0000	0.0000

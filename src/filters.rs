@@ -3,10 +3,14 @@
 //! This module defines the configurable filters applied during counting, along
 //! with the data structures used to track why reads were discarded and how often
 //! each filtered read sequence was observed.
+use bio::alignment::pairwise::Aligner;
 use bio::bio_types::alignment::Alignment;
+use bio::bio_types::sequence::Sequence;
 use bio::io::fastq::Record;
+use log::info;
 use std::collections::HashMap;
 
+use crate::AlignmentScorer;
 use crate::errors::ReadCountError;
 use crate::groups::ReadGroup;
 use crate::seqs::{ReadPair, SeqPair};
@@ -255,6 +259,58 @@ impl AlignmentTolerance {
             minimum_f_score: (expected_f_score as f32 * tolerance) as i32,
             minimum_r_score: (expected_r_score as f32 * tolerance) as i32,
         })
+    }
+
+    /// Generate an AlignmenTolerance based on expected reads
+    ///
+    /// Produce an AlignmentTolerance based on the scores of perfect reads aligned
+    /// to the full template, for example those derived from a LibSpec.
+    /// The observed alignment thresholds are then set as `tolerance * expected_score`.
+    /// If `log` is true the shape of the observed alignments is logged at
+    /// the "info" level.
+    pub fn from_expected_reads(
+        expected_f_sequence: &Sequence,
+        expected_r_sequence: Option<&Sequence>,
+        template: &Sequence,
+        alignment_scorer: &AlignmentScorer,
+        tolerance: f32,
+        log: bool
+    ) -> Result<AlignmentTolerance, ReadCountError> {
+        // Initialise aligner
+        let scoring = alignment_scorer.get_scoring();
+        let mut aligner = Aligner::with_capacity_and_scoring(400, 150, scoring);
+
+        let f_alignment = aligner.semiglobal(expected_f_sequence, template);
+
+        if log {
+            info!(
+                "Expected Fwd Alignment:\nScore: {}, Cigar: {}\n{}",
+                f_alignment.score,
+                f_alignment.cigar(false),
+                f_alignment.pretty(expected_f_sequence, template, 100),
+            );
+        }
+
+        let mut r_score = 0;
+        if let Some(exp_r) = expected_r_sequence {
+            let r_alignment = aligner.semiglobal(exp_r, template);
+            r_score = r_alignment.score;
+
+            if log {
+                info!(
+                    "Expected Rev Alignment:\nScore: {}, Cigar: {}\n{}",
+                    r_alignment.score,
+                    r_alignment.cigar(false),
+                    r_alignment.pretty(exp_r, template, 100),
+                );
+            }
+        }
+
+        Ok(AlignmentTolerance::new(
+            tolerance,
+            f_alignment.score,
+            r_score,
+        )?)
     }
 }
 
@@ -872,6 +928,29 @@ mod tests {
         let tol = AlignmentTolerance::new(0.5, 100, 100).unwrap();
         assert_eq!(tol.minimum_f_score, 50);
         assert_eq!(tol.minimum_r_score, 50);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_from_reads() {
+        let alignment_scorer = crate::AlignmentScorer::new(
+            6,
+            -2,
+            -3,
+            -10,
+            -4,
+        );
+
+        let tol = AlignmentTolerance::from_expected_reads(
+            &vec![b'A', b'C', b'G', b'T'],
+            Some(&vec![b'T', b'G', b'C', b'A']),
+            &vec![b'A', b'C', b'G', b'T', b'G', b'C', b'G', b'C', b'T', b'G', b'C', b'A'],
+            &alignment_scorer,
+            0.75,
+            false
+        ).unwrap();
+
+        assert_eq!(tol.minimum_f_score, 18);
+        assert_eq!(tol.minimum_r_score, 18);
     }
 
     // ---------- FILTERED COUNTS ----------
