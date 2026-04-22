@@ -683,7 +683,7 @@ fn join_observed_combinations(
 ///
 /// Different modes trade off robustness, assumptions about read structure, and
 /// speed.
-#[derive(Clone, ValueEnum, Debug, Copy)]
+#[derive(Clone, ValueEnum, Debug, Copy, PartialEq, Eq)]
 pub enum CountMode {
     /// Count complete read sequences without structured region extraction.
     FullRead,

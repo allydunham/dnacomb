@@ -194,6 +194,7 @@ impl Hash for LibraryRegion {
             .iter()
             .copied()
             .collect::<Vec<usize>>()
+            .sort_unstable()
             .hash(state);
     }
 }
@@ -1011,7 +1012,7 @@ impl SubLibrary {
 }
 
 /// Distance metric used for library lookup.
-#[derive(Clone, ValueEnum, Debug, Copy)]
+#[derive(Clone, ValueEnum, Debug, Copy, PartialEq)]
 pub enum DistanceMetric {
     /// Require exact sequence equality.
     Exact,

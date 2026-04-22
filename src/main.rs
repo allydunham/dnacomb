@@ -535,8 +535,6 @@ fn check_simd_features() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
 
     // ---------- CLI PARSING ----------
     #[test]
@@ -576,7 +574,7 @@ mod tests {
 
     #[test]
     fn cli_parse_with_format() {
-        let args = Cli::try_parse_from(vec!["prog", "-f", "Fasta", "forward.fa"]);
+        let args = Cli::try_parse_from(vec!["prog", "-f", "fasta", "forward.fa"]);
         assert!(args.is_ok());
         let cli = args.unwrap();
         assert_eq!(cli.format, SeqFormat::Fasta);
@@ -584,10 +582,10 @@ mod tests {
 
     #[test]
     fn cli_parse_with_compression() {
-        let args = Cli::try_parse_from(vec!["prog", "-z", "Gzip", "forward.fq.gz"]);
+        let args = Cli::try_parse_from(vec!["prog", "-z", "gzip", "forward.fq.gz"]);
         assert!(args.is_ok());
         let cli = args.unwrap();
-        assert_eq!(cli.gzip, Compression::Gzip);
+        assert_eq!(cli.compression, Compression::Gzip);
     }
 
     #[test]
@@ -600,7 +598,7 @@ mod tests {
 
     #[test]
     fn cli_parse_with_distance_metric() {
-        let args = Cli::try_parse_from(vec!["prog", "-d", "Levenshtein", "forward.fq"]);
+        let args = Cli::try_parse_from(vec!["prog", "-d", "levenshtein", "forward.fq"]);
         assert!(args.is_ok());
         let cli = args.unwrap();
         assert_eq!(cli.distance_metric, DistanceMetric::Levenshtein);
@@ -740,7 +738,7 @@ mod tests {
 
     #[test]
     fn cli_parse_library_files() {
-        let args = Cli::try_parse_from(vec!["prog", "-c", "lib1.tsv", "lib2.tsv", "forward.fq"]);
+        let args = Cli::try_parse_from(vec!["prog", "-c", "lib1.tsv", "lib2.tsv", "--", "forward.fq"]);
         assert!(args.is_ok());
         let cli = args.unwrap();
         let libs = cli.library.unwrap();

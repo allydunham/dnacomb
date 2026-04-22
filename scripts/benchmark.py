@@ -147,11 +147,11 @@ def main():
         if not os.path.exists(f"{inroot}_{lib}_{size}.fq"):
             print(f"    {lib} {size} fastq... ", end="", flush=True)
             generate_test_data(lib_spec=f"{inroot}_{lib}_{size}.json",
-                               number=10000000, library_size=size,
+                               number=1000000, library_size=size,
                                output=f"{inroot}_{lib}_{size}",
-                               recombination_rate=0.01, contamination_rate=0.01,
+                               recombination_rate=0.001, contamination_rate=0.01,
                                mismatch_rate=0.01, truncation_rate=0.001,
-                               sub_rate=0.001, indel_rate=0.0001)
+                               sub_rate=0.0001, indel_rate=0.00001)
             print("done")
 
     if args.gen_only:
@@ -167,7 +167,7 @@ def main():
             ["exact", "hamming", "bounded-levenshtein", "levenshtein"],
             [("grna", 156), ("grna_sensor", 244), ("pegrna", 313)],
             [100, 1000, 10000],
-            [100000, 1000000, 10000000],
+            [10000, 100000, 1000000],
             [True, False],
             [True, False]
         )

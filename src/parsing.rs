@@ -252,11 +252,13 @@ impl Iterator for ReadPairParser {
     fn next(&mut self) -> Option<Self::Item> {
         if (self.max_reads > 0) && (self.read_count == self.max_reads) {
             return None;
-        } else {
-            self.read_count += 1;
         }
 
         let f_record: Option<Result<fastq::Record, FastaError>> = self.forward.next();
+
+        if f_record.is_some() {
+            self.read_count += 1;
+        }
 
         if self.reverse.is_none() {
             // Unpaired reads
@@ -379,7 +381,11 @@ impl Iterator for ThreadedReadPairParser {
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.rx.recv().ok();
-        self.read_count += 1;
+
+        if next.is_some() {
+            self.read_count += 1;
+        }
+
         next
     }
 }

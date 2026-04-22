@@ -169,8 +169,18 @@ impl<'a> LogProgress<'a> {
     /// Increment the processed item count and emit an update if the logging
     /// interval has been reached.
     pub fn inc(&mut self, amount: u64) {
-        self.current += amount;
-        if self.current % self.log_interval == 0 {
+        if amount == 0 {
+            return;
+        }
+
+        let previous = self.current;
+        self.current = self.current.saturating_add(amount);
+
+        // Log when you tick over 1 or more log_interval "units", determined by floor division
+        let old_interval_count = previous / self.log_interval;
+        let new_interval_count = self.current / self.log_interval;
+
+        if new_interval_count > old_interval_count {
             self.log_progress();
             self.last_log_time = Instant::now();
             self.last_log_count = self.current;
@@ -224,7 +234,8 @@ impl<'a> LogProgress<'a> {
             }
             Some(total) => {
                 let percent: f64 = (self.current as f64) / (total as f64) * 100.0;
-                let remaining: f64 = ((total - self.current) as f64) / avg_rate;
+
+                let remaining: f64 = (total.saturating_sub(self.current) as f64) / avg_rate;
 
                 (self.log_fn)(&format!(
                     "{} {}/{} {:.0}% in {:.2?} | current rate: {:.2} items/s | avg. rate: {:.2} items/s | est {:.0}s remaining{}",
@@ -528,6 +539,26 @@ mod tests {
     }
 
     #[test]
+    fn logprogress_inc_over_interval() {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+
+        let log_fn = Arc::new(move |msg: &str| {
+            messages_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
+
+        log_progress.inc(0); // 0 - No message triggered
+        log_progress.inc(5); // 5 - No message triggered
+        log_progress.inc(10); // 15 - 1 message triggered
+        log_progress.inc(25); // 40 - 2 messages triggered - only one extra for big jump
+
+        let logged = messages.lock().unwrap();
+        assert_eq!(logged.len(), 2, "Increments of various sizes should trigger 3 logs");
+    }
+
+    #[test]
     fn logprogress_output_contains_message() {
         let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
         let messages_clone = Arc::clone(&messages);
@@ -563,7 +594,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn logprogress_exceed_total() {
         let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
         let messages_clone = Arc::clone(&messages);
@@ -575,6 +605,12 @@ mod tests {
         let mut log_progress = LogProgress::new("msg", "final", false, Some(100), 10, log_fn);
         log_progress.inc(50);
         log_progress.inc(60);
+        log_progress.finish();
+
+        let logged = messages.lock().unwrap();
+        assert!(logged[0].contains("msg 50/100"));
+        assert!(logged[1].contains("msg 110/100"));
+        assert!(logged[2].contains("final 110/100"));
     }
 
     #[test]
