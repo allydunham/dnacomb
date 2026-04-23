@@ -111,7 +111,7 @@ impl LibraryRegionMatch {
 /// This groups together observed combinations that share the same per-region
 /// summary library assignments and the same overall combination-match status.
 /// Counts are accumulated per read group.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LibraryCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
     pub counts: HashMap<ReadGroup, u32>,

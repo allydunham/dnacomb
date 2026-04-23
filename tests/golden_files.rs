@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use dnacomb::filters::AlignmentTolerance;
+use dnacomb::library::Library;
 use dnacomb::parsing::ReadPairProducer;
 use dnacomb::{
-    count_reads, write_counts, write_filter_summary, write_library_counts, write_summary,
     Compression, CountMode, DistanceMetric, FilterConfig, LibrarySpec, ProgressStyle,
-    ReadPairParser, SeqFormat, SeqPath,
+    ReadPairParser, SeqFormat, SeqPath, count_reads, write_counts, write_filter_summary,
+    write_library_counts, write_summary,
 };
-use dnacomb::library::Library;
 use regex::Regex;
 
 /// One golden integration-test case.
@@ -71,12 +71,7 @@ impl GoldenCase {
 
     fn forward_input_path(&self) -> PathBuf {
         let dir = self.dir();
-        for candidate in [
-            "forward.fq",
-            "forward.fa",
-            "forward.fq.gz",
-            "forward.fa.gz",
-        ] {
+        for candidate in ["forward.fq", "forward.fa", "forward.fq.gz", "forward.fa.gz"] {
             let p = dir.join(candidate);
             if p.exists() {
                 return p;
@@ -91,12 +86,7 @@ impl GoldenCase {
         }
 
         let dir = self.dir();
-        for candidate in [
-            "reverse.fq",
-            "reverse.fa",
-            "reverse.fq.gz",
-            "reverse.fa.gz",
-        ] {
+        for candidate in ["reverse.fq", "reverse.fa", "reverse.fq.gz", "reverse.fa.gz"] {
             let p = dir.join(candidate);
             if p.exists() {
                 return Some(p);
@@ -127,22 +117,15 @@ impl GoldenCase {
 }
 
 fn read_tsv(path: PathBuf) -> Result<String> {
-    fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))
+    fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
 }
 
 /// Compare a produced file to `expected.<suffix>.tsv` inside the fixture directory.
 /// If the expected file is missing, this fails with a helpful message so you can
 /// inspect the produced tempdir and generate the golden file yourself.
-fn assert_matches_expected(
-    expected: &Path,
-    observed: &Path,
-) -> Result<()> {
+fn assert_matches_expected(expected: &Path, observed: &Path) -> Result<()> {
     if !observed.exists() {
-        anyhow::bail!(
-            "Missing observed file: {}",
-            observed.display()
-        );
+        anyhow::bail!("Missing observed file: {}", observed.display());
     }
 
     if !expected.exists() {
@@ -202,10 +185,7 @@ fn run_case(case: &GoldenCase) -> Result<()> {
     });
 
     let reader = ReadPairParser::from_paths(
-        forward,
-        reverse,
-        group,
-        0, // max_reads
+        forward, reverse, group, 0, // max_reads
         b'I',
     )
     .context("creating read parser")?;
@@ -221,13 +201,7 @@ fn run_case(case: &GoldenCase) -> Result<()> {
         None => None,
     };
 
-    let alignment_scorer = dnacomb::AlignmentScorer::new(
-        6,
-        -2,
-        -3,
-        -10,
-        -4,
-    );
+    let alignment_scorer = dnacomb::AlignmentScorer::new(6, -2, -3, -10, -4);
 
     let alignment_tolerance = match (&lib_spec, case.alignment_tolerance) {
         (None, None) => None,
@@ -240,15 +214,18 @@ fn run_case(case: &GoldenCase) -> Result<()> {
                 None
             };
 
-            Some(AlignmentTolerance::from_expected_reads(
-                &l.expected_forward_read(),
-                r.as_ref(),
-                &l.template_sequence(),
-                &alignment_scorer,
-                t,
-                false
-            ).expect("AlignmentTolerance build failed"))
-        },
+            Some(
+                AlignmentTolerance::from_expected_reads(
+                    &l.expected_forward_read(),
+                    r.as_ref(),
+                    &l.template_sequence(),
+                    &alignment_scorer,
+                    t,
+                    false,
+                )
+                .expect("AlignmentTolerance build failed"),
+            )
+        }
     };
 
     let filter_config = FilterConfig::new(
@@ -293,14 +270,13 @@ fn run_case(case: &GoldenCase) -> Result<()> {
 
         let library = Library::from_files(&library_path_strings, spec, case.max_distance)?;
 
-        counts
-            .compare_to_library(
-                library,
-                Some(&progress_style),
-                case.distance_metric,
-                case.max_matches,
-                case.threads,
-            )?;
+        counts.compare_to_library(
+            library,
+            Some(&progress_style),
+            case.distance_metric,
+            case.max_matches,
+            case.threads,
+        )?;
     }
 
     // Write output
@@ -337,13 +313,10 @@ fn run_case(case: &GoldenCase) -> Result<()> {
     match (case.compare_to_library, library_counts_tsv) {
         (true, None) => anyhow::bail!("Expected library counts TSV missing"),
         (false, Some(_)) => anyhow::bail!("Unexpected library counts TSV present"),
-        (false, None) => {},
+        (false, None) => {}
         (true, Some(path)) => {
-            assert_matches_expected(
-                &dir.join("expected.library_counts.tsv"),
-                &path,
-            )?;
-        },
+            assert_matches_expected(&dir.join("expected.library_counts.tsv"), &path)?;
+        }
     }
 
     Ok(())
@@ -461,4 +434,3 @@ fn filtering() -> Result<()> {
 
     run_case(&case)
 }
-

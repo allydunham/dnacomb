@@ -555,7 +555,11 @@ mod tests {
         log_progress.inc(25); // 40 - 2 messages triggered - only one extra for big jump
 
         let logged = messages.lock().unwrap();
-        assert_eq!(logged.len(), 2, "Increments of various sizes should trigger 3 logs");
+        assert_eq!(
+            logged.len(),
+            2,
+            "Increments of various sizes should trigger 3 logs"
+        );
     }
 
     #[test]

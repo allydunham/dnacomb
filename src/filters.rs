@@ -274,7 +274,7 @@ impl AlignmentTolerance {
         template: &Sequence,
         alignment_scorer: &AlignmentScorer,
         tolerance: f32,
-        log: bool
+        log: bool,
     ) -> Result<AlignmentTolerance, ReadCountError> {
         // Initialise aligner
         let scoring = alignment_scorer.get_scoring();
@@ -306,11 +306,7 @@ impl AlignmentTolerance {
             }
         }
 
-        Ok(AlignmentTolerance::new(
-            tolerance,
-            f_alignment.score,
-            r_score,
-        )?)
+        AlignmentTolerance::new(tolerance, f_alignment.score, r_score)
     }
 }
 
@@ -932,22 +928,19 @@ mod tests {
 
     #[test]
     fn test_alignment_tolerance_from_reads() {
-        let alignment_scorer = crate::AlignmentScorer::new(
-            6,
-            -2,
-            -3,
-            -10,
-            -4,
-        );
+        let alignment_scorer = crate::AlignmentScorer::new(6, -2, -3, -10, -4);
 
         let tol = AlignmentTolerance::from_expected_reads(
             &vec![b'A', b'C', b'G', b'T'],
             Some(&vec![b'T', b'G', b'C', b'A']),
-            &vec![b'A', b'C', b'G', b'T', b'G', b'C', b'G', b'C', b'T', b'G', b'C', b'A'],
+            &vec![
+                b'A', b'C', b'G', b'T', b'G', b'C', b'G', b'C', b'T', b'G', b'C', b'A',
+            ],
             &alignment_scorer,
             0.75,
-            false
-        ).unwrap();
+            false,
+        )
+        .unwrap();
 
         assert_eq!(tol.minimum_f_score, 18);
         assert_eq!(tol.minimum_r_score, 18);

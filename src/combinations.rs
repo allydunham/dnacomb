@@ -37,7 +37,7 @@ use crate::seqs::SeqPair;
 ///
 /// The container is designed for incremental counting followed by an optional
 /// library-comparison step and final output summarisation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObservedCombinations {
     pub region_ids: Vec<RegionID>,
     regions: HashMap<RegionKey, Arc<Mutex<ObservedRegion>>>,

@@ -32,7 +32,7 @@ use crate::lib_spec::LibrarySpec;
 /// A `Library` dispatches region lookups to the appropriate [`SubLibrary`] based
 /// on region ID. This allows independent library TSVs to define separate parts of
 /// a combinatorial design while presenting a single lookup interface.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Library {
     pub regions: HashMap<RegionID, usize>,
     pub sublibraries: Vec<SubLibrary>,
@@ -128,7 +128,7 @@ impl Library {
 /// A `SubLibrary` stores the expected sequence combinations from one library TSV
 /// and supports efficient lookup of observed sequences against the unique
 /// sequences present in each region.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SubLibrary {
     /// Full sequences for each member of the library, divided into region vectors. The full nth
     /// sequence contains the nth sequence from each region vector
@@ -190,12 +190,11 @@ pub struct LibraryRegion {
 impl Hash for LibraryRegion {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.sequence.hash(state);
-        self.inds
-            .iter()
-            .copied()
-            .collect::<Vec<usize>>()
-            .sort_unstable()
-            .hash(state);
+        let mut i = self.inds.iter().copied().collect::<Vec<usize>>();
+
+        i.sort_unstable();
+
+        i.hash(state);
     }
 }
 
@@ -1892,5 +1891,23 @@ mod tests {
         assert!(err.to_string().contains("reserved"));
 
         fs::remove_file(path).ok();
+    }
+
+    // Test repeated hashing with the same library region is stable
+    #[test]
+    fn library_region_hashes() {
+        let mut regs = HashSet::new();
+
+        for _ in 0..1000 {
+            let reg = LibraryRegion {
+                sequence: seq_from_bytes(b"ACGT"),
+                inds: HashSet::from_iter(vec![1usize, 2, 3].into_iter()),
+                ids: HashSet::new(),
+            };
+
+            regs.insert(reg);
+        }
+
+        assert_eq!(regs.len(), 1, "Same LibraryRegion hash isn't consistent")
     }
 }

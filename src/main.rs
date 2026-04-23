@@ -399,13 +399,14 @@ fn run(args: Cli) -> Result<(), Error> {
             };
 
             Some(AlignmentTolerance::from_expected_reads(
-            &l.expected_forward_read(),
-            r.as_ref(),
-            &l.template_sequence(),
-            &alignment_scorer,
-            t,
-            true
-        )?)},
+                &l.expected_forward_read(),
+                r.as_ref(),
+                &l.template_sequence(),
+                &alignment_scorer,
+                t,
+                true,
+            )?)
+        }
     };
 
     let filter_config = FilterConfig::new(
@@ -738,7 +739,14 @@ mod tests {
 
     #[test]
     fn cli_parse_library_files() {
-        let args = Cli::try_parse_from(vec!["prog", "-c", "lib1.tsv", "lib2.tsv", "--", "forward.fq"]);
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "-c",
+            "lib1.tsv",
+            "lib2.tsv",
+            "--",
+            "forward.fq",
+        ]);
         assert!(args.is_ok());
         let cli = args.unwrap();
         let libs = cli.library.unwrap();

@@ -1,0 +1,67 @@
+{
+    "id": "pegRNA",
+    "forward_start_region": "primer_f",
+    "forward_read_length": 200,
+    "reverse_start_region": "primer_r",
+    "reverse_read_length": 200,
+    "regions": [
+        {
+            "id": "primer_f",
+            "seq": "GAAAGGACGAAACACC",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "spacer",
+            "seq_type": "Library",
+            "min_length": 20,
+            "max_length": 20,
+            "max_distance": 2
+        },
+        {
+            "id": "scaffold",
+            "seq": "GTTTAAGAGCTAAGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTCGAAAGAGTGGCACCGAGTCGGTGC",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "extension",
+            "seq_type": "Library",
+            "min_length": 18,
+            "max_length": 32,
+            "max_distance": 3
+        },
+        {
+            "id": "tevopepQ",
+            "seq": "CGCGGTTCTATCTAGTTACGCGTTAAACCAACTAGAA",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "polyt",
+            "seq": "TTTTTTTT",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "barcode",
+            "seq_type": "Library",
+            "min_length": 10,
+            "max_length": 10,
+            "max_distance": 2
+        },
+        {
+            "id": "spacing",
+            "seq": "AAGACCAGCGACTGAATGCTGCAGT",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "target_site",
+            "seq_type": "Library",
+            "min_length": 63,
+            "max_length": 63,
+            "max_distance": 7
+        },
+        {
+            "id": "primer_r",
+            "seq": "GTTTGGATCCAATTCT",
+            "seq_type": "Fixed"
+        }
+    ]
+}
