@@ -156,6 +156,13 @@ struct Cli {
     )]
     max_matches: usize,
 
+    /// Skip determining the difference between observed sequences and library matches.
+    /// This avoids aligning regions and can provide a modest performance increase in
+    /// libraries with long regions but loses the HGVS-like variant strings from output
+    /// tables.
+    #[arg(long, action, help_heading = "Library Comparison")]
+    skip_variants: bool,
+
     /// Filter reads with mean Phred score below this threshold
     #[arg(short = 'q', long, help_heading = "Filtering")]
     mean_quality_threshold: Option<f32>,
@@ -206,7 +213,7 @@ struct Cli {
     #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = "Alignment")]
     gap_extend_score: i32,
 
-    /// Disable read-level caching in align mode, trading lower memory usage for
+    /// Disable read-level caching, trading lower memory usage for
     /// slower repeated processing of duplicate read sequences
     #[arg(long, action = ArgAction::SetTrue, help_heading = "Technical")]
     no_cache: bool,
@@ -453,6 +460,7 @@ fn run(args: Cli) -> Result<(), Error> {
                 Some(&progress_style),
                 args.distance_metric,
                 args.max_matches,
+                args.skip_variants,
                 args.threads,
             )?;
         }
@@ -465,7 +473,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(count_path)?,
             false => fs::File::create_new(count_path)?,
         };
-        write_counts(&counts, count_file, args.sort)?;
+        write_counts(&counts, count_file, args.sort, args.skip_variants)?;
     }
 
     // Write library count table if applicable

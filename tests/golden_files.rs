@@ -62,6 +62,7 @@ struct GoldenCase {
     distance_metric: DistanceMetric,
     max_distance: u64,
     max_matches: usize,
+    skip_variants: bool,
 }
 
 impl GoldenCase {
@@ -275,6 +276,7 @@ fn run_case(case: &GoldenCase) -> Result<()> {
             Some(&progress_style),
             case.distance_metric,
             case.max_matches,
+            case.skip_variants,
             case.threads,
         )?;
     }
@@ -290,7 +292,12 @@ fn run_case(case: &GoldenCase) -> Result<()> {
         None
     };
 
-    write_counts(&counts, File::create(&counts_tsv)?, true)?;
+    write_counts(
+        &counts,
+        File::create(&counts_tsv)?,
+        true,
+        case.skip_variants,
+    )?;
 
     if case.compare_to_library {
         write_library_counts(
@@ -346,6 +353,7 @@ fn full_read_single() -> Result<()> {
         distance_metric: DistanceMetric::Hamming,
         max_distance: 3,
         max_matches: 10,
+        skip_variants: false,
     };
 
     run_case(&case)
@@ -374,6 +382,7 @@ fn full_read_paired() -> Result<()> {
         distance_metric: DistanceMetric::Hamming,
         max_distance: 3,
         max_matches: 10,
+        skip_variants: false,
     };
 
     run_case(&case)
@@ -402,6 +411,36 @@ fn inframe() -> Result<()> {
         distance_metric: DistanceMetric::Hamming,
         max_distance: 3,
         max_matches: 10,
+        skip_variants: false,
+    };
+
+    run_case(&case)
+}
+
+#[test]
+fn no_variants() -> Result<()> {
+    let case = GoldenCase {
+        dir: "tests/no_variants",
+        mode: CountMode::Inframe,
+        paired: true,
+        full_seq: true,
+        group_regex: None,
+        use_libspec: true,
+        mean_quality_threshold: None,
+        minimum_read_length: None,
+        maximum_read_length: None,
+        alignment_tolerance: None,
+        filter_empty: true,
+        pattern_length: None,
+        pattern_tolerance: None,
+        cache: true,
+        threads: 1,
+        compare_to_library: true,
+        library_files: &["library.tsv"],
+        distance_metric: DistanceMetric::Hamming,
+        max_distance: 3,
+        max_matches: 10,
+        skip_variants: true,
     };
 
     run_case(&case)
@@ -430,6 +469,7 @@ fn filtering() -> Result<()> {
         distance_metric: DistanceMetric::Hamming,
         max_distance: 3,
         max_matches: 10,
+        skip_variants: false,
     };
 
     run_case(&case)

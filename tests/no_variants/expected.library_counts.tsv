@@ -1,0 +1,5 @@
+group	region1	region2	combination_status	combinations_in_library	combination_id	count
+	GAAAG	CTTTG	match	1	seq1	4
+	AAGAG	AACAG	match	1	seq2	3
+	ATGTC	GCTGG	match	1	seq3	2
+			mismatch	0		1

@@ -219,7 +219,7 @@ mod tests {
                 RegionMatch::Match {
                     seq_match: unique.clone(),
                     distance: 1,
-                    diff: SequenceDiff::new(vec![EditOperation::Sub(0, b'A', b'T')]),
+                    diff: Some(SequenceDiff::new(vec![EditOperation::Sub(0, b'A', b'T')])),
                 },
                 LibraryRegionMatch::Match {
                     seq_match: unique.clone(),
@@ -229,10 +229,10 @@ mod tests {
                 RegionMatch::MultiMatch {
                     seq_matches: vec![alt1.clone(), alt2.clone()],
                     distance: 1,
-                    diffs: vec![
+                    diffs: Some(vec![
                         SequenceDiff::new(vec![EditOperation::Sub(0, b'C', b'A')]),
                         SequenceDiff::new(vec![EditOperation::Sub(0, b'G', b'A')]),
-                    ],
+                    ]),
                 },
                 LibraryRegionMatch::MultiMatch {
                     seq_matches: vec![alt1.clone(), alt2.clone()],

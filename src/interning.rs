@@ -27,7 +27,13 @@
 //!
 //! In interning mode, interned values are stored in global process-wide tables
 //! and are not garbage collected during execution. This matches DNAComb's main
-//! CLI workflow, where values accumulate until final output.
+//! CLI workflow, where values accumulate until final output. The sequence interner
+//! can be cleared to reset it between analyses, but this should only be done carefully as
+//! it invalidates all previously issued SeqHandles and using them will either produce
+//! junk data or panic. The ThreadedRodeo's used for strings can't be cleared so will
+//! accumalate until the process ends, but they are expected to be reasonably small for
+//!  most use cases so that shouldn't matter. If it does the non-interning backend is
+//! the only fall back.
 use std::sync::Arc;
 
 #[cfg(feature = "interning")]
@@ -85,6 +91,17 @@ mod enabled {
     #[inline]
     pub fn num_interned_forward() -> usize {
         SEQ_INTERNER.num_interned_forward()
+    }
+
+    /// Clear all interned sequences.
+    ///
+    /// WARNING: This only is intended for advanced library users running multiple
+    /// separate analyses in a long-lived process. It should only be called when
+    /// all previously returned SeqHandle`s and all data structures containing
+    /// them have been dropped. After clearing, resolving or reusing old sequence
+    /// handles is invalid and will either return incorrect data or panic.
+    pub fn clear_seq_interner() {
+        SEQ_INTERNER.clear();
     }
 
     /// Handle identifying an observed sequence.
@@ -288,6 +305,19 @@ mod enabled {
         pub fn num_interned_forward(&self) -> usize {
             self.forward.len()
         }
+
+        /// Remove all interned sequence state.
+        ///
+        /// WARNING: This removes all sequences from the interner and
+        /// invalidates all previously issued `SeqHandle`s. Use of previous
+        /// `SeqHandle`s will produce nonsense results or panic. Only for
+        /// advanced use on long running processes between fully distinct
+        /// analyses.
+        pub fn clear(&self) {
+            self.forward.clear();
+            self.reverse.write().clear();
+            self.next.store(0, Ordering::Release);
+        }
     }
 
     // GroupKey reserving 2 bits for None, Unmatched and Ungrouped
@@ -343,7 +373,7 @@ mod enabled {
         id.0.0
     }
 
-    // Group IDs (Str)
+    // Library IDs (Str)
     /// Shared unique interner instance storing Group names
     static LIB_IDS: Lazy<ThreadedRodeo> = Lazy::new(ThreadedRodeo::default);
 
@@ -467,6 +497,14 @@ mod disabled {
     pub fn num_interned_forward() -> usize {
         0
     }
+
+    /// Clear the sequence interning
+    ///
+    /// In the non-interning backend this is just a no-op, while in the interning
+    /// backend it clears all currently interned sequences for resetting between
+    /// distinct analyses.
+    #[inline]
+    pub fn clear_seq_interner() {}
 
     // Group IDs (Str)
     /// Shared owned group identifier used when interning is disabled.

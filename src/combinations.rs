@@ -287,6 +287,9 @@ impl ObservedCombinations {
     /// - updating each `ObservedCombination` with its overall combination match,
     /// - and constructing the library-level summary table.
     ///
+    /// Determining variants between observed and matched sequence involves an alignment
+    /// between them and can be expensive for long sequences, hence the option to skip.
+    ///
     /// Once this has been run, the container is considered library-compared and
     /// can no longer be merged with uncompared containers.
     pub fn compare_to_library(
@@ -295,6 +298,7 @@ impl ObservedCombinations {
         progress_style: Option<&ProgressStyle>,
         distance_metric: DistanceMetric,
         max_matches: usize,
+        skip_variants: bool,
         threads: usize,
     ) -> Result<(), LibraryError> {
         let n_regs = self.regions.len() as u64;
@@ -322,7 +326,12 @@ impl ObservedCombinations {
             std::cmp::Ordering::Equal => {
                 for r in self.regions.values() {
                     let mut reg = r.lock().unwrap();
-                    let val = reg.compare_to_library(&library, distance_metric, max_matches);
+                    let val = reg.compare_to_library(
+                        &library,
+                        distance_metric,
+                        max_matches,
+                        skip_variants,
+                    );
                     reg.nearest_matches = val;
                     reg_progress.inc(1);
                 }
@@ -343,8 +352,12 @@ impl ObservedCombinations {
                         scope.spawn(move || {
                             while let Ok(region) = rx.recv() {
                                 let mut reg = region.lock().unwrap();
-                                let val =
-                                    reg.compare_to_library(&lib, distance_metric, max_matches);
+                                let val = reg.compare_to_library(
+                                    &lib,
+                                    distance_metric,
+                                    max_matches,
+                                    skip_variants,
+                                );
                                 reg.nearest_matches = val;
                                 tx.send(()).expect("Main thread comparison reciever failed");
                             }
@@ -381,8 +394,13 @@ impl ObservedCombinations {
         );
 
         for value in self.combinations.values_mut() {
-            value.library_matches =
-                value.compare_to_library(&self.region_ids, &library, distance_metric, max_matches);
+            value.library_matches = value.compare_to_library(
+                &self.region_ids,
+                &library,
+                distance_metric,
+                max_matches,
+                skip_variants,
+            );
             comb_progress.inc(1);
         }
         comb_progress.finish();
@@ -957,7 +975,7 @@ mod tests {
         a.add_or_increment_combination(&key, ReadGroup::ungrouped())
             .unwrap();
 
-        a.compare_to_library(make_library(), None, DistanceMetric::Hamming, 1, 1)
+        a.compare_to_library(make_library(), None, DistanceMetric::Hamming, 1, false, 1)
             .unwrap();
 
         let err = a.merge(b).unwrap_err();
@@ -1071,7 +1089,7 @@ mod tests {
         );
 
         counts
-            .compare_to_library(lib, None, DistanceMetric::Hamming, 2, 1)
+            .compare_to_library(lib, None, DistanceMetric::Hamming, 2, false, 1)
             .unwrap();
 
         let summary = counts.summarise();
@@ -1139,7 +1157,7 @@ mod tests {
         assert!(!counts.is_compared_to_library());
 
         counts
-            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, 1)
+            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, false, 1)
             .unwrap();
 
         assert!(counts.is_compared_to_library());
@@ -1193,7 +1211,7 @@ mod tests {
             .unwrap();
 
         counts
-            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, 1)
+            .compare_to_library(make_library(), None, DistanceMetric::Hamming, 10, false, 1)
             .unwrap();
 
         // The two sequences should have collapsed

@@ -99,11 +99,15 @@ impl ObservedRegion {
     /// The result is returned as a `RegionMatch`, which may represent a unique
     /// match, multiple equally good matches, too many matches, no match, or the
     /// absence of this region from the supplied library.
+    ///
+    /// Determining variants between observed and matched sequence involves an alignment
+    /// between them and can be expensive for long sequences, hence the option to skip.
     pub fn compare_to_library(
         &self,
         library: &Library,
         distance_metric: DistanceMetric,
         max_matches: usize,
+        skip_variants: bool,
     ) -> RegionMatch {
         let lib_match = match self.completeness {
             RegionCompleteness::Complete => {
@@ -177,7 +181,11 @@ impl ObservedRegion {
                     RegionMatch::Match {
                         seq_match: x.matches[0].clone(),
                         distance: x.distance,
-                        diff: SequenceDiff::compute_ids(&self.seq, &x.matches[0].sequence),
+                        diff: if skip_variants {
+                            None
+                        } else {
+                            Some(SequenceDiff::compute_ids(&self.seq, &x.matches[0].sequence))
+                        },
                     }
                 } else if x.matches.len() > max_matches {
                     RegionMatch::Overmatched {
@@ -187,11 +195,16 @@ impl ObservedRegion {
                 } else {
                     RegionMatch::MultiMatch {
                         distance: x.distance,
-                        diffs: x
-                            .matches
-                            .iter()
-                            .map(|m| SequenceDiff::compute_ids(&self.seq, &m.sequence))
-                            .collect(),
+                        diffs: if skip_variants {
+                            None
+                        } else {
+                            Some(
+                                x.matches
+                                    .iter()
+                                    .map(|m| SequenceDiff::compute_ids(&self.seq, &m.sequence))
+                                    .collect(),
+                            )
+                        },
                         seq_matches: x.matches,
                     }
                 }
@@ -216,49 +229,9 @@ impl ObservedRegion {
             RegionCompleteness::Partial3Prime => format!("{}^", self.seq.to_str_or_log()),
         };
 
-        match &self.nearest_matches {
-            RegionMatch::Uncompared | RegionMatch::Unmatched | RegionMatch::NoLibrary { .. } => (
-                seq,
-                "".to_string(),
-                "".to_string(),
-                "".to_string(),
-                "0".to_string(),
-            ),
-            RegionMatch::Overmatched { distance, matches } => (
-                seq,
-                "".to_string(),
-                "".to_string(),
-                distance.to_string(),
-                matches.to_string(),
-            ),
-            RegionMatch::Match {
-                seq_match,
-                distance,
-                diff,
-            } => (
-                seq,
-                seq_match.sequence.to_str_or_log(),
-                diff.to_string(),
-                distance.to_string(),
-                "1".to_string(),
-            ),
-            RegionMatch::MultiMatch {
-                seq_matches,
-                distance,
-                diffs,
-            } => {
-                let seqs: String = seq_matches
-                    .iter()
-                    .map(|x| x.sequence.to_str_or_log())
-                    .join(",");
+        let (match_seq, diff, dist, n_matches) = self.nearest_matches.to_strings();
 
-                let diff_str: String = diffs.iter().map(|x| x.to_string()).join(",");
-
-                let count = seq_matches.len().to_string();
-
-                (seq, seqs, diff_str, distance.to_string(), count)
-            }
-        }
+        (seq, match_seq, diff, dist, n_matches)
     }
 }
 
@@ -304,14 +277,14 @@ pub enum RegionMatch {
     Match {
         seq_match: Arc<LibraryRegion>,
         distance: u64,
-        diff: SequenceDiff,
+        diff: Option<SequenceDiff>,
     },
 
     /// Multiple equally good best library-region matches were found.
     MultiMatch {
         seq_matches: Vec<Arc<LibraryRegion>>,
         distance: u64,
-        diffs: Vec<SequenceDiff>,
+        diffs: Option<Vec<SequenceDiff>>,
     },
 
     /// More than `max_matches` equally good matches were found.
@@ -355,7 +328,10 @@ impl RegionMatch {
                 diff,
             } => (
                 seq_match.sequence.to_str_or_log(),
-                diff.to_string(),
+                match diff {
+                    Some(x) => x.to_string(),
+                    None => "NA".to_string(),
+                },
                 distance.to_string(),
                 "1".to_string(),
             ),
@@ -369,7 +345,10 @@ impl RegionMatch {
                     .map(|x| x.sequence.to_str_or_log())
                     .join(",");
 
-                let diff_str: String = diffs.iter().map(|x| x.to_string()).join(",");
+                let diff_str: String = match diffs {
+                    None => "NA".to_string(),
+                    Some(x) => x.iter().map(|x| x.to_string()).join(","),
+                };
 
                 let count = seq_matches.len().to_string();
 
@@ -629,12 +608,32 @@ mod tests {
                 sequence: seq_from_bytes(b"ACGT"),
             }),
             distance: 0,
-            diff: SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]),
+            diff: Some(SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')])),
         };
         let (seq, match_seq, diff, dist, count) = r.to_strings();
         assert_eq!(seq, "ACGT");
         assert_eq!(match_seq, "ACGT");
         assert_eq!(diff, "2A>G");
+        assert_eq!(dist, "0");
+        assert_eq!(count, "1");
+    }
+
+    #[test]
+    fn region_to_strings_o_diff() {
+        let mut r = make_region("r1", b"ACGT", RegionCompleteness::Complete);
+        r.nearest_matches = RegionMatch::Match {
+            seq_match: Arc::new(LibraryRegion {
+                ids: HashSet::from([library_id_from_str("lib1")]),
+                inds: HashSet::from([1]),
+                sequence: seq_from_bytes(b"ACGT"),
+            }),
+            distance: 0,
+            diff: None,
+        };
+        let (seq, match_seq, diff, dist, count) = r.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(match_seq, "ACGT");
+        assert_eq!(diff, "NA");
         assert_eq!(dist, "0");
         assert_eq!(count, "1");
     }
@@ -693,11 +692,29 @@ mod tests {
                 sequence: seq_from_bytes(b"ACGT"),
             }),
             distance: 0,
-            diff: SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')]),
+            diff: Some(SequenceDiff::new(vec![EditOperation::Sub(1, b'A', b'G')])),
         };
         let (seq, diff, dist, count) = m.to_strings();
         assert_eq!(seq, "ACGT");
         assert_eq!(diff, "2A>G");
+        assert_eq!(dist, "0");
+        assert_eq!(count, "1");
+    }
+
+    #[test]
+    fn region_match_to_strings_no_diff() {
+        let m = RegionMatch::Match {
+            seq_match: Arc::new(LibraryRegion {
+                ids: HashSet::from([library_id_from_str("lib1")]),
+                inds: HashSet::from([1]),
+                sequence: seq_from_bytes(b"ACGT"),
+            }),
+            distance: 0,
+            diff: None,
+        };
+        let (seq, diff, dist, count) = m.to_strings();
+        assert_eq!(seq, "ACGT");
+        assert_eq!(diff, "NA");
         assert_eq!(dist, "0");
         assert_eq!(count, "1");
     }
@@ -723,7 +740,7 @@ mod tests {
         let m = RegionMatch::MultiMatch {
             seq_matches: vec![l1, l2],
             distance: 1,
-            diffs: vec![d1, d2],
+            diffs: Some(vec![d1, d2]),
         };
         let (seq, diff, dist, count) = m.to_strings();
         assert_eq!(seq, "ACGT,CCGT");
@@ -758,13 +775,13 @@ mod tests {
         let m1 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 0,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         let m2 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 0,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         assert_eq!(m1, m2);
@@ -783,13 +800,13 @@ mod tests {
         let m1 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 0,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         let m2 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 1,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         assert_ne!(m1, m2);
@@ -810,13 +827,13 @@ mod tests {
         let m1 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 0,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         let m2 = RegionMatch::Match {
             seq_match: l.clone(),
             distance: 0,
-            diff: d.clone(),
+            diff: Some(d.clone()),
         };
 
         let mut set = HashSet::new();

@@ -88,7 +88,7 @@
 //!
 //! // Write full count table
 //! let out = File::create("example.counts.tsv")?;
-//! write_counts(&counts, out, true)?;
+//! write_counts(&counts, out, true, false)?;
 //!
 //! # Ok(())
 //! # }

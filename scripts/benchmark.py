@@ -169,10 +169,11 @@ def main():
             [100, 1000, 10000],
             [10000, 100000, 1000000],
             [True, False],
+            [True, False],
             [True, False]
         )
 
-        for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired in param_combs:
+        for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired, skip_variants in param_combs:
             if mode == "full-read" and not (metric == "exact" and lib_size == 100):
                 continue
 
@@ -192,7 +193,7 @@ def main():
                               r_file=f"{inroot}_{lib}_{lib_size}_reverse.fq",
                               lib_spec=f"{inroot}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache,
-                              threads=args.threads, additional_args=["--max-reads", str(n_reads)],
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads), "--skip-variants" if skip_variants else ""],
                               path=args.path)
             else:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
@@ -200,7 +201,7 @@ def main():
                               f_file=f"{inroot}_{lib}_{lib_size}.fq",
                               lib_spec=f"{inroot}_{lib}_{lib_size}.json",
                               mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache,
-                              threads=args.threads, additional_args=["--max-reads", str(n_reads)],
+                              threads=args.threads, additional_args=["--max-reads", str(n_reads), "--skip-variants" if skip_variants else ""],
                               path=args.path)
 
 def parse_args(arg_list=None):

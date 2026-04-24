@@ -40,10 +40,16 @@ use crate::utils::div_or_zero;
 /// - combinations_in_library: Number of matches in the library
 /// - combination_id: The library ID of the matching combinations
 /// - count: Number of times observed
+///
+/// Skipping variants removes the {region}_variants column, which simplifies output
+/// slightly but is primarily useful when the variants haven't been calculated
+/// during library comparison to avoid many alignment operations, which would otherwise
+/// produce a column of "NA" strings.
 pub fn write_counts(
     combinations: &ObservedCombinations,
     file: File,
     sort: bool,
+    skip_variants: bool,
 ) -> Result<(), anyhow::Error> {
     let mut writer = BufWriter::new(file);
 
@@ -51,10 +57,14 @@ pub fn write_counts(
     write!(writer, "group\tforward\treverse\t")?;
     for r in &combinations.region_ids {
         let s = region_id_to_str(r);
-        write!(
-            writer,
-            "{s}\t{s}_nearest\t{s}_variants\t{s}_distance\t{s}_n_matches\t"
-        )?;
+        if skip_variants {
+            write!(writer, "{s}\t{s}_nearest\t{s}_distance\t{s}_n_matches\t")?;
+        } else {
+            write!(
+                writer,
+                "{s}\t{s}_nearest\t{s}_variants\t{s}_distance\t{s}_n_matches\t"
+            )?;
+        }
     }
     writeln!(
         writer,
@@ -82,7 +92,11 @@ pub fn write_counts(
                 Some(r) => {
                     let (seq, nearest, diff, dist, n) = r.lock().unwrap().to_strings();
 
-                    format!("{seq}\t{nearest}\t{diff}\t{dist}\t{n}")
+                    if skip_variants {
+                        format!("{seq}\t{nearest}\t{dist}\t{n}")
+                    } else {
+                        format!("{seq}\t{nearest}\t{diff}\t{dist}\t{n}")
+                    }
                 }
                 None => "\t\t\t\t".to_string(),
             })
@@ -441,7 +455,7 @@ mod tests {
             region_id_from_str("region2"),
         ]);
 
-        write_counts(&combinations, file.reopen()?, false)?;
+        write_counts(&combinations, file.reopen()?, false, false)?;
 
         let mut content = String::new();
         file.reopen()?.read_to_string(&mut content)?;
@@ -450,6 +464,30 @@ mod tests {
         assert_eq!(
             header,
             "group\tforward\treverse\tregion1\tregion1_nearest\tregion1_variants\tregion1_distance\tregion1_n_matches\tregion2\tregion2_nearest\tregion2_variants\tregion2_distance\tregion2_n_matches\tcombination_status\tcombination_distance\tcombinations_in_library\tcombination_id\tcount"
+        );
+
+        Ok(())
+    }
+
+    // Write counts header
+    #[test]
+    fn write_counts_header_structure_no_variants() -> anyhow::Result<()> {
+        let file = NamedTempFile::new()?;
+
+        let combinations = empty_combs(vec![
+            region_id_from_str("region1"),
+            region_id_from_str("region2"),
+        ]);
+
+        write_counts(&combinations, file.reopen()?, false, true)?;
+
+        let mut content = String::new();
+        file.reopen()?.read_to_string(&mut content)?;
+
+        let header = content.lines().next().unwrap();
+        assert_eq!(
+            header,
+            "group\tforward\treverse\tregion1\tregion1_nearest\tregion1_distance\tregion1_n_matches\tregion2\tregion2_nearest\tregion2_distance\tregion2_n_matches\tcombination_status\tcombination_distance\tcombinations_in_library\tcombination_id\tcount"
         );
 
         Ok(())
@@ -467,6 +505,7 @@ mod tests {
             None,
             DistanceMetric::Hamming,
             1,
+            false,
             1,
         )?;
 

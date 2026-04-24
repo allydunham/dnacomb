@@ -103,6 +103,7 @@ impl ObservedCombination {
         library: &Library,
         distance_metric: DistanceMetric,
         max_matches: usize,
+        skip_variants: bool,
     ) -> CombinationMatch {
         let mut comb_dist: u64 = 0;
         let mut candidate_matches: Vec<Option<HashSet<LibraryID>>> =
@@ -115,7 +116,12 @@ impl ObservedCombination {
                     // Should never need this with the implementation in ObservedCombinations, but here as a back-up as otherwise could panic later. Do all regions first as slightly more efficient and easier to follow in log
                     let mut reg = x.lock().unwrap();
                     if !reg.is_compared_to_library() {
-                        let val = reg.compare_to_library(library, distance_metric, max_matches);
+                        let val = reg.compare_to_library(
+                            library,
+                            distance_metric,
+                            max_matches,
+                            skip_variants,
+                        );
                         reg.nearest_matches = val;
                     }
                     reg
@@ -531,7 +537,7 @@ mod tests {
         let comb = make_combination(&tc.regions);
         let region_ids: Vec<RegionID> = vec![region_id_from_str("r1"), region_id_from_str("r2")];
 
-        let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3);
+        let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3, true);
 
         match (&tc.expected, got.clone()) {
             (Expected::Match { name, distance }, CombinationMatch::Match { distance: d, .. }) => {
