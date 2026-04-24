@@ -6,8 +6,7 @@ use dnacomb::counting::AlignmentScorer;
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
 use dnacomb::parsing::ReadPairProducer;
 use dnacomb::{
-    Compression, CountMode, LibrarySpec, ReadPairParser, SeqFormat, SeqPath,
-    count_reads,
+    Compression, CountMode, LibrarySpec, ReadPairParser, SeqFormat, SeqPath, count_reads,
 };
 use std::path::{Path, PathBuf};
 
@@ -27,7 +26,6 @@ struct FixtureCase {
 struct CountCase {
     fixture: FixtureCase,
     mode: CountMode,
-    cache: bool,
 }
 
 fn repo_path(rel: &str) -> PathBuf {
@@ -91,12 +89,7 @@ fn case_name(case: CountCase) -> String {
         CountMode::Align => "align",
     };
 
-    format!(
-        "{}_{}_cache:{}",
-        case.fixture.name,
-        mode,
-        if case.cache { "on" } else { "off" },
-    )
+    format!("{}/{}", case.fixture.name, mode,)
 }
 
 fn valid_case(case: CountCase) -> bool {
@@ -154,22 +147,15 @@ fn build_cases() -> Vec<CountCase> {
         CountMode::Pattern,
         CountMode::Align,
     ];
-    let caches = [false, true];
 
     let mut out = Vec::new();
 
     for fixture in fixtures {
         for mode in modes {
-            for cache in caches {
-                let case = CountCase {
-                    fixture,
-                    mode,
-                    cache,
-                };
+            let case = CountCase { fixture, mode };
 
-                if valid_case(case) {
-                    out.push(case);
-                }
+            if valid_case(case) {
+                out.push(case);
             }
         }
     }
@@ -178,9 +164,9 @@ fn build_cases() -> Vec<CountCase> {
 }
 
 fn bench_counting_modes(c: &mut Criterion) {
-    let mut group = c.benchmark_group("counting_modes_file_backed");
+    let mut group = c.benchmark_group("counting_modes");
 
-    group.sample_size(10);
+    group.sample_size(100);
 
     for case in build_cases() {
         group.throughput(Throughput::Elements(1000));

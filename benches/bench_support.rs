@@ -131,7 +131,7 @@ pub fn apply_mixed_edit(seq: &[u8]) -> Vec<u8> {
         return insert_base(seq, seq.len() / 2, b'A');
     }
 
-    let out = apply_n_subs(seq, 1);
+    let out = apply_n_subs(seq, 2);
     let out = insert_base(&out, out.len() / 2, b'T');
     delete_base(&out, out.len() / 3)
 }

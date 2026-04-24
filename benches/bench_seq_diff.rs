@@ -60,7 +60,7 @@ fn make_case(case: DiffCase) -> (Vec<u8>, Vec<u8>, String) {
 fn bench_seq_diff_compute(c: &mut Criterion) {
     let mut group = c.benchmark_group("seq_diff");
 
-    for &len in &[12usize, 24usize, 60usize, 120usize] {
+    for &len in &[16usize, 64usize, 128usize] {
         group.throughput(Throughput::Elements(len as u64));
 
         let cases = [

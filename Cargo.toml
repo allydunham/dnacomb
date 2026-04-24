@@ -55,21 +55,21 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = { version = "3.27" }
 
 [[bench]]
-name = "library_lookup"
+name = "bench_library_lookup"
 harness = false
 
 [[bench]]
-name = "seq_diff"
+name = "bench_seq_diff"
 harness = false
 
 [[bench]]
-name = "combinations"
+name = "bench_combinations"
 harness = false
 
 [[bench]]
-name = "counting"
+name = "bench_counting"
 harness = false
 
 [[bench]]
-name = "interning"
+name = "bench_interning"
 harness = false
