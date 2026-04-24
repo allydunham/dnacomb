@@ -97,7 +97,7 @@ impl SequenceDiff {
     /// deletions. Consecutive insertion or deletion operations are merged into
     /// single multi-base events where possible. Positions are reported relative to the expected sequence.
     pub fn compute(observed: &[u8], expected: &[u8]) -> Self {
-        if observed.is_empty() && expected.is_empty() {
+        if observed.is_empty() && expected.is_empty() || observed == expected{
             return Self::new(Vec::new());
         }
 
