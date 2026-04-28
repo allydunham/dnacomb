@@ -919,11 +919,13 @@ fn count_single_align<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -937,6 +939,7 @@ fn count_single_align<T: ReadPairProducer>(
                 if cache {
                     counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
+                progress.inc(1);
                 continue;
             }
         }
@@ -1070,11 +1073,13 @@ fn count_paired_align<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1115,6 +1120,7 @@ fn count_paired_align<T: ReadPairProducer>(
                 if cache {
                     counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
+                progress.inc(1);
                 continue;
             }
         }
@@ -1337,11 +1343,13 @@ fn count_single_pattern<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1435,11 +1443,13 @@ fn count_paired_pattern<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1555,11 +1565,13 @@ fn count_single_inframe<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1708,11 +1720,13 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
         // Check if read needs to be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1863,6 +1877,7 @@ fn count_raw<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
