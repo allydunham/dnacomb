@@ -9,7 +9,7 @@ import subprocess
 def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
              metric="exact", verbose=True, no_cache=False, sort=True,
              group=None, overwrite=True, library=None, threads=1,
-             path=None, additional_args=None, rm_output=False):
+             skip_variants=False, path=None, additional_args=None, rm_output=False):
     """
     Run the tool, returning stdout/err and the completed process and a time in seconds
     """
@@ -35,6 +35,9 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
 
     if overwrite:
         args.append("--overwrite")
+
+    if skip_variants:
+        args.append("--skip-variants")
 
     if library is not None:
         args.append("--library")
