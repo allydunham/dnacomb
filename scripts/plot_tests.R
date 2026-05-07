@@ -1,5 +1,5 @@
 #!/usr/bin/env Rscript
-# Plot benchmark and test results
+# Plot test results
 library(tidyverse)
 library(ggpubr)
 library(ggh4x)
@@ -11,7 +11,7 @@ theme_set(theme_pubclean() + theme(legend.position = 'right',
                                    strip.background = element_blank(),
                                    legend.key = element_blank()))
 
-# Correctness tests
+## Import data
 test_pairs <- tibble(
   observed = str_remove(dir("data/tests/", pattern = "*\\.counts.tsv"), ".counts.tsv")
 ) %>%
@@ -79,6 +79,7 @@ test_counts <- filter(test_pairs, threads == 1) %>%
   separate_wider_delim(observed, delim = ":", names = c("test", "mode", "distance", "library", "end", "threads"), cols_remove = TRUE) %>%
   mutate(threads = as.integer(threads))
 
+## Observed vs expected
 category_colours <- c(
   "match" = "green", "exact_match" = "green", "nearest_match" = "darkgreen",
   "mismatch" = "orange", "nonmatch" = "red", 
@@ -127,6 +128,7 @@ p_summary_bars <- filter(test_counts, split == "summary", threads == 1) %>%
         axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 ggsave("plots/test/summary_bars.png", p_summary_bars, units = "cm", height = 40, width = 40)
 
+## Corelations
 count_cors <- filter(test_counts, split == "all_regions", threads == 1) %>%
   group_by(mode, distance, library, end) %>%
   group_modify(~broom::tidy(cor.test(.$count, .$true_count))) %>%
@@ -166,128 +168,3 @@ p_thread_cor <- select(threaded_counts, starts_with("threads")) %>%
   labs(x = "Threads", y = "Threads") +
   scale_fill_distiller(name = "Count\nR", palette = "RdBu", direction = 1, limits = c(-1, 1))
 ggsave("plots/test/thread_count_correlation.png", p_thread_cor, units = "cm", height = 10, width = 10)
-
-# Benchmarks
-na_or_zero <- function(x) {
-  if_else(is.na(x), 0, x)
-}
-
-time_label <- function(x) {
-  x[is.na(x)] <- 0
-  out <- str_c(x, "s")
-  out[x >= 60] <- str_c(round(x[x >= 60]/60, 1), "m")
-  out[x >= 3600] <- str_c(round(x[x >= 3600]/3600, 1), "h")
-  return(out)
-}
-
-# Captures any number of benchmark TSVs called bench_1_1, bench_2_1, ... for bench_rep_threads
-bench_cols <- c(
-  "name", "fwd", "rev", "lib_spec", "mode", "metric",
-  "no_cache", "sort", "group", "library_counts",
-  "library_size", "read_length", "additional_args",
-  "total_time", "reads", "region_time", "region_rate",
-  "unique_regions", "library_time", "library_rate",
-  "summary_size", "summary_time", "summary_rate"
-)
-benchmark <- dir("data/benchmark", pattern = "bench_[0-9]*_[0-9]*.tsv", full.names = TRUE) %>%
-  set_names() %>%
-  map(read_tsv, col_names = bench_cols, skip = 1) %>%
-  bind_rows(.id = "rep") %>%
-  extract(rep, c("rep", "threads"), "data/benchmark/bench_([0-9]*)_([0-9]*)", convert = TRUE)
-
-p_modes_time <- filter(benchmark, threads == 1) %>%
-  mutate(mode = if_else(mode == "align", str_c(mode, if_else(no_cache, " (uncached)", " (cached)")), mode),
-         mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align (cached)", "align (uncached)")),
-         target = str_c(str_match(name, "lib:([a-z]*)")[,2], " (", read_length, "bp)"),
-         ends = if_else(rev == "None", "Single end", "Paired end")) %>%
-  {
-    ggplot(., aes(x = reads, y = region_time, colour = as.character(library_size), linetype = ends, shape = as.character(rep))) +
-      facet_grid2(rows = vars(target), cols = vars(mode), render_empty = FALSE) +
-      geom_point() +
-      geom_line() +
-      scale_colour_brewer(name = "Library size", palette = "Set1") +
-      scale_shape_discrete(name = "Rep") +
-      scale_linetype_discrete(name = "") +
-      scale_x_log10(breaks = c(1e5, 1e6, 1e7), labels = c("100k", "1M", "10M")) +
-      scale_y_continuous(breaks = c(0, 1, 30, 60, 300, 600, 1800, 3600, 7200, 14400), labels = time_label, transform = "pseudo_log") +
-      labs(x = "Number of Reads", y = "Time")
-  }
-ggsave("plots/bench/modes_time.png", p_modes_time, units = "cm", height = 25, width = 25)
-
-p_modes_rate <- filter(benchmark, threads == 1) %>%
-  mutate(mode = if_else(mode == "align", str_c(mode, if_else(no_cache, " (uncached)", " (cached)")), mode),
-         mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align (cached)", "align (uncached)")),
-         target = str_c(str_match(name, "lib:([a-z]*)")[,2], " (", read_length, "bp)"),
-         ends = if_else(rev == "None", "Single end", "Paired end")) %>%
-  {
-    ggplot(., aes(x = reads, y = region_rate, colour = as.character(library_size), linetype = ends, shape = as.character(rep))) +
-      facet_grid2(rows = vars(target), cols = vars(mode), render_empty = FALSE) +
-      geom_point() +
-      geom_line() +
-      scale_colour_brewer(name = "Library size", palette = "Set1") +
-      scale_shape_discrete(name = "Rep") +
-      scale_linetype_discrete(name = "") +
-      scale_x_log10(breaks = c(1e5, 1e6, 1e7), labels = c("100k", "1M", "10M")) +
-      scale_y_continuous(breaks = c(1, 1e3, 1e4, 1e5, 1e6), transform = "pseudo_log", limits = c(0, 2e6)) +
-      labs(x = "Number of Reads", y = "Processing rate (reads/s)")
-  }
-ggsave("plots/bench/modes_rate.png", p_modes_rate, units = "cm", height = 25, width = 25)
-
-p_metrics_time <- filter(benchmark, threads == 1, mode == "align", !no_cache, reads < 1e7) %>%
-  mutate(target = str_c(str_match(name, "lib:([a-z]*)")[,2], " (", read_length, "bp)"),
-         metric = factor(metric, levels = c("exact", "hamming", "bounded-levenshtein", "levenshtein")),
-         ends = if_else(rev == "None", "Single end", "Paired end")) %>%
-  {
-    ggplot(., aes(x = reads, y = total_time, colour = as.character(library_size), linetype = ends, shape = as.character(rep))) +
-      facet_grid2(rows = vars(target), cols = vars(metric), render_empty = FALSE) +
-      geom_point() +
-      geom_line() +
-      scale_colour_brewer(name = "Library size", palette = "Set1") +
-      scale_shape_discrete(name = "Rep") +
-      scale_linetype_discrete(name = "") +
-      scale_x_log10(breaks = c(1e5, 1e6), labels = c("100k", "1M")) +
-      scale_y_continuous(breaks = c(0, 1, 30, 60, 300, 600, 1800, 3600, 7200, 14400), labels = time_label, transform = "pseudo_log",
-                         limits = c(0, 1.5e4)) +
-      labs(x = "Number of Reads", y = "Time")
-  }
-ggsave("plots/bench/metrics_time.png", p_metrics_time, units = "cm", height = 25, width = 25)
-
-p_metrics_rate <- filter(benchmark, threads == 1, mode == "align", !no_cache, reads < 1e7) %>%
-  mutate(target = str_c(str_match(name, "lib:([a-z]*)")[,2], " (", read_length, "bp)"),
-         metric = factor(metric, levels = c("exact", "hamming", "bounded-levenshtein", "levenshtein")),
-         ends = if_else(rev == "None", "Single end", "Paired end")) %>%
-  {
-    ggplot(., aes(x = reads, y = library_rate, colour = as.character(library_size), linetype = ends, shape = as.character(rep))) +
-      facet_grid2(rows = vars(target), cols = vars(metric), render_empty = FALSE) +
-      geom_point() +
-      geom_line() +
-      scale_colour_brewer(name = "Library size", palette = "Set1") +
-      scale_shape_discrete(name = "Rep") +
-      scale_linetype_discrete(name = "") +
-      scale_x_log10(breaks = c(1e5, 1e6), labels = c("100k", "1M")) +
-      scale_y_continuous(breaks = c(1e6, 2e6, 3e6, 4e6)) +
-      labs(x = "Number of Reads", y = "Regions matched/s")
-  }
-ggsave("plots/bench/metrics_rate.png", p_metrics_rate, units = "cm", height = 25, width = 25)
-
-p_threads <- mutate(benchmark,
-       mode = if_else(mode == "align", str_c(mode, if_else(no_cache, " (uncached)", " (cached)")), mode),
-       mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align (cached)", "align (uncached)")),
-       target = str_c(str_match(name, "lib:([a-z]*)")[,2], " (", read_length, "bp)"),
-       metric = factor(metric, levels = c("exact", "hamming", "bounded-levenshtein", "levenshtein")),
-       ends = if_else(rev == "None", "Single end", "Paired end"),
-       reads = factor(case_match(reads, 100000 ~ "100k", 1000000 ~ "1M", 10000000 ~ "10M"), levels = c("100k", "1M", "10M"))) %>%
-  {
-    ggplot(., aes(x = threads, y = total_time, colour = as.character(library_size), linetype = ends, shape = as.character(rep))) +
-      facet_nested(rows = vars(mode, metric), cols = vars(target, reads), render_empty = FALSE, scales = "free_y") +
-      geom_point() +
-      geom_line() +
-      scale_colour_brewer(name = "Library size", palette = "Set1") +
-      scale_shape_discrete(name = "Rep") +
-      scale_linetype_discrete(name = "") +
-      scale_x_continuous(breaks = c(1, 2, 4, 6)) +
-      scale_y_continuous(breaks = c(1, 30, 60, 300, 600, 1800, 3600, 7200, 14400, 28800), labels = time_label,
-                         transform = "pseudo_log") +
-      labs(x = "Number of Reads", y = "Regions matched/s")
-  }
-ggsave("plots/bench/threads.png", p_threads, units = "cm", height = 30, width = 25)

@@ -7,3 +7,4 @@
 /tests/*/observed.*
 .Rproj.user
 !*.gz
+.positai
