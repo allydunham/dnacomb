@@ -75,8 +75,6 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
         print("failed:\n", out.stderr, sep="")
     else:
         print("done in ", round(time, 2), "s", sep="")
-        with open(f"data/benchmark/{outname}.log", "w") as file:
-            print(str(out.stderr), file=file)
 
     # Extract region extraction processing (possibly multiple options as threaded)
     extraction = EXTRACT_RE.findall(str(out.stderr))
