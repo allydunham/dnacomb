@@ -1,2 +1,2 @@
 group	forward	reverse	region1	region1_nearest	region1_variants	region1_distance	region1_n_matches	region2	region2_nearest	region2_variants	region2_distance	region2_n_matches	combination_status	combination_distance	combinations_in_library	combination_id	count
-	GGCCGAAAGTTTAAGAGAATTTCTTTGCCGG		GAAAG	GAAAG		0	1	CTTTG	CTTTG		0	1	match	0	1	seq1		8
+	GGCCGAAAGTTTAAGAGAATTTCTTTGCCGG		GAAAG	GAAAG		0	1	CTTTG	CTTTG		0	1	match	0	1	seq1	8

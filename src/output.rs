@@ -105,8 +105,8 @@ pub fn write_counts(
         // String describing the combination match with the library
         let name = comb.library_matches.id_string()?;
         let comb_str = match &comb.library_matches {
-            CombinationMatch::Uncompared => "uncompared\t\t\t\t".to_string(),
-            CombinationMatch::Match { distance, .. } => format!("match\t{distance}\t1\t{name}\t"),
+            CombinationMatch::Uncompared => "uncompared\t\t\t".to_string(),
+            CombinationMatch::Match { distance, .. } => format!("match\t{distance}\t1\t{name}"),
             CombinationMatch::MultiMatch { inds, distance } => {
                 // Number of matches is the product of sub-library matches as all combinations possible
                 let n_matches = inds
@@ -118,13 +118,13 @@ pub fn write_counts(
                     .reduce(|x, y| x * y)
                     .unwrap_or(0);
 
-                format!("match\t{}\t{}\t{}\t", distance, n_matches, name)
+                format!("match\t{}\t{}\t{}", distance, n_matches, name)
             }
             CombinationMatch::Recombination { distance } => {
-                format!("recombination\t{distance}\t0\t\t",)
+                format!("recombination\t{distance}\t0\t",)
             }
-            CombinationMatch::Mismatch => "mismatch\t\t0\t\t".to_string(),
-            CombinationMatch::Nonmatch => "nonmatch\t\t0\t\t".to_string(),
+            CombinationMatch::Mismatch => "mismatch\t\t0\t".to_string(),
+            CombinationMatch::Nonmatch => "nonmatch\t\t0\t".to_string(),
         };
 
         // Write line for each group, adding group and count to const strings for the combination
@@ -198,7 +198,7 @@ pub fn write_library_counts(
                     .reduce(|x, y| x * y)
                     .unwrap_or(0);
 
-                format!("match\t{}\t{}\t", n_matches, name)
+                format!("match\t{}\t{}", n_matches, name)
             }
             CombinationMatch::Recombination { .. } => "recombination\t0\t".to_string(),
             CombinationMatch::Mismatch => "mismatch\t0\t".to_string(),
