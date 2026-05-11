@@ -15,6 +15,7 @@ use bio::alignment::distance;
 use bio::bio_types::sequence::Sequence;
 use clap::ValueEnum;
 use csv::ReaderBuilder;
+use itertools::Itertools;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -334,7 +335,7 @@ impl SubLibrary {
                             ids: x.1.iter().map(|x| lib_ids[*x].clone()).collect(),
                             inds: x.1,
                         }))
-                    })),
+                    }).sorted_by_key(|x| x.sequence.clone())),
                 )
                 .is_some()
             {
