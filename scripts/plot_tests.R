@@ -3,7 +3,7 @@
 library(tidyverse)
 library(ggpubr)
 library(ggh4x)
-dir.create("plots", showWarnings = FALSE)
+dir.create("plots/test", showWarnings = FALSE, recursive = TRUE)
 
 theme_set(theme_pubclean() + theme(legend.position = 'right',
                                    plot.title = element_text(hjust = 0.5),
@@ -137,7 +137,7 @@ count_cors <- filter(test_counts, split == "all_regions", threads == 1) %>%
 p_test_cors <- ggplot(count_cors, aes(y = distance, x = estimate, xmin = conf.low, xmax = conf.high)) +
   facet_nested(rows = vars(library, mode), cols = vars(end), switch = "y", solo_line = FALSE, nest_line = element_line(colour = "grey")) +
   geom_col(fill = "#377eb8", width = 0.6) +
-  geom_errorbarh(height = 0.3) +
+  geom_errorbar(width = 0.3, orientation = "y") +
   labs(x = "Pearson's r", y = "") +
   theme(panel.grid.major.x = element_line(colour = "grey", linetype = "dotted"),
         panel.grid.major.y = element_blank(),
@@ -166,5 +166,6 @@ p_thread_cor <- select(threaded_counts, starts_with("threads")) %>%
   geom_tile() +
   geom_text(colour = "white") +
   labs(x = "Threads", y = "Threads") +
-  scale_fill_distiller(name = "Count\nR", palette = "RdBu", direction = 1, limits = c(-1, 1))
+  scale_fill_distiller(name = "Count\nR", palette = "RdBu", direction = 1, limits = c(-1, 1)) +
+  theme(panel.grid.major.y = element_blank())
 ggsave("plots/test/thread_count_correlation.png", p_thread_cor, units = "cm", height = 10, width = 10)
