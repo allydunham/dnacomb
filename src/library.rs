@@ -329,13 +329,18 @@ impl SubLibrary {
             if regions
                 .insert(
                     key.clone(),
-                    Vec::from_iter(reg_map.into_iter().map(|x| {
-                        LibrarySequence::from_region(Arc::new(LibraryRegion {
-                            sequence: x.0,
-                            ids: x.1.iter().map(|x| lib_ids[*x].clone()).collect(),
-                            inds: x.1,
-                        }))
-                    }).sorted_by_key(|x| x.sequence.clone())),
+                    Vec::from_iter(
+                        reg_map
+                            .into_iter()
+                            .map(|x| {
+                                LibrarySequence::from_region(Arc::new(LibraryRegion {
+                                    sequence: x.0,
+                                    ids: x.1.iter().map(|x| lib_ids[*x].clone()).collect(),
+                                    inds: x.1,
+                                }))
+                            })
+                            .sorted_by_key(|x| x.sequence.clone()),
+                    ),
                 )
                 .is_some()
             {

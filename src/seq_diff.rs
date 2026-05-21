@@ -11,6 +11,14 @@ use bio::alignment::{Alignment, AlignmentOperation};
 
 use crate::interning::{SeqHandle, seq_to_bytes};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalFilter {
+    None,
+    Leading,
+    Trailing,
+    Both,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DiffScoring;
 
@@ -86,8 +94,16 @@ impl SequenceDiff {
 
     /// Compute diff between observed and expected sequences from SeqHandles
     #[inline]
-    pub fn compute_ids(observed: &SeqHandle, expected: &SeqHandle) -> Self {
-        Self::compute(&seq_to_bytes(observed), &seq_to_bytes(expected))
+    pub fn compute_ids(
+        observed: &SeqHandle,
+        expected: &SeqHandle,
+        terminal_filter: TerminalFilter,
+    ) -> Self {
+        Self::compute(
+            &seq_to_bytes(observed),
+            &seq_to_bytes(expected),
+            terminal_filter,
+        )
     }
 
     /// Compute the edit operations needed to describe an observed sequence
@@ -96,7 +112,7 @@ impl SequenceDiff {
     /// A global alignment is used to derive substitutions, insertions, and
     /// deletions. Consecutive insertion or deletion operations are merged into
     /// single multi-base events where possible. Positions are reported relative to the expected sequence.
-    pub fn compute(observed: &[u8], expected: &[u8]) -> Self {
+    pub fn compute(observed: &[u8], expected: &[u8], terminal_filter: TerminalFilter) -> Self {
         if observed.is_empty() && expected.is_empty() || observed == expected {
             return Self::new(Vec::new());
         }
@@ -198,6 +214,25 @@ impl SequenceDiff {
         if let Some(edit) = pending.take() {
             edits.push(edit);
         };
+
+        if !matches!(terminal_filter, TerminalFilter::None) {
+            // Remove leading/trailing deletions if appropriate
+            edits.retain(|op| {
+                let leading = matches!(op, EditOperation::Del(0, _));
+
+                let trailing = match op {
+                    EditOperation::Del(pos, seq) => *pos + seq.len() == expected.len(),
+                    EditOperation::Sub(..) | EditOperation::Ins(..) => false,
+                };
+
+                match terminal_filter {
+                    TerminalFilter::None => true,
+                    TerminalFilter::Leading => !leading,
+                    TerminalFilter::Trailing => !trailing,
+                    TerminalFilter::Both => !leading && !trailing,
+                }
+            });
+        }
 
         Self::new(edits)
     }
@@ -306,7 +341,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.operations.len(),
                 c.expected_ops_len,
@@ -366,7 +401,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.to_string(),
                 c.expected_str,
@@ -420,7 +455,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.to_string(),
                 c.expected_str,
@@ -474,7 +509,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.to_string(),
                 c.expected_str,
@@ -516,7 +551,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.to_string(),
                 c.expected_str,
@@ -570,7 +605,7 @@ mod tests {
         ];
 
         for c in cases {
-            let diff = SequenceDiff::compute(c.observed, c.expected);
+            let diff = SequenceDiff::compute(c.observed, c.expected, TerminalFilter::None);
             assert_eq!(
                 diff.operations.len(),
                 c.expected_ops_len,
@@ -718,7 +753,7 @@ mod tests {
 
         let obs_handle = seq_from_bytes(b"ACGT");
         let exp_handle = seq_from_bytes(b"TCGT");
-        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle);
+        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle, TerminalFilter::None);
 
         assert_eq!(diff.to_string(), "1T>A");
     }
@@ -729,7 +764,7 @@ mod tests {
 
         let obs_handle = seq_from_bytes(b"ACGTACGT");
         let exp_handle = seq_from_bytes(b"ACGTACGT");
-        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle);
+        let diff = SequenceDiff::compute_ids(&obs_handle, &exp_handle, TerminalFilter::None);
 
         assert!(diff.operations.is_empty());
         assert_eq!(diff.to_string(), "");
@@ -760,7 +795,7 @@ mod tests {
     #[test]
     fn sequence_diff_large_identical() {
         let large = vec![b'A'; 500];
-        let diff = SequenceDiff::compute(&large, &large);
+        let diff = SequenceDiff::compute(&large, &large, TerminalFilter::None);
         assert!(diff.operations.is_empty());
     }
 
@@ -770,7 +805,7 @@ mod tests {
         let large_exp = vec![b'A'; 500];
         large_obs[0] = b'T';
 
-        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        let diff = SequenceDiff::compute(&large_obs, &large_exp, TerminalFilter::None);
         assert_eq!(diff.operations.len(), 1);
         assert_eq!(diff.to_string(), "1A>T");
     }
@@ -781,7 +816,7 @@ mod tests {
         let large_exp = vec![b'A'; 500];
         large_obs[499] = b'T';
 
-        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        let diff = SequenceDiff::compute(&large_obs, &large_exp, TerminalFilter::None);
         assert_eq!(diff.operations.len(), 1);
         assert_eq!(diff.to_string(), "500A>T");
     }
@@ -794,7 +829,7 @@ mod tests {
         large_obs[50] = b'C';
         large_obs[99] = b'G';
 
-        let diff = SequenceDiff::compute(&large_obs, &large_exp);
+        let diff = SequenceDiff::compute(&large_obs, &large_exp, TerminalFilter::None);
         assert_eq!(diff.operations.len(), 3);
         assert!(diff.to_string().contains("1A>T"));
         assert!(diff.to_string().contains("51A>C"));
@@ -805,7 +840,7 @@ mod tests {
     fn sequence_diff_many_consecutive_substitutions() {
         let obs = b"TTTTTTTTTT";
         let exp = b"AAAAAAAAAA";
-        let diff = SequenceDiff::compute(obs, exp);
+        let diff = SequenceDiff::compute(obs, exp, TerminalFilter::None);
 
         // Should have 10 separate substitutions
         assert_eq!(diff.operations.len(), 10);
@@ -818,7 +853,7 @@ mod tests {
     fn sequence_diff_alternating_pattern() {
         let obs = b"ACACAC";
         let exp = b"AGAGAG";
-        let diff = SequenceDiff::compute(obs, exp);
+        let diff = SequenceDiff::compute(obs, exp, TerminalFilter::None);
 
         assert_eq!(diff.operations.len(), 3);
         assert_eq!(diff.to_string(), "2G>C;4G>C;6G>C");
@@ -828,7 +863,7 @@ mod tests {
     fn sequence_diff_with_ambiguous_bases() {
         let obs = b"ACNGT";
         let exp = b"ACXGT";
-        let diff = SequenceDiff::compute(obs, exp);
+        let diff = SequenceDiff::compute(obs, exp, TerminalFilter::None);
 
         assert_eq!(diff.operations.len(), 1);
         assert_eq!(diff.to_string(), "3X>N");
@@ -838,7 +873,7 @@ mod tests {
     fn sequence_diff_insertion_multiple_same_base() {
         let obs = b"AAAAA";
         let exp = b"A";
-        let diff = SequenceDiff::compute(obs, exp);
+        let diff = SequenceDiff::compute(obs, exp, TerminalFilter::None);
 
         assert_eq!(diff.operations.len(), 1);
         assert_eq!(diff.to_string(), "0_1_insAAAA");
@@ -848,7 +883,7 @@ mod tests {
     fn sequence_diff_deletion_multiple_same_base() {
         let obs = b"A";
         let exp = b"AAAAA";
-        let diff = SequenceDiff::compute(obs, exp);
+        let diff = SequenceDiff::compute(obs, exp, TerminalFilter::None);
 
         assert_eq!(diff.operations.len(), 1);
         assert_eq!(diff.to_string(), "0_3_delAAAA");
@@ -895,5 +930,69 @@ mod tests {
         assert_eq!(parts[0], "1A>T");
         assert_eq!(parts[1], "2_3_insG");
         assert_eq!(parts[2], "5_5_delC");
+    }
+
+
+    #[test]
+    fn terminal_filter_none_keeps_leading_deletion() {
+        let diff = SequenceDiff::compute(b"CGT", b"ACGT", TerminalFilter::None);
+
+        assert_eq!(diff.to_string(), "0_0_delA");
+    }
+
+    #[test]
+    fn terminal_filter_leading_removes_leading_deletion() {
+        let diff = SequenceDiff::compute(b"CGT", b"ACGT", TerminalFilter::Leading);
+
+        assert_eq!(diff.to_string(), "");
+    }
+
+    #[test]
+    fn terminal_filter_trailing_removes_trailing_deletion() {
+        let diff = SequenceDiff::compute(b"ACG", b"ACGT", TerminalFilter::Trailing);
+
+        assert_eq!(diff.to_string(), "");
+    }
+
+    #[test]
+    fn terminal_filter_leading_does_not_remove_trailing_deletion() {
+        let diff = SequenceDiff::compute(b"ACG", b"ACGT", TerminalFilter::Leading);
+
+        assert_eq!(diff.to_string(), "3_3_delT");
+    }
+
+    #[test]
+    fn terminal_filter_trailing_does_not_remove_leading_deletion() {
+        let diff = SequenceDiff::compute(b"CGT", b"ACGT", TerminalFilter::Trailing);
+
+        assert_eq!(diff.to_string(), "0_0_delA");
+    }
+
+    #[test]
+    fn terminal_filter_both_removes_leading_and_trailing_deletions() {
+        let diff = SequenceDiff::compute(b"CGCG", b"ACGCGT", TerminalFilter::Both);
+
+        assert_eq!(diff.to_string(), "");
+    }
+
+    #[test]
+    fn terminal_filter_preserves_internal_substitution() {
+        let diff = SequenceDiff::compute(b"GCGCTT", b"AGCGCGT", TerminalFilter::Both);
+
+        assert_eq!(diff.to_string(), "6G>T");
+    }
+
+    #[test]
+    fn terminal_filter_preserves_internal_deletion() {
+        let diff = SequenceDiff::compute(b"AGCGT", b"ACGCGT", TerminalFilter::Both);
+
+        assert_eq!(diff.to_string(), "1_1_delC");
+    }
+
+    #[test]
+    fn terminal_filter_preserves_internal_insertion() {
+        let diff = SequenceDiff::compute(b"ACGCGT", b"ACCGT", TerminalFilter::Both);
+
+        assert_eq!(diff.to_string(), "2_3_insG");
     }
 }

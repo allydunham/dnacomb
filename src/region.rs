@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::interning::{RegionID, SeqHandle, seq_from_bytes, seq_to_bytes};
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
-use crate::seq_diff::SequenceDiff;
+use crate::seq_diff::{SequenceDiff, TerminalFilter};
 
 /// Key identifying one distinct observed region state.
 ///
@@ -174,6 +174,14 @@ impl ObservedRegion {
             }
         };
 
+        let terminal_filter = match self.completeness {
+            RegionCompleteness::Complete
+            | RegionCompleteness::MissingCenter { .. }
+            | RegionCompleteness::Overlapping { .. } => TerminalFilter::None,
+            RegionCompleteness::Partial5Prime => TerminalFilter::Leading,
+            RegionCompleteness::Partial3Prime => TerminalFilter::Trailing,
+        };
+
         match lib_match {
             None => RegionMatch::Unmatched,
             Some(x) => {
@@ -184,7 +192,11 @@ impl ObservedRegion {
                         diff: if skip_variants {
                             None
                         } else {
-                            Some(SequenceDiff::compute_ids(&self.seq, &x.matches[0].sequence))
+                            Some(SequenceDiff::compute_ids(
+                                &self.seq,
+                                &x.matches[0].sequence,
+                                terminal_filter,
+                            ))
                         },
                     }
                 } else if x.matches.len() > max_matches {
@@ -201,7 +213,13 @@ impl ObservedRegion {
                             Some(
                                 x.matches
                                     .iter()
-                                    .map(|m| SequenceDiff::compute_ids(&self.seq, &m.sequence))
+                                    .map(|m| {
+                                        SequenceDiff::compute_ids(
+                                            &self.seq,
+                                            &m.sequence,
+                                            terminal_filter,
+                                        )
+                                    })
                                     .collect(),
                             )
                         },

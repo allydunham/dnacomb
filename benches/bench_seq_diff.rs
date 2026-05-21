@@ -1,6 +1,6 @@
 //! Benchmark SeqDiff
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use dnacomb::seq_diff::SequenceDiff;
+use dnacomb::seq_diff::{SequenceDiff, TerminalFilter};
 
 mod bench_support;
 use bench_support::*;
@@ -99,7 +99,7 @@ fn bench_seq_diff_compute(c: &mut Criterion) {
 
             group.bench_with_input(BenchmarkId::new("compute", label), &case, |b, _| {
                 b.iter(|| {
-                    let diff = SequenceDiff::compute(black_box(&observed), black_box(&expected));
+                    let diff = SequenceDiff::compute(black_box(&observed), black_box(&expected), TerminalFilter::None);
                     black_box(diff);
                 })
             });
