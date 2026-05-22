@@ -380,7 +380,7 @@ fn merge_seqs(
         }
 
         // Both partial with gap - missing centre or overlapping based simply on max region length
-        (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial3Prime) => {
+        (RegionCompleteness::Partial3Prime, RegionCompleteness::Partial5Prime) => {
             let f_end = f_reg.0.len(); // `f` covers [0..f_end)
             let r_start = len - r_reg.0.len(); // `r` covers [r_start..seq_len)
 
@@ -413,7 +413,7 @@ fn merge_seqs(
                 )))
             }
         }
-        (RegionCompleteness::Partial3Prime, RegionCompleteness::Partial5Prime) => {
+        (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial3Prime) => {
             // Reversed, should rarely see this case but some odd trimming could create in theory
             // Basically the reverse of above
             let r_end = r_reg.0.len(); // `r` covers [0..r_end)
@@ -460,7 +460,11 @@ fn merge_seqs(
 ///
 /// Matching proceeds left-to-right through the read. Regions found form a
 /// continuous subsequence of the expected region list: once a required flank is
-/// missed, downstream regions are not recovered later in the read.
+/// missed, downstream regions are not recovered later in the read. This simple algorithm
+/// is robust when patterns are unique per region but can produce unexpected results
+/// when they are not sufficiently different as the wrong starting region can be identified.
+/// However, it is important to also deal with messy/truncated reads rather than require
+/// all regions in order.
 ///
 /// `tolerance` allows a bounded number of mismatches in flank-pattern matching.
 /// This improves robustness to sequencing errors in fixed regions, but increases
@@ -500,30 +504,25 @@ fn match_flank_patterns(
     let mut open: bool = false; // whether the region start is found
     let mut dist: u64; // Distance to region
 
-    // Find opening region to assign start point
-    let start_regs: Vec<Sequence> = flanks
-        .iter()
-        .map(|r| match r {
-            FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
-            FlankingSequences::OpenStart(end) => Ok(end.clone()),
-            FlankingSequences::Internal(start, ..) => Ok(start.clone()),
-            FlankingSequences::OpenEnd(start) => Ok(start.clone()),
-        })
-        .collect::<Result<Vec<Sequence>, ReadCountError>>()?;
-
+    // Find opening region to assign start point.
+    //
+    // Scan along the sequence looking for:
+    // - OpenStart(end): end flank closes a 5' partial region.
+    // - Internal(start, end): start flank opens an internal region, end flank closes a truncated partial 5' region
+    // - OpenEnd(start): start flank opens a 3' partial terminal region.
     'outer: while pos < seq.len() {
-        for (i, r) in start_regs.iter().enumerate() {
-            end = pos + r.len();
-            if end > seq.len() {
-                continue;
-            }
+        for (i, flank) in flanks.iter().enumerate() {
+            match flank {
+                FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
 
-            dist = hamming(r, &seq[pos..end]);
+                FlankingSequences::OpenStart(close) => {
+                    end = pos + close.len();
+                    if end > seq.len() {
+                        continue;
+                    }
 
-            if dist <= tolerance {
-                match flanks[i] {
-                    FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
-                    FlankingSequences::OpenStart(..) => {
+                    dist = hamming(close, &seq[pos..end]);
+                    if dist <= tolerance {
                         out[i] = Some((
                             seq[0..pos].to_vec(),
                             qual[0..pos].to_vec(),
@@ -533,28 +532,64 @@ fn match_flank_patterns(
                         reg = i + 1;
                         open = false;
                         pos = end;
+                        break 'outer;
                     }
-                    FlankingSequences::Internal(..) => {
-                        reg = i;
-                        open = true;
-                        reg_start = end;
-                        pos = end;
+                }
+
+                FlankingSequences::Internal(start, close) => {
+                    // Prefer the normal start flank if both could match at this position.
+                    end = pos + start.len();
+                    if end <= seq.len() {
+                        dist = hamming(start, &seq[pos..end]);
+                        if dist <= tolerance {
+                            reg = i;
+                            open = true;
+                            reg_start = end;
+                            pos = end;
+                            break 'outer;
+                        }
                     }
-                    FlankingSequences::OpenEnd(..) => {
+
+                    // Fallback: first visible region started before the read,
+                    // and we have found its closing flank.
+                    end = pos + close.len();
+                    if end <= seq.len() {
+                        dist = hamming(close, &seq[pos..end]);
+                        if dist <= tolerance {
+                            out[i] = Some((
+                                seq[0..pos].to_vec(),
+                                qual[0..pos].to_vec(),
+                                RegionCompleteness::Partial5Prime,
+                            ));
+
+                            reg = i + 1;
+                            open = false;
+                            pos = end;
+                            break 'outer;
+                        }
+                    }
+                }
+
+                FlankingSequences::OpenEnd(start) => {
+                    end = pos + start.len();
+                    if end > seq.len() {
+                        continue;
+                    }
+
+                    dist = hamming(start, &seq[pos..end]);
+                    if dist <= tolerance {
                         out[i] = Some((
                             seq[end..seq.len()].to_vec(),
                             qual[end..seq.len()].to_vec(),
                             RegionCompleteness::Partial3Prime,
                         ));
 
-                        // An open end region must be at the end (checked in validation)
-                        // so directly return
                         return Ok(out);
                     }
                 }
-                break 'outer;
             }
         }
+
         pos += 1;
     }
 
@@ -2306,8 +2341,8 @@ mod tests {
 
     #[test]
     fn test_flank_matching_partial_path() {
-        let seq = b"GGGCCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
-        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFF";
+        let seq = b"GGGACCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
             FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),
@@ -2374,5 +2409,40 @@ mod tests {
         let obs =
             match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
         assert!(obs.is_empty());
+    }
+
+    #[test]
+    fn test_flank_matching_opening_scan_can_start_from_internal_close() {
+        let seq = b"AAAAGGCCGGTATAGGGGATATCGCGTTTT";
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()), // start missing, close present
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()),
+        ];
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            None,
+            Some((
+                b"AAAA".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial5Prime,
+            )),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"TTTT".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial3Prime,
+            )),
+        ];
+
+        let obs = match_flank_patterns(seq, qual, &flanks, 0).expect("Pattern match failed");
+        assert_eq!(obs, exp);
     }
 }
