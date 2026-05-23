@@ -531,7 +531,6 @@ fn match_flank_patterns(
 
                         reg = i + 1;
                         open = false;
-                        pos = end;
                         break 'outer;
                     }
                 }
@@ -564,7 +563,6 @@ fn match_flank_patterns(
 
                             reg = i + 1;
                             open = false;
-                            pos = end;
                             break 'outer;
                         }
                     }
@@ -651,7 +649,6 @@ fn match_flank_patterns(
                         RegionCompleteness::Complete,
                     ));
 
-                    pos = end;
                     open = false;
                     reg += 1;
                     break 'inner;
@@ -2105,12 +2102,12 @@ mod tests {
         let fwd = Some((
             b"AAA".to_vec(),
             b"III".to_vec(),
-            RegionCompleteness::Partial5Prime,
+            RegionCompleteness::Partial3Prime,
         ));
         let rev = Some((
             b"TT".to_vec(),
             b"II".to_vec(),
-            RegionCompleteness::Partial3Prime,
+            RegionCompleteness::Partial5Prime,
         ));
 
         let out = merge_seqs(fwd, rev, 6).unwrap();
@@ -2128,12 +2125,12 @@ mod tests {
         let fwd = Some((
             b"AAAA".to_vec(),
             b"IIII".to_vec(),
-            RegionCompleteness::Partial5Prime,
+            RegionCompleteness::Partial3Prime,
         ));
         let rev = Some((
             b"TTTT".to_vec(),
             b"IIII".to_vec(),
-            RegionCompleteness::Partial3Prime,
+            RegionCompleteness::Partial5Prime,
         ));
 
         let out = merge_seqs(fwd, rev, 6).unwrap();
@@ -2302,7 +2299,7 @@ mod tests {
     fn test_flank_matching_with_mismatches() {
         let _ = env_logger::try_init();
 
-        let seq = b"CCCCAATCGGGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
+        let seq = b"CCCCAATCTAGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
         let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()), // 1 mismatch: AATC

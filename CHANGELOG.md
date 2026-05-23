@@ -9,6 +9,7 @@ This file contains a record of the major changes between versions.
 * Added option to include multiple libraries for independent subsets of regions within your vector (e.g. if you had two guides that occur in all combinations)
 * Added calculation of difference between observed and expected sequences
 * Added many more unit tests and benchmarks
+* Refined pattern matching approach to account for unexpected open start regions and allow overlapping flank patterns
 * Major documentation update pass, both for the CLI and the internal Crate.
 
 ## v0.5.0 Deeper tracking, refined config and performance improvements

@@ -99,7 +99,11 @@ fn bench_seq_diff_compute(c: &mut Criterion) {
 
             group.bench_with_input(BenchmarkId::new("compute", label), &case, |b, _| {
                 b.iter(|| {
-                    let diff = SequenceDiff::compute(black_box(&observed), black_box(&expected), TerminalFilter::None);
+                    let diff = SequenceDiff::compute(
+                        black_box(&observed),
+                        black_box(&expected),
+                        TerminalFilter::None,
+                    );
                     black_box(diff);
                 })
             });

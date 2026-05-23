@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use crate::interning::{RegionID, SeqHandle, seq_from_bytes, seq_to_bytes};
 use crate::library::{DistanceMetric, Library, LibraryRegion, PartialMatching, merge_matches};
-use crate::seq_diff::{SequenceDiff, TerminalFilter};
+use crate::seq_diff::{EditOperation, SequenceDiff, TerminalFilter};
+
+/// Additional window size for doing end-anchored diff alignments
+const DIFF_WINDOW_EXTRA: usize = 8;
 
 /// Key identifying one distinct observed region state.
 ///
@@ -174,14 +177,6 @@ impl ObservedRegion {
             }
         };
 
-        let terminal_filter = match self.completeness {
-            RegionCompleteness::Complete
-            | RegionCompleteness::MissingCenter { .. }
-            | RegionCompleteness::Overlapping { .. } => TerminalFilter::None,
-            RegionCompleteness::Partial5Prime => TerminalFilter::Leading,
-            RegionCompleteness::Partial3Prime => TerminalFilter::Trailing,
-        };
-
         match lib_match {
             None => RegionMatch::Unmatched,
             Some(x) => {
@@ -192,10 +187,11 @@ impl ObservedRegion {
                         diff: if skip_variants {
                             None
                         } else {
-                            Some(SequenceDiff::compute_ids(
+                            Some(compute_region_diff(
                                 &self.seq,
                                 &x.matches[0].sequence,
-                                terminal_filter,
+                                self.completeness,
+                                x.distance,
                             ))
                         },
                     }
@@ -214,10 +210,11 @@ impl ObservedRegion {
                                 x.matches
                                     .iter()
                                     .map(|m| {
-                                        SequenceDiff::compute_ids(
+                                        compute_region_diff(
                                             &self.seq,
                                             &m.sequence,
-                                            terminal_filter,
+                                            self.completeness,
+                                            x.distance,
                                         )
                                     })
                                     .collect(),
@@ -372,6 +369,83 @@ impl RegionMatch {
 
                 (seqs, diff_str, distance.to_string(), count)
             }
+        }
+    }
+}
+
+/// Compute the sequence diff for a region accounting for match type
+fn compute_region_diff(
+    observed: &SeqHandle,
+    expected: &SeqHandle,
+    completeness: RegionCompleteness,
+    distance: u64,
+) -> SequenceDiff {
+    match completeness {
+        RegionCompleteness::Complete => {
+            SequenceDiff::compute_ids(observed, expected, TerminalFilter::None)
+        }
+
+        RegionCompleteness::Partial5Prime => {
+            SequenceDiff::compute_ids(observed, expected, TerminalFilter::Leading)
+        }
+
+        RegionCompleteness::Partial3Prime => {
+            SequenceDiff::compute_ids(observed, expected, TerminalFilter::Trailing)
+        }
+
+        RegionCompleteness::MissingCenter { split_ind } => {
+            let obs = seq_to_bytes(observed);
+            let exp = seq_to_bytes(expected);
+
+            let left = &obs[..split_ind];
+            let right = &obs[(split_ind + 1)..];
+
+            let left_window = left.len() + distance as usize + DIFF_WINDOW_EXTRA;
+            let right_window = right.len() + distance as usize + DIFF_WINDOW_EXTRA;
+
+            let left_end = exp.len().min(left_window);
+            let right_start = exp.len().saturating_sub(right_window);
+
+            let mut out = SequenceDiff::compute(left, &exp[..left_end], TerminalFilter::Trailing);
+
+            let right_diff =
+                SequenceDiff::compute(right, &exp[right_start..], TerminalFilter::Leading)
+                    .offset_expected_positions(right_start);
+
+            out.operations.extend(right_diff.operations);
+            out
+        }
+
+        RegionCompleteness::Overlapping { split_ind } => {
+            let obs = seq_to_bytes(observed);
+            let exp = seq_to_bytes(expected);
+
+            let left = &obs[..split_ind];
+            let right = &obs[(split_ind + 1)..];
+
+            let left_window = left.len() + distance as usize + DIFF_WINDOW_EXTRA;
+            let right_window = right.len() + distance as usize + DIFF_WINDOW_EXTRA;
+
+            let left_end = exp.len().min(left_window);
+            let right_start = exp.len().saturating_sub(right_window);
+
+            let mut ops =
+                SequenceDiff::compute(left, &exp[..left_end], TerminalFilter::Trailing).operations;
+
+            ops.extend(
+                SequenceDiff::compute(right, &exp[right_start..], TerminalFilter::Leading)
+                    .offset_expected_positions(right_start)
+                    .operations,
+            );
+
+            ops.sort_by_key(|op| match op {
+                EditOperation::Sub(pos, ..) => (*pos, 0),
+                EditOperation::Ins(pos, _) => (*pos, 1),
+                EditOperation::Del(pos, _) => (*pos, 2),
+            });
+            ops.dedup();
+
+            SequenceDiff::new(ops)
         }
     }
 }
@@ -884,5 +958,35 @@ mod tests {
         let r1_id = r1.id.clone();
         let recovered = region_id_to_str(&r1_id);
         assert_eq!(&*recovered, "region1");
+    }
+
+    #[test]
+    fn missing_center_diff_ignores_separator_and_center_gap() {
+        let observed = seq_from_bytes(b"ACG/TAC");
+        let expected = seq_from_bytes(b"ACGGGTAC");
+
+        let diff = compute_region_diff(
+            &observed,
+            &expected,
+            RegionCompleteness::MissingCenter { split_ind: 3 },
+            0,
+        );
+
+        assert_eq!(diff.to_string(), "");
+    }
+
+    #[test]
+    fn missing_center_diff_reports_left_and_right_variants() {
+        let observed = seq_from_bytes(b"ATG/TTC");
+        let expected = seq_from_bytes(b"ACGGGTAC");
+
+        let diff = compute_region_diff(
+            &observed,
+            &expected,
+            RegionCompleteness::MissingCenter { split_ind: 3 },
+            2,
+        );
+
+        assert_eq!(diff.to_string(), "2C>T;7A>T");
     }
 }

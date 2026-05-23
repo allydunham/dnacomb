@@ -236,6 +236,21 @@ impl SequenceDiff {
 
         Self::new(edits)
     }
+
+    /// Offset all positions
+    ///
+    /// Useful if a diff is calculated against a subset of a full sequence, for
+    /// instance for alignment anchored at one end.
+    pub fn offset_expected_positions(mut self, offset: usize) -> Self {
+        for op in &mut self.operations {
+            match op {
+                EditOperation::Sub(pos, ..)
+                | EditOperation::Ins(pos, _)
+                | EditOperation::Del(pos, _) => *pos += offset,
+            }
+        }
+        self
+    }
 }
 
 /// Display as `;`-separated HGVS-like edit operations.
@@ -931,7 +946,6 @@ mod tests {
         assert_eq!(parts[1], "2_3_insG");
         assert_eq!(parts[2], "5_5_delC");
     }
-
 
     #[test]
     fn terminal_filter_none_keeps_leading_deletion() {
