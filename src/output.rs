@@ -98,7 +98,13 @@ pub fn write_counts(
                         format!("{seq}\t{nearest}\t{diff}\t{dist}\t{n}")
                     }
                 }
-                None => "\t\t\t\t".to_string(),
+                None => {
+                    if skip_variants {
+                        "\t\t\t".to_string()
+                    } else {
+                        "\t\t\t\t".to_string()
+                    }
+                }
             })
             .join("\t");
 
