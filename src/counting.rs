@@ -350,8 +350,8 @@ fn merge_seqs(
         (RegionCompleteness::Complete, _) => Ok(Some((f_reg.0, f_reg.2))),
         (_, RegionCompleteness::Complete) => Ok(Some((r_reg.0, r_reg.2))),
 
-        // Both partial in same way - use highest quality
-        // Weird situation but some read trimming could lead here potentially
+        // Both partial in same way - use longest
+        // Should be fairly unusual but strange sequencing designs, trimming or ambiguities can cause
         (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial5Prime) => {
             WARN_MERGE.call_once(|| {
                 log::warn!(
@@ -359,7 +359,7 @@ fn merge_seqs(
                 );
             });
 
-            if mean_quality(&f_reg.1) >= mean_quality(&r_reg.1) {
+            if &f_reg.0.len() >= &r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial5Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial5Prime)))
@@ -372,7 +372,7 @@ fn merge_seqs(
                 );
             });
 
-            if mean_quality(&f_reg.1) >= mean_quality(&r_reg.1) {
+            if &f_reg.0.len() >= &r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial3Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial3Prime)))
