@@ -359,7 +359,7 @@ fn merge_seqs(
                 );
             });
 
-            if &f_reg.0.len() >= &r_reg.0.len() {
+            if f_reg.0.len() >= r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial5Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial5Prime)))
@@ -372,7 +372,7 @@ fn merge_seqs(
                 );
             });
 
-            if &f_reg.0.len() >= &r_reg.0.len() {
+            if f_reg.0.len() >= r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial3Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial3Prime)))

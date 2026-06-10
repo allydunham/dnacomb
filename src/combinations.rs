@@ -538,7 +538,7 @@ impl ObservedCombinations {
         sort: bool,
     ) -> Result<Vec<&LibraryCombination>, ReadCountError> {
         if let Some(combs) = &self.library_combinations {
-            let mut vec: Vec<&LibraryCombination> = combs.iter().map(|(_, v)| v).collect();
+            let mut vec: Vec<&LibraryCombination> = combs.values().collect();
 
             if sort {
                 vec.sort_unstable_by_key(|c| std::cmp::Reverse(c.total_count()));

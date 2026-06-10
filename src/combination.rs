@@ -167,7 +167,7 @@ impl ObservedCombination {
                     // Identify the union of inds the multimatch covers
                     let mut match_ind_union: HashSet<LibraryID> = HashSet::new();
                     for mat in seq_matches {
-                        match_ind_union.extend(mat.ids.clone().into_iter());
+                        match_ind_union.extend(mat.ids.clone());
                     }
 
                     // Set as the search space or remove anything not overlapping it

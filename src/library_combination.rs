@@ -91,7 +91,7 @@ impl LibraryRegionMatch {
         match self {
             LibraryRegionMatch::Uncompared
             | LibraryRegionMatch::Unmatched
-            | LibraryRegionMatch::Overmatched { .. } => "".to_string(),
+            | LibraryRegionMatch::Overmatched => "".to_string(),
             LibraryRegionMatch::NoLibrary { seq } => match seq {
                 Some(s) => s.to_str_or_log(),
                 None => "".to_string(),

@@ -279,12 +279,12 @@ impl SubLibrary {
                 });
             }
 
-            if let Some(i) = &ids {
-                if i.len() != exp_len {
-                    return Err(LibraryError::Library {
-                        desc: "Library must have as many IDs as the number of elements".to_string(),
-                    });
-                }
+            if let Some(i) = &ids
+                && i.len() != exp_len
+            {
+                return Err(LibraryError::Library {
+                    desc: "Library must have as many IDs as the number of elements".to_string(),
+                });
             }
         }
 
@@ -454,13 +454,13 @@ impl SubLibrary {
         partial: PartialMatching,
     ) -> Result<Option<LibraryMatch>, LibraryError> {
         // Try exact matching first - short circuit if we find the region
-        if let Some(exact) = self.exact_matches.get(region) {
-            if let Some(hit) = exact.get(seq) {
-                return Ok(Some(LibraryMatch {
-                    matches: vec![hit.clone()],
-                    distance: 0,
-                }));
-            }
+        if let Some(exact) = self.exact_matches.get(region)
+            && let Some(hit) = exact.get(seq)
+        {
+            return Ok(Some(LibraryMatch {
+                matches: vec![hit.clone()],
+                distance: 0,
+            }));
         }
 
         // Else try lookup

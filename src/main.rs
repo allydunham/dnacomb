@@ -348,11 +348,12 @@ fn run(args: Cli) -> Result<(), Error> {
     }
 
     // Validate alignment mode is suitable
-    if let Some(l) = &lib_spec {
-        if matches!(args.mode, CountMode::Inframe) && l.variable_length_regions() > 0 {
-            error!("Can't use inframe matching with variable length regions. Exiting");
-            exit(1)
-        }
+    if let Some(l) = &lib_spec
+        && matches!(args.mode, CountMode::Inframe)
+        && l.variable_length_regions() > 0
+    {
+        error!("Can't use inframe matching with variable length regions. Exiting");
+        exit(1)
     }
 
     // Compare observed combinations to library

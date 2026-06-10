@@ -107,10 +107,10 @@ fn empty_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Opti
         return Some(FilterReason::EmptyRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().is_empty() {
-            return Some(FilterReason::EmptyRead);
-        }
+    if let Some(r) = r
+        && r.seq().is_empty()
+    {
+        return Some(FilterReason::EmptyRead);
     }
 
     None
@@ -123,10 +123,10 @@ fn short_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Opti
         return Some(FilterReason::ShortRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().len() < min {
-            return Some(FilterReason::ShortRead);
-        }
+    if let Some(r) = r
+        && r.seq().len() < min
+    {
+        return Some(FilterReason::ShortRead);
     }
 
     None
@@ -139,10 +139,10 @@ fn long_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Optio
         return Some(FilterReason::LongRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().len() > max {
-            return Some(FilterReason::LongRead);
-        }
+    if let Some(r) = r
+        && r.seq().len() > max
+    {
+        return Some(FilterReason::LongRead);
     }
 
     None
@@ -159,10 +159,10 @@ fn low_mean_quality_filter(
         return Some(FilterReason::LowMeanQuality);
     }
 
-    if let Some(r) = r {
-        if mean_quality(r.qual()) < q {
-            return Some(FilterReason::LowMeanQuality);
-        }
+    if let Some(r) = r
+        && mean_quality(r.qual()) < q
+    {
+        return Some(FilterReason::LowMeanQuality);
     }
 
     None
@@ -180,10 +180,10 @@ fn bad_alignment_filter(
         return Some(FilterReason::BadAlignment);
     }
 
-    if let Some(r) = r {
-        if r.score < tol.minimum_r_score {
-            return Some(FilterReason::BadAlignment);
-        }
+    if let Some(r) = r
+        && r.score < tol.minimum_r_score
+    {
+        return Some(FilterReason::BadAlignment);
     }
 
     None
