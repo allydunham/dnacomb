@@ -7,6 +7,8 @@
 CLI tool for processing single or paired-end Fasta/q sequencing reads with an expected internal structure, for instance fixed scaffold regions flanking variable barcodes, spacers, or other library elements as found in amplicon-like or construct-based sequencing assays.
 DNAComb extracts the variable regions of interest and optionally compares them to one or more libraries of expected sequences, identifying matches (including near misses), mismatches, recombinations of library elements and unexpected sequence forms.
 
+![DNAComb Schematic](plots/schematic.png)
+
 The overall workflow is:
 
 1. Read Fasta/Fastq input files
