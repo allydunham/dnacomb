@@ -3,6 +3,7 @@
 library(tidyverse)
 library(ggpubr)
 library(ggh4x)
+library(figpatch)
 library(patchwork)
 dir.create("plots/", showWarnings = FALSE, recursive = TRUE)
 
@@ -125,13 +126,13 @@ p_accuracy <- filter(accuracy, end == "single") %>%
       geom_point(aes(y = value), shape = 20) +
       geom_line(aes(y = mean)) +
       geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.1) +
-      scale_y_continuous(name = "Fraction of Reads Assigned") +
+      scale_y_continuous(name = "Fraction of Reads") +
       scale_x_continuous(name = "Perturbation Level", breaks = 0:6) +
       scale_colour_brewer(limits = names(metric_labels), labels = metric_labels, name = "", palette = "Set1", direction = -1) +
-      scale_linetype_discrete(name = "", labels = c(grna_sensor = "gRNA", pegrna = "pegRNA")) +
-      theme(legend.position = "bottom")
+      scale_linetype_discrete(name = "", labels = c(grna_sensor = "gRNA + Sensor", pegrna = "pegRNA")) +
+      theme(text = element_text(size = 12),
+            legend.position = "bottom")
   }
-ggsave("plots/figure/accuracy_profile.pdf", p_accuracy, units = "cm", height = 10, width = 15)
 
 # Benchmark
 bench_cols <- c(
@@ -156,11 +157,35 @@ p_mode_benchmark <- filter(benchmark, interning, sort, threads == 1) %>%
   mutate(mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align"))) %>%
   {
     ggplot(., aes(x = as.factor(read_length), y = extraction_rate, fill = mode, linetype = no_cache)) +
-      geom_boxplot(outlier.shape = 20) +
+      geom_boxplot(outlier.shape = 20, outlier.size = 0.5, linewidth = 0.5) +
       scale_fill_brewer(name = "", palette = "Reds") +
       scale_linetype_discrete(name = "", labels = c(`TRUE` = "Uncached", `FALSE` = "Cached")) +
       scale_y_continuous(name = "Reads/s", transform = "log10") +
       scale_x_discrete(name = "", labels = c("156bp\n(gRNA)", "244bp\n(gRNA + Sensor)", "313bp\n(pegRNA)")) + 
-      theme(legend.position = "bottom")
+      theme(text = element_text(size = 12),
+            legend.position = "bottom")
   }
-ggsave("plots/figure/modes.pdf", p_mode_benchmark, units = "cm", height = 10, width = 15)
+
+p_metric_benchmark <- filter(benchmark, interning, sort, threads == 1, mode == "align") %>%
+  select(metric, no_cache, reads, read_length, library_size, region_matching_rate, rep) %>%
+  mutate(metric = factor(metric, levels = c("exact", "hamming", "bounded-levenshtein", "levenshtein"))) %>% 
+  {
+    ggplot(., aes(x = metric, y = region_matching_rate, fill = as.factor(library_size))) +
+      geom_boxplot(outlier.shape = 20, outlier.size = 0.5, linewidth = 0.5) +
+      scale_fill_brewer(name = "Library Size", palette = "Blues") +
+      scale_y_continuous(name = "Regions/s", transform = "log10") +
+      scale_x_discrete(name = "") + 
+      theme(text = element_text(size = 12),
+            legend.position = "bottom")
+  }
+
+# Assemble overall figure
+dnacomb_schematic <- fig("plots/schematic.png", b_margin = margin())
+pipeline_schematic <- fig("plots/pipeline.png", b_margin = margin())
+
+figure <- dnacomb_schematic + pipeline_schematic + p_accuracy + p_mode_benchmark + p_metric_benchmark +
+  plot_layout(design = "11\n22\n33\n45", heights = c(8, 8, 3, 3), widths = c(1, 1)) +
+  plot_annotation(tag_levels = "A")
+ggsave("plots/figure.pdf", figure, units = "cm", height = 16 * 1.8, width = 19 * 1.8)
+ggsave("plots/figure.png", figure, units = "cm", height = 16 * 1.8, width = 19 * 1.8)
+
