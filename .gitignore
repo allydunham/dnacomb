@@ -1,11 +1,10 @@
-*.tsv
-*.csv
-*.fq*
-*.fa*
 /scripts/__pycache__/
 /target
 /test
 /benchmark
 /data
 /plots
+/tests/*/observed.*
 .Rproj.user
+!*.gz
+.positai

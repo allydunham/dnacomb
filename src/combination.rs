@@ -1,13 +1,17 @@
-//! Observed combination of sequence regions from a sequencing experiment
+//! Representation of individual observed region combinations.
 //!
-//! Structures and functions to store and manipulate combinations of reqions extracted from sequencing data
+//! This module defines [`ObservedCombination`] and related types describing a
+//! single distinct combination of observed variable regions extracted from reads.
+//! It also includes the logic for combining per-region library matches into an
+//! overall combination-level assignment relative to an expected library.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::errors::{LibraryError, seq_to_string_or_log};
-use crate::lib_spec::{DistanceMetric, Library};
+use crate::errors::LibraryError;
+use crate::groups::ReadGroup;
+use crate::interning::{LibraryID, RegionID, library_id_to_str};
+use crate::library::{DistanceMetric, Library};
 use crate::region::{ObservedRegion, RegionKey, RegionMatch};
-use crate::seqs::ReadGroup;
 use crate::seqs::SeqPair;
 
 /// Key identifying an observed combination
@@ -25,11 +29,15 @@ impl CombinationKey {
     }
 }
 
-/// Combination of ObservedRegions seen in sequence reads
+/// Combination of observed variable regions seen in one or more reads.
 ///
-/// A set of observed regions determining the "type" of read, as defined in the LibSpec.
-/// Also includes a count, the read grouping (for instance for different cells in single
-/// cell studies) and whether it matches an expected library member.
+/// An `ObservedCombination` represents one distinct combination of ObservedRegions.
+/// It stores:
+/// - the observed region for each variable region,
+/// - optional full read sequence
+/// - counts split by read group,
+/// - the inferred relationship between this combination and
+///   the expected library (after comparison is run)
 #[derive(Debug, Clone)]
 pub struct ObservedCombination {
     /// Count of observations for each read group. Ungrouped reads are stored in None
@@ -40,7 +48,7 @@ pub struct ObservedCombination {
 
     /// ObservedRegions defining the sequence form. References to ObservedRegion which
     /// should be stored in the parent ObservedCombinations object.
-    pub regions: HashMap<String, Arc<Mutex<ObservedRegion>>>,
+    pub regions: HashMap<RegionID, Arc<Mutex<ObservedRegion>>>,
 
     /// Status and result of comparison with the expected library of sequences
     pub library_matches: CombinationMatch,
@@ -48,7 +56,7 @@ pub struct ObservedCombination {
 
 impl ObservedCombination {
     pub fn new(
-        regions: HashMap<String, Arc<Mutex<ObservedRegion>>>,
+        regions: HashMap<RegionID, Arc<Mutex<ObservedRegion>>>,
         sequence: Option<SeqPair>,
     ) -> Self {
         Self {
@@ -74,20 +82,32 @@ impl ObservedCombination {
         }
     }
 
-    /// Compare the combination to expected combinations in the library
+    /// Compare this observed combination to the expected library.
     ///
-    /// Returns a CombinationMatch object which can also be added to the ObservedCombination
-    /// library matches field. Looks at each region in turn and identifies which library
-    /// combinations are possible overall matches.
+    /// Each observed region is first compared to its corresponding library region
+    /// if that comparison has not already been performed. The per-region matches
+    /// are then combined across all expected regions to determine whether the
+    /// overall observed combination is:
+    ///
+    /// - a unique library match,
+    /// - a multimatch to several equally good library combinations,
+    /// - a recombination of valid library elements in an unexpected combination,
+    /// - a mismatch because at least one observed region could not be assigned,
+    /// - or a nonmatch because one or more expected regions are missing.
+    ///
+    /// Regions that are not present in the supplied library are ignored when
+    /// determining the overall combination match.
     pub fn compare_to_library(
         &self,
-        region_ids: &Vec<String>,
+        region_ids: &Vec<RegionID>,
         library: &Library,
         distance_metric: DistanceMetric,
         max_matches: usize,
+        skip_variants: bool,
     ) -> CombinationMatch {
         let mut comb_dist: u64 = 0;
-        let mut candidate_matches: Option<HashSet<usize>> = None;
+        let mut candidate_matches: Vec<Option<HashSet<LibraryID>>> =
+            vec![None; library.sublibraries.len()];
 
         for reg_id in region_ids {
             let reg = match self.regions.get(reg_id) {
@@ -96,11 +116,21 @@ impl ObservedCombination {
                     // Should never need this with the implementation in ObservedCombinations, but here as a back-up as otherwise could panic later. Do all regions first as slightly more efficient and easier to follow in log
                     let mut reg = x.lock().unwrap();
                     if !reg.is_compared_to_library() {
-                        let val = reg.compare_to_library(library, distance_metric, max_matches);
+                        let val = reg.compare_to_library(
+                            library,
+                            distance_metric,
+                            max_matches,
+                            skip_variants,
+                        );
                         reg.nearest_matches = val;
                     }
                     reg
                 }
+            };
+
+            let sublib = match library.get_sublibrary_index(reg_id) {
+                Ok(x) => x,
+                Err(_) => continue, // If region doesn't match a sublib can skip it,
             };
 
             match &reg.nearest_matches {
@@ -114,34 +144,36 @@ impl ObservedCombination {
                 RegionMatch::Match {
                     seq_match,
                     distance,
+                    ..
                 } => {
                     comb_dist += distance;
-                    match candidate_matches {
+                    match candidate_matches[sublib] {
                         // If this is the first region, candidates are all it's inds
-                        None => candidate_matches = Some(seq_match.inds.clone()),
+                        None => candidate_matches[sublib] = Some(seq_match.ids.clone()),
 
                         // Otherwise remove any inds it doesn't overlap to narrow down
                         Some(ref mut x) => {
-                            x.retain(|i| seq_match.inds.contains(i));
+                            x.retain(|i| seq_match.ids.contains(i));
                         }
                     };
                 }
                 RegionMatch::MultiMatch {
                     seq_matches,
                     distance,
+                    ..
                 } => {
                     comb_dist += distance;
 
                     // Identify the union of inds the multimatch covers
-                    let mut match_ind_union: HashSet<usize> = HashSet::new();
+                    let mut match_ind_union: HashSet<LibraryID> = HashSet::new();
                     for mat in seq_matches {
-                        match_ind_union.extend(mat.inds.iter());
+                        match_ind_union.extend(mat.ids.clone());
                     }
 
                     // Set as the search space or remove anything not overlapping it
-                    match candidate_matches {
+                    match candidate_matches[sublib] {
                         None => {
-                            candidate_matches = Some(match_ind_union);
+                            candidate_matches[sublib] = Some(match_ind_union);
                         }
                         Some(ref mut x) => {
                             x.retain(|i| match_ind_union.contains(i));
@@ -151,181 +183,121 @@ impl ObservedCombination {
             }
         }
 
-        match candidate_matches {
-            None => CombinationMatch::Nonmatch, // Only occurs if no regions (e.g. empty reads)
-            Some(x) => {
-                if x.len() == 1 {
-                    CombinationMatch::Match {
-                        // Can unwrap because we know x.len() == 1
-                        ind: *x.iter().next().unwrap(),
-                        distance: comb_dist,
-                    }
-                } else if x.is_empty() {
-                    CombinationMatch::Recombination {
-                        distance: comb_dist,
-                    }
-                } else {
-                    CombinationMatch::MultiMatch {
-                        inds: x,
-                        distance: comb_dist,
-                    }
-                }
-            }
-        }
-    }
-
-    /// Generate tsv line(s) corresponding to this combination. Each read group
-    /// the combination is observed is given a separate line
-    pub fn to_tsv(
-        &self,
-        region_ids: &Vec<String>,
-        library: Option<&Library>,
-    ) -> Result<String, LibraryError> {
-        // Line has \t separated format:
-        // group forward reverse[{region} {region}_nearest {region}_distance {region}_n_matches for each region] status combination_distance combinations_in_library combination_indexes count
-
-        let mut output = String::with_capacity(100 * self.counts.len());
-
-        for (group, count) in self.counts.iter() {
-            // Read group
-            output.push_str(&group.to_string());
-            output.push('\t');
-
-            match &self.sequence {
-                Some(seq) => {
-                    output.push_str(&seq_to_string_or_log(&seq.forward));
-                    output.push('\t');
-                    match &seq.reverse {
-                        Some(rev) => {
-                            output.push_str(&seq_to_string_or_log(rev));
-                            output.push('\t');
-                        }
-                        None => output.push('\t'),
-                    }
-                }
-                None => output.push_str("\t\t"),
-            }
-
-            // Region seq/nearest match(s)/distance per region
-            for reg_id in region_ids {
-                let region = self.regions.get(reg_id);
-
-                match region {
-                    None => output.push_str("\t\t\t\t"), // Missing regions 4 blanks
-                    Some(r) => {
-                        output.push_str(&r.lock().unwrap().to_tsv_chunk());
-                        output.push('\t');
-                    }
-                }
-            }
-
-            output.push_str(&self.library_matches.to_tsv_chunk(library)?);
-            output.push_str(&count.to_string());
-            output.push('\n');
+        // If all sublibs haven't matched (e.g. empty read) is a nonmatch
+        if candidate_matches.iter().all(|x| x.is_none()) {
+            return CombinationMatch::Nonmatch;
         }
 
-        Ok(output)
+        // If any of the matched libraries have no remaining indeces must be a recombination
+        if candidate_matches.iter().any(|x| match x {
+            Some(x) => x.is_empty(),
+            None => false,
+        }) {
+            return CombinationMatch::Recombination {
+                distance: comb_dist,
+            };
+        }
+
+        // If all None (e.g. no regions from that lib) or length 1 then a full match
+        if candidate_matches.iter().all(|x| match x {
+            Some(x) => x.len() == 1,
+            None => true,
+        }) {
+            return CombinationMatch::Match {
+                // Can unwrap because we know x.len() == 1
+                inds: candidate_matches
+                    .iter()
+                    .map(|x| x.as_ref().map(|x| x.iter().next().unwrap().clone()))
+                    .collect(),
+                distance: comb_dist,
+            };
+        }
+
+        // Only remaining case is a multi-match with a mix of match lengths
+        CombinationMatch::MultiMatch {
+            inds: candidate_matches,
+            distance: comb_dist,
+        }
     }
 }
 
 /// Status of the match between ObservedCombination and a Library
 ///
-/// Includes the match status and the indeces of matches in the libray
-/// plus the distance to the library.
+/// This enum summarises the result of combining per-region library matches
+/// across all expected variable regions.
+/// It includes a status plus distance and the match(s) as potential payloads.
 #[derive(Debug, Clone)]
 pub enum CombinationMatch {
-    /// Comparison hasn't occured
+    /// Library comparison has not been performed.
     Uncompared,
 
-    /// Full match with a specific library member and the distance
-    Match { ind: usize, distance: u64 },
+    /// All relevant regions resolve to a single consistent library assignment.
+    ///
+    /// For multi-sublibrary designs, `inds` contains one entry per sublibrary.
+    /// `None` means that this combination did not include any region from that
+    /// sublibrary.
+    Match {
+        inds: Vec<Option<LibraryID>>,
+        distance: u64,
+    },
 
-    /// Fully matches multiple library members and the distance
-    MultiMatch { inds: HashSet<usize>, distance: u64 },
+    /// The observed combination is consistent with multiple equally good library
+    /// assignments in at least one sublibrary.
+    ///
+    /// For multi-sublibrary designs, `inds` contains one entry per sublibrary.
+    /// `None` means that this combination did not include any region from that
+    /// sublibrary.
+    MultiMatch {
+        inds: Vec<Option<HashSet<LibraryID>>>,
+        distance: u64,
+    },
 
-    /// Partially matches multiple library members and the total distance
+    /// The individual regions match library elements, but not in a valid expected
+    /// combination.
     Recombination { distance: u64 },
 
-    /// Regions exist but at least one cannot be assigned to the library
+    /// All regions exist but at least one could not be assigned to the library
     Mismatch,
 
-    /// Not all regions exist
+    /// One or more expected regions were missing from the observed combination.
     Nonmatch,
 }
 
 impl CombinationMatch {
-    /// Output a TSV chunk for the combination match status
+    /// Format the matched library IDs for display or TSV output.
     ///
-    /// Has the \t separated format:
-    /// status combination_distance combinations_in_library combination_indexes
-    fn to_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
+    /// For a unique match this returns one ID per sublibrary, joined by `/`.
+    /// For a multimatch, IDs within a sublibrary are joined by `,` and different
+    /// sublibraries are joined by `/`.
+    /// Returns an empty string for statuses without a meaningful match.
+    pub fn id_string(&self) -> Result<String, LibraryError> {
         Ok(match self {
-            CombinationMatch::Uncompared => "uncompared\t\t\t\t".to_string(),
-            CombinationMatch::Match { ind, distance } => {
-                let name = match library {
-                    None => ind.to_string(),
-                    Some(l) => l.get_name(*ind)?,
-                };
-                format!("match\t{distance}\t1\t{name}\t",)
-            }
-            CombinationMatch::MultiMatch { inds, distance } => {
-                let names = match library {
-                    None => inds
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    Some(l) => inds
-                        .iter()
-                        .map(|x| l.get_name(*x))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(","),
-                };
+            CombinationMatch::Match { inds, .. } => inds
+                .iter()
+                .map(|id| match id {
+                    Some(id) => Ok(library_id_to_str(id).to_string()),
+                    None => Ok("".to_string()),
+                })
+                .collect::<Result<Vec<String>, LibraryError>>()?
+                .join("/"),
 
-                format!("match\t{}\t{}\t{}\t", distance, inds.len(), names)
-            }
-            CombinationMatch::Recombination { distance } => {
-                format!("recombination\t{distance}\t0\t\t",)
-            }
-            CombinationMatch::Mismatch => "mismatch\t\t0\t\t".to_string(),
-            CombinationMatch::Nonmatch => "nonmatch\t\t0\t\t".to_string(),
-        })
-    }
-
-    /// Output a summary TSV chunk for the combination match status
-    ///
-    /// Has the \t separated format:
-    /// status combinations_in_library combination_indexes
-    pub fn to_summary_tsv_chunk(&self, library: Option<&Library>) -> Result<String, LibraryError> {
-        Ok(match self {
-            CombinationMatch::Uncompared => "uncompared\t\t\t".to_string(),
-            CombinationMatch::Match { ind, .. } => {
-                let name = match library {
-                    None => ind.to_string(),
-                    Some(l) => l.get_name(*ind)?,
-                };
-
-                format!("match\t1\t{name}\t",)
-            }
             CombinationMatch::MultiMatch { inds, .. } => {
-                let names = match library {
-                    None => inds
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    Some(l) => inds
-                        .iter()
-                        .map(|x| l.get_name(*x))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(","),
-                };
+                let mut names = Vec::with_capacity(inds.len());
 
-                format!("match\t{}\t{}\t", inds.len(), names)
+                for ids in inds.iter() {
+                    names.push(match ids {
+                        Some(ids) => ids
+                            .iter()
+                            .map(library_id_to_str)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        None => "".to_string(),
+                    });
+                }
+
+                names.join("/")
             }
-            CombinationMatch::Recombination { .. } => "recombination\t0\t\t".to_string(),
-            CombinationMatch::Mismatch => "mismatch\t0\t\t".to_string(),
-            CombinationMatch::Nonmatch => "nonmatch\t0\t\t".to_string(),
+            _ => "".to_string(),
         })
     }
 }
@@ -336,6 +308,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    use crate::SubLibrary;
+    use crate::interning::{RegionID, library_id_from_str, region_id_from_str, seq_from_bytes};
     use crate::region::RegionCompleteness;
 
     // Library members
@@ -513,39 +487,45 @@ mod tests {
     }
 
     /// Construct a library to compare to
-    fn make_library() -> crate::lib_spec::Library {
+    fn make_library() -> Library {
         use std::collections::HashMap;
 
-        let mut map: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        let mut map: HashMap<RegionID, Vec<Vec<u8>>> = HashMap::new();
         let ids = Some(vec![
             "seq1".to_string(),
             "seq2".to_string(),
             "seq3".to_string(),
         ]);
-        let region_max: HashMap<String, u64> = HashMap::new();
+        let region_max: HashMap<RegionID, u64> = HashMap::new();
 
         map.insert(
-            "r1".into(),
+            region_id_from_str("r1"),
             vec![b"ATAT".to_vec(), b"AAAA".to_vec(), b"AAAT".to_vec()],
         );
         map.insert(
-            "r2".into(),
+            region_id_from_str("r2"),
             vec![b"GGGG".to_vec(), b"CCCC".to_vec(), b"CCCC".to_vec()],
         );
 
         // default_max_distance is only relevant for edit-distance modes; 2 is fine.
-        crate::lib_spec::Library::new(map, ids, region_max, 2).expect("library builds")
+        let sublib = SubLibrary::new(map, ids, region_max, 2, None);
+
+        Library::new(vec![sublib.expect("Sublib failed")]).expect("library builds")
     }
 
     /// Generate observed combination
     fn make_combination(
         regs: &[(&'static str, &'static [u8], RegionCompleteness)],
     ) -> ObservedCombination {
-        let mut map: HashMap<String, Arc<Mutex<ObservedRegion>>> = HashMap::new();
+        let mut map: HashMap<RegionID, Arc<Mutex<ObservedRegion>>> = HashMap::new();
         for (id, seq, comp) in regs.iter().copied() {
             map.insert(
-                id.to_string(),
-                Arc::new(Mutex::new(ObservedRegion::new(id.to_string(), seq, comp))),
+                region_id_from_str(id),
+                Arc::new(Mutex::new(ObservedRegion::new(
+                    region_id_from_str(id),
+                    seq_from_bytes(seq),
+                    comp,
+                ))),
             );
         }
         ObservedCombination::new(map, None)
@@ -555,14 +535,14 @@ mod tests {
     fn run_row(tc: &TestCase) {
         let lib = make_library();
         let comb = make_combination(&tc.regions);
-        let region_ids: Vec<String> = vec!["r1".to_string(), "r2".to_string()];
+        let region_ids: Vec<RegionID> = vec![region_id_from_str("r1"), region_id_from_str("r2")];
 
-        let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3);
+        let got = comb.compare_to_library(&region_ids, &lib, tc.metric, 3, true);
 
-        match (&tc.expected, got) {
-            (Expected::Match { name, distance }, CombinationMatch::Match { ind, distance: d }) => {
+        match (&tc.expected, got.clone()) {
+            (Expected::Match { name, distance }, CombinationMatch::Match { distance: d, .. }) => {
                 assert_eq!(d, *distance, "[{}] distance mismatch", tc.name);
-                let got_name = lib.get_name(ind).expect("name exists");
+                let got_name = got.id_string().expect("name exists");
                 assert_eq!(got_name, *name, "[{}] matched name mismatch", tc.name);
             }
             (
@@ -571,7 +551,13 @@ mod tests {
             ) => {
                 assert_eq!(d, *distance, "[{}] distance mismatch", tc.name);
                 assert_eq!(
-                    inds.len(),
+                    inds.iter()
+                        .map(|x| match x {
+                            Some(x) => x.len(),
+                            None => 1,
+                        })
+                        .reduce(|x, y| x * y)
+                        .unwrap_or(0),
                     *inds_len,
                     "[{}] candidate set size mismatch",
                     tc.name
@@ -596,5 +582,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_combination_key_equality() {
+        let key1 = CombinationKey::new(None, vec![]);
+        let key2 = CombinationKey::new(None, vec![]);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_combination_key_inequality() {
+        let seq_pair = SeqPair::new(b"ATCG".to_vec(), None);
+        let key1 = CombinationKey::new(Some(seq_pair.clone()), vec![]);
+        let key2 = CombinationKey::new(None, vec![]);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_observed_combination_new() {
+        let combo = ObservedCombination::new(HashMap::new(), None);
+        assert_eq!(combo.total_count(), 0);
+        assert!(combo.counts.is_empty());
+        assert!(combo.sequence.is_none());
+    }
+
+    #[test]
+    fn test_total_count_single_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::ungrouped());
+        combo.increment_count(ReadGroup::ungrouped());
+        assert_eq!(combo.total_count(), 2);
+    }
+
+    #[test]
+    fn test_total_count_multiple_groups() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::ungrouped());
+        combo.increment_count(ReadGroup::grouped("0"));
+        combo.increment_count(ReadGroup::grouped("0"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.total_count(), 4);
+    }
+
+    #[test]
+    fn test_increment_count_new_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.counts.get(&ReadGroup::grouped("1")), Some(&1));
+    }
+
+    #[test]
+    fn test_increment_count_existing_group() {
+        let mut combo = ObservedCombination::new(HashMap::new(), None);
+        combo.increment_count(ReadGroup::grouped("1"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        combo.increment_count(ReadGroup::grouped("1"));
+        assert_eq!(combo.counts.get(&ReadGroup::grouped("1")), Some(&3));
+    }
+
+    #[test]
+    fn test_combination_match_id_string_match() {
+        let inds = vec![
+            Some(library_id_from_str("seq1")),
+            Some(library_id_from_str("seq2")),
+        ];
+        let mat = CombinationMatch::Match { inds, distance: 0 };
+        let id_str = mat.id_string().unwrap();
+        assert_eq!(id_str, "seq1/seq2");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_match_with_none() {
+        let inds = vec![Some(library_id_from_str("seq1")), None];
+        let mat = CombinationMatch::Match { inds, distance: 0 };
+        let id_str = mat.id_string().unwrap();
+        assert_eq!(id_str, "seq1/");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_multimatch() {
+        let ids1: HashSet<_> = vec![library_id_from_str("seq1"), library_id_from_str("seq2")]
+            .into_iter()
+            .collect();
+        let ids2: HashSet<_> = vec![library_id_from_str("seq3")].into_iter().collect();
+        let inds = vec![Some(ids1), Some(ids2)];
+        let mat = CombinationMatch::MultiMatch { inds, distance: 1 };
+        let id_str = mat.id_string().unwrap();
+        // Note: HashSet iteration order is non-deterministic, so just check it contains both
+        assert!(id_str.contains("seq1") && id_str.contains("seq2"));
+        assert!(id_str.contains("seq3"));
+    }
+
+    #[test]
+    fn test_combination_match_id_string_uncompared() {
+        let mat = CombinationMatch::Uncompared;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_mismatch() {
+        let mat = CombinationMatch::Mismatch;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_nonmatch() {
+        let mat = CombinationMatch::Nonmatch;
+        assert_eq!(mat.id_string().unwrap(), "");
+    }
+
+    #[test]
+    fn test_combination_match_id_string_recombination() {
+        let mat = CombinationMatch::Recombination { distance: 5 };
+        assert_eq!(mat.id_string().unwrap(), "");
     }
 }

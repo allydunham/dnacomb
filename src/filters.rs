@@ -1,19 +1,20 @@
-//! Filters to identify and count failing reads
+//! Read-filtering logic and filtered-read summaries.
 //!
-//! Provides a range of filtering criteria that a function
-//! processing reads can tap into via a simple config and
-//! interface, easily filtering reads for a range of reasons.
-//! Also makes it easy to keep track of filtered reads and
-//! print a summary to file.
+//! This module defines the configurable filters applied during counting, along
+//! with the data structures used to track why reads were discarded and how often
+//! each filtered read sequence was observed.
+use bio::alignment::pairwise::Aligner;
 use bio::bio_types::alignment::Alignment;
+use bio::bio_types::sequence::Sequence;
 use bio::io::fastq::Record;
+use log::info;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 
-use crate::errors::{ReadCountError, seq_to_string_or_log};
-use crate::seqs::{ReadGroup, ReadPair, SeqPair};
-use crate::utils::{div_or_zero, mean_quality};
+use crate::AlignmentScorer;
+use crate::errors::ReadCountError;
+use crate::groups::ReadGroup;
+use crate::seqs::{ReadPair, SeqPair};
+use crate::utils::mean_quality;
 
 /// Function filtering based on a read pair
 type ReadFilter = fn(&Record, Option<&Record>, &FilterConfig) -> Option<FilterReason>;
@@ -21,7 +22,7 @@ type ReadFilter = fn(&Record, Option<&Record>, &FilterConfig) -> Option<FilterRe
 /// Function filtering based on an alignment
 type AlignmentFilter = fn(&Alignment, Option<&Alignment>, &FilterConfig) -> Option<FilterReason>;
 
-/// Reasons for filtering a read
+/// Reason why a read or read pair was filtered out during counting.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterReason {
@@ -32,7 +33,7 @@ pub enum FilterReason {
     BadAlignment,
 }
 
-/// Metadata about filters
+/// Stable metadata describing a filter reason for display and TSV output.
 #[derive(Debug)]
 pub struct FilterMeta {
     pub id: &'static str,
@@ -40,8 +41,11 @@ pub struct FilterMeta {
 }
 
 impl FilterReason {
-    const N_REASONS: usize = FilterReason::ALL_FILTERS.len();
-    const ALL_FILTERS: &[FilterReason] = &[
+    /// Number of filter reasons defined
+    pub const N_REASONS: usize = FilterReason::ALL_FILTERS.len();
+
+    /// List of all FilterReasons for iteration
+    pub const ALL_FILTERS: &[FilterReason] = &[
         FilterReason::EmptyRead,
         FilterReason::ShortRead,
         FilterReason::LongRead,
@@ -49,11 +53,14 @@ impl FilterReason {
         FilterReason::BadAlignment,
     ];
 
+    /// Get index of reason as enum integer and ALL_REASONS index
     #[inline]
     pub const fn as_index(self) -> usize {
         self as usize
     }
 
+    /// Return the stable output identifier and human-readable label for this
+    /// filter reason.
     pub fn meta(self) -> FilterMeta {
         match self {
             FilterReason::EmptyRead => FilterMeta {
@@ -100,10 +107,10 @@ fn empty_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Opti
         return Some(FilterReason::EmptyRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().is_empty() {
-            return Some(FilterReason::EmptyRead);
-        }
+    if let Some(r) = r
+        && r.seq().is_empty()
+    {
+        return Some(FilterReason::EmptyRead);
     }
 
     None
@@ -116,10 +123,10 @@ fn short_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Opti
         return Some(FilterReason::ShortRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().len() < min {
-            return Some(FilterReason::ShortRead);
-        }
+    if let Some(r) = r
+        && r.seq().len() < min
+    {
+        return Some(FilterReason::ShortRead);
     }
 
     None
@@ -132,10 +139,10 @@ fn long_read_filter(f: &Record, r: Option<&Record>, cfg: &FilterConfig) -> Optio
         return Some(FilterReason::LongRead);
     }
 
-    if let Some(r) = r {
-        if r.seq().len() > max {
-            return Some(FilterReason::LongRead);
-        }
+    if let Some(r) = r
+        && r.seq().len() > max
+    {
+        return Some(FilterReason::LongRead);
     }
 
     None
@@ -152,10 +159,10 @@ fn low_mean_quality_filter(
         return Some(FilterReason::LowMeanQuality);
     }
 
-    if let Some(r) = r {
-        if mean_quality(r.qual()) < q {
-            return Some(FilterReason::LowMeanQuality);
-        }
+    if let Some(r) = r
+        && mean_quality(r.qual()) < q
+    {
+        return Some(FilterReason::LowMeanQuality);
     }
 
     None
@@ -173,18 +180,21 @@ fn bad_alignment_filter(
         return Some(FilterReason::BadAlignment);
     }
 
-    if let Some(r) = r {
-        if r.score < tol.minimum_r_score {
-            return Some(FilterReason::BadAlignment);
-        }
+    if let Some(r) = r
+        && r.score < tol.minimum_r_score
+    {
+        return Some(FilterReason::BadAlignment);
     }
 
     None
 }
 
-/// Configuration for filtering
+/// Configuration controlling which filters are applied during counting.
 ///
-/// Instructions for how to filter reads
+/// Filters are applied in a fixed order, and the first matching reason is
+/// recorded for a read. Depending on counting mode, some filters act directly on
+/// reads (`filter_readpair`) while alignment-quality filters act after alignment
+/// (`filter_alignment`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterConfig {
     pub mean_quality_threshold: Option<f32>,
@@ -212,6 +222,12 @@ impl FilterConfig {
     }
 }
 
+/// Precomputed alignment-score thresholds for filtering alignment-based modes.
+///
+/// The expected forward and reverse alignment scores are calculated from the
+/// LibSpec template and alignment scoring scheme. The supplied tolerance is then
+/// used to convert those expected scores into minimum acceptable scores for
+/// filtering observed alignments.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
 pub struct AlignmentTolerance {
@@ -223,6 +239,8 @@ pub struct AlignmentTolerance {
 }
 
 impl AlignmentTolerance {
+    /// Create alignment-score thresholds from an expected-score baseline and a
+    /// fractional tolerance in the range `[0.0, 1.0]`.
     pub fn new(
         tolerance: f32,
         expected_f_score: i32,
@@ -242,9 +260,59 @@ impl AlignmentTolerance {
             minimum_r_score: (expected_r_score as f32 * tolerance) as i32,
         })
     }
+
+    /// Generate an AlignmenTolerance based on expected reads
+    ///
+    /// Produce an AlignmentTolerance based on the scores of perfect reads aligned
+    /// to the full template, for example those derived from a LibSpec.
+    /// The observed alignment thresholds are then set as `tolerance * expected_score`.
+    /// If `log` is true the shape of the observed alignments is logged at
+    /// the "info" level.
+    pub fn from_expected_reads(
+        expected_f_sequence: &Sequence,
+        expected_r_sequence: Option<&Sequence>,
+        template: &Sequence,
+        alignment_scorer: &AlignmentScorer,
+        tolerance: f32,
+        log: bool,
+    ) -> Result<AlignmentTolerance, ReadCountError> {
+        // Initialise aligner
+        let scoring = alignment_scorer.get_scoring();
+        let mut aligner = Aligner::with_capacity_and_scoring(400, 150, scoring);
+
+        let f_alignment = aligner.semiglobal(expected_f_sequence, template);
+
+        if log {
+            info!(
+                "Expected Fwd Alignment:\nScore: {}, Cigar: {}\n{}",
+                f_alignment.score,
+                f_alignment.cigar(false),
+                f_alignment.pretty(expected_f_sequence, template, 100),
+            );
+        }
+
+        let mut r_score = 0;
+        if let Some(exp_r) = expected_r_sequence {
+            let r_alignment = aligner.semiglobal(exp_r, template);
+            r_score = r_alignment.score;
+
+            if log {
+                info!(
+                    "Expected Rev Alignment:\nScore: {}, Cigar: {}\n{}",
+                    r_alignment.score,
+                    r_alignment.cigar(false),
+                    r_alignment.pretty(exp_r, template, 100),
+                );
+            }
+        }
+
+        AlignmentTolerance::new(tolerance, f_alignment.score, r_score)
+    }
 }
 
-/// Count of reads filtered for each reason, stored as an array indexed by FilterReason u8 values
+/// Counts of how many times a read was filtered for each `FilterReason`.
+///
+/// Internally this is stored as a fixed-size array indexed by `FilterReason`.
 #[derive(Debug, Clone)]
 pub struct FilteredCounts([u64; FilterReason::N_REASONS]);
 
@@ -253,76 +321,32 @@ impl FilteredCounts {
         Self([0; FilterReason::N_REASONS])
     }
 
+    /// Get the count for one specific filter reason.
     #[inline]
     pub fn get(&self, r: &FilterReason) -> u64 {
         self.0[r.as_index()]
+    }
+
+    /// Iterate over counts in the stable `FilterReason::ALL_FILTERS` order.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &u64> {
+        self.0.iter()
     }
 
     fn increment_count(&mut self, r: FilterReason) {
         self.0[r.as_index()] += 1;
     }
 
-    /// Total count of filtered reads
+    /// Total number of filtered observations across all reasons.
     pub fn total(&self) -> u64 {
         self.0.iter().sum()
     }
 
-    /// Merge counts from another FilteredCounts
+    /// Merge counts from another FilteredCounts into this one
     pub fn merge(&mut self, new_counts: FilteredCounts) {
         for i in 0..FilterReason::N_REASONS {
             self.0[i] += new_counts.0[i]
         }
-    }
-
-    /// Headers for the TSV produced by to_tsv_line
-    fn wide_tsv_headers() -> String {
-        let ids: Vec<&str> = FilterReason::ALL_FILTERS
-            .iter()
-            .map(|r| r.meta().id)
-            .collect();
-
-        format!("count\tproportion\t{}", ids.join("\t"))
-    }
-
-    /// TSV line giving the total and counts of each reason for a given
-    fn to_wide_tsv_line(&self, total: f32) -> String {
-        let string_counts: Vec<String> = self.0.iter().map(|i| i.to_string()).collect();
-
-        format!(
-            "{}\t{:.4}\t{}",
-            self.total(),
-            self.total() as f32 / total,
-            string_counts.join("\t"),
-        )
-    }
-
-    /// Generate a string of TSV lines representing total counts
-    ///
-    /// Creates a TSV string with columns for filter reason, count and
-    /// proportion of the supplied total read count. Mainly for use
-    /// when outputting from ReadSummary
-    pub fn to_long_tsv_lines(&self, total: u64) -> String {
-        let filtered_total = self.total();
-
-        let mut out = String::with_capacity(300);
-
-        out.push_str(&format!(
-            "filtered\ttotal\t{}\t{:.4}\t1.000\n",
-            filtered_total,
-            div_or_zero(filtered_total as f32, total as f32),
-        ));
-
-        for r in FilterReason::ALL_FILTERS {
-            out.push_str(&format!(
-                "filtered\t{}\t{}\t{:.4}\t{:.4}\n",
-                r.meta().id,
-                self.get(r),
-                div_or_zero(self.get(r) as f32, total as f32),
-                div_or_zero(self.get(r) as f32, filtered_total as f32),
-            ));
-        }
-
-        out
     }
 }
 
@@ -332,9 +356,15 @@ impl Default for FilteredCounts {
     }
 }
 
-/// Container for filtered reads
+/// Summary of reads discarded by filtering.
 ///
-/// Keeps track of counts for filtered reads during counting
+/// This tracks:
+/// - the filter configuration used,
+/// - total counts by filter reason,
+/// - and per-read/per-group filtered counts keyed by read sequence.
+///
+/// It is used both to decide whether a read should be discarded and to generate
+/// summary/output tables of filtered reads.
 #[derive(Debug, Clone)]
 pub struct FilteredReads {
     pub config: FilterConfig,
@@ -343,6 +373,7 @@ pub struct FilteredReads {
 }
 
 impl FilteredReads {
+    /// Create an empty filtered-read container for a specific filter configuration.
     pub fn new(config: FilterConfig) -> Self {
         Self {
             config,
@@ -383,10 +414,11 @@ impl FilteredReads {
         }
     }
 
-    /// Determine if a readpair should be filtered based on the supplied config
+    /// Apply read-level filters to a read pair.
     ///
-    /// Checks whether the read should be filtered, adding it to the appropriate count if so, and
-    /// returns a FilterReason determining why it was filtered.
+    /// Filters are evaluated in the order defined by `READPAIR_FILTERS`. The first
+    /// matching `FilterReason` is returned. If `increment` is true, that reason is
+    /// also recorded in the filtered-read counts.
     pub fn filter_readpair(&mut self, record: &ReadPair, increment: bool) -> Option<FilterReason> {
         let f_read = &record.forward;
         let r_read = record.reverse.as_ref();
@@ -403,10 +435,11 @@ impl FilteredReads {
         None
     }
 
-    /// Determine if an alignment should be filtered based on the supplied config
+    /// Apply alignment-level filters to an aligned read pair.
     ///
-    /// Checks if an alignment should be filtered, adding it to the appropriate count if so, and
-    /// returns a FilterReason determining why it was filtered
+    /// This is used after alignment-based extraction to discard reads whose
+    /// alignment scores fall below the configured thresholds. If `increment` is
+    /// true, the matching reason is also recorded in the filtered-read counts.
     pub fn filter_alignment(
         &mut self,
         record: &ReadPair,
@@ -431,7 +464,10 @@ impl FilteredReads {
         self.totals.total()
     }
 
-    /// Merge counts from another FilteredReads object
+    /// Merge another `FilteredReads` into this one.
+    ///
+    /// This is primarily used when combining results from multiple counting
+    /// threads. The filter configurations must be identical.
     pub fn merge(&mut self, new_reads: FilteredReads) -> Result<(), ReadCountError> {
         if !(self.config == new_reads.config) {
             return Err(ReadCountError::Error {
@@ -462,14 +498,14 @@ impl FilteredReads {
         Ok(())
     }
 
-    /// Write a TSV file listing the filtered reads
+    /// Output filtered-read counts for iteration or output.
     ///
-    /// Writes a TSV with columns for forward sequence, reverse sequence,
-    /// total count, frequency, then one for each filter reason count.
-    pub fn write_filter_tsv(&self, file: File, sort: bool) -> Result<(), anyhow::Error> {
-        let total = self.total() as f32;
-
-        let mut writer = BufWriter::new(file);
+    /// Returns one entry per `(read sequence, read group)` combination together
+    /// with its per-reason counts. If `sort` is true, rows are ordered by
+    /// descending total filtered count per read sequence.
+    ///
+    /// This allocates a new vector of references.
+    pub fn to_vector(&self, sort: bool) -> Vec<(&SeqPair, &ReadGroup, &FilteredCounts)> {
         let mut keys: Vec<(&SeqPair, u64)> = self
             .counts
             .iter()
@@ -481,73 +517,23 @@ impl FilteredReads {
             keys.sort_unstable_by_key(|x| std::cmp::Reverse(x.1));
         }
 
-        // Write header
-        writeln!(
-            writer,
-            "group\tforward\treverse\t{}",
-            FilteredCounts::wide_tsv_headers()
-        )?;
+        keys.iter()
+            .flat_map(|(k, _)| {
+                let groups = self
+                    .counts
+                    .get(k)
+                    .expect("Key missing despite coming from FilteredReads");
 
-        for (key, _) in keys {
-            let groups = self
-                .counts
-                .get(key)
-                .expect("Count key from extracted key list missing from FilteredReads");
-
-            for (group, counts) in groups {
-                writeln!(
-                    writer,
-                    "{}\t{}\t{}\t{}",
-                    group,
-                    seq_to_string_or_log(&key.forward),
-                    match &key.reverse {
-                        Some(x) => seq_to_string_or_log(x),
-                        None => "".to_string(),
-                    },
-                    counts.to_wide_tsv_line(total),
-                )?;
-            }
-        }
-
-        writer.flush()?;
-        Ok(())
-    }
-
-    /// Generate a string of TSV lines representing the total filter counts
-    ///
-    /// Creates a TSV string with columns for filter reason, count and
-    /// proportion of the supplied total read count. Mainly for use
-    /// when outputting from ReadSummary
-    pub fn to_summary_tsv_lines(&self, total: u64) -> String {
-        let filtered_total = self.total();
-
-        let mut out = String::with_capacity(300);
-
-        out.push_str(&format!(
-            "filtered\ttotal\t{}\t{:.4}\t1.000\n",
-            filtered_total,
-            filtered_total as f32 / total as f32,
-        ));
-
-        for r in FilterReason::ALL_FILTERS {
-            out.push_str(&format!(
-                "filtered\t{}\t{}\t{:.4}\t{:.4}\n",
-                r.meta().id,
-                self.totals.get(r),
-                self.totals.get(r) as f32 / total as f32,
-                self.totals.get(r) as f32 / filtered_total as f32,
-            ));
-        }
-
-        out
+                groups.iter().map(move |(g, c)| (*k, g, c))
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seqs::{ReadGroup, ReadPair};
+    use crate::seqs::ReadPair;
     use bio::bio_types::alignment::Alignment;
 
     /// Generate a read pair
@@ -564,7 +550,7 @@ mod tests {
         ReadPair {
             forward: f,
             reverse: r,
-            group: ReadGroup::Ungrouped,
+            group: ReadGroup::ungrouped(),
         }
     }
 
@@ -717,7 +703,7 @@ mod tests {
                     );
                     let read = fr.counts.get(&key).expect("Missing per-read counts");
                     let grp = read
-                        .get(&ReadGroup::Ungrouped)
+                        .get(&ReadGroup::ungrouped())
                         .expect("Missing group counts");
                     assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }
@@ -813,7 +799,7 @@ mod tests {
                     );
                     let read = fr.counts.get(&key).expect("Missing per-read counts");
                     let grp = read
-                        .get(&ReadGroup::Ungrouped)
+                        .get(&ReadGroup::ungrouped())
                         .expect("Missing group counts");
                     assert_eq!(grp.get(&reason), 1, "Read not tracked (case: {})", c.name);
                 }
@@ -826,5 +812,380 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_filter_reason_as_index() {
+        assert_eq!(FilterReason::EmptyRead.as_index(), 0);
+        assert_eq!(FilterReason::ShortRead.as_index(), 1);
+        assert_eq!(FilterReason::LongRead.as_index(), 2);
+        assert_eq!(FilterReason::LowMeanQuality.as_index(), 3);
+        assert_eq!(FilterReason::BadAlignment.as_index(), 4);
+    }
+
+    // Smoke test that meta-data is consistent - this is in outputs so want to
+    // be delibrate about changes
+    #[test]
+    fn test_filter_reason_meta_empty_read() {
+        let meta = FilterReason::EmptyRead.meta();
+        assert_eq!(meta.id, "empty_read");
+        assert_eq!(meta.label, "Read length = 0");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_short_read() {
+        let meta = FilterReason::ShortRead.meta();
+        assert_eq!(meta.id, "short_read");
+        assert_eq!(meta.label, "Read length < minimum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_long_read() {
+        let meta = FilterReason::LongRead.meta();
+        assert_eq!(meta.id, "long_read");
+        assert_eq!(meta.label, "Read length > maximum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_low_mean_quality() {
+        let meta = FilterReason::LowMeanQuality.meta();
+        assert_eq!(meta.id, "low_mean_quality");
+        assert_eq!(meta.label, "Mean quality < minimum");
+    }
+
+    #[test]
+    fn test_filter_reason_meta_bad_alignment() {
+        let meta = FilterReason::BadAlignment.meta();
+        assert_eq!(meta.id, "bad_alignment");
+        assert_eq!(meta.label, "Alignment quality < tolerance");
+    }
+
+    #[test]
+    fn test_filter_reason_n_reasons() {
+        assert_eq!(FilterReason::N_REASONS, 5);
+    }
+
+    #[test]
+    fn test_filter_reason_all_filters_len() {
+        assert_eq!(FilterReason::ALL_FILTERS.len(), 5);
+    }
+
+    // ---------- ALIGNMENT TOLERANCE ----------
+    #[test]
+    fn test_alignment_tolerance_valid() {
+        let tol = AlignmentTolerance::new(0.8, 100, 120).unwrap();
+        assert_eq!(tol.tolerance, 0.8);
+        assert_eq!(tol.expected_f_score, 100);
+        assert_eq!(tol.expected_r_score, 120);
+        assert_eq!(tol.minimum_f_score, 80);
+        assert_eq!(tol.minimum_r_score, 96);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_zero() {
+        let tol = AlignmentTolerance::new(0.0, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 0);
+        assert_eq!(tol.minimum_r_score, 0);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_one() {
+        let tol = AlignmentTolerance::new(1.0, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 100);
+        assert_eq!(tol.minimum_r_score, 100);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_below_range() {
+        let result = AlignmentTolerance::new(-0.1, 100, 100);
+        assert!(result.is_err());
+        match result {
+            Err(ReadCountError::FilterConfigError { desc }) => {
+                assert!(desc.contains("between 0 and 1"));
+            }
+            _ => panic!("Expected FilterConfigError"),
+        }
+    }
+
+    #[test]
+    fn test_alignment_tolerance_above_range() {
+        let result = AlignmentTolerance::new(1.1, 100, 100);
+        assert!(result.is_err());
+        match result {
+            Err(ReadCountError::FilterConfigError { desc }) => {
+                assert!(desc.contains("between 0 and 1"));
+            }
+            _ => panic!("Expected FilterConfigError"),
+        }
+    }
+
+    #[test]
+    fn test_alignment_tolerance_fractional() {
+        let tol = AlignmentTolerance::new(0.5, 100, 100).unwrap();
+        assert_eq!(tol.minimum_f_score, 50);
+        assert_eq!(tol.minimum_r_score, 50);
+    }
+
+    #[test]
+    fn test_alignment_tolerance_from_reads() {
+        let alignment_scorer = crate::AlignmentScorer::new(6, -2, -3, -10, -4);
+
+        let tol = AlignmentTolerance::from_expected_reads(
+            &vec![b'A', b'C', b'G', b'T'],
+            Some(&vec![b'T', b'G', b'C', b'A']),
+            &vec![
+                b'A', b'C', b'G', b'T', b'G', b'C', b'G', b'C', b'T', b'G', b'C', b'A',
+            ],
+            &alignment_scorer,
+            0.75,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(tol.minimum_f_score, 18);
+        assert_eq!(tol.minimum_r_score, 18);
+    }
+
+    // ---------- FILTERED COUNTS ----------
+    #[test]
+    fn test_filtered_counts_new() {
+        let counts = FilteredCounts::new();
+        assert_eq!(counts.total(), 0);
+        for reason in FilterReason::ALL_FILTERS {
+            assert_eq!(counts.get(reason), 0);
+        }
+    }
+
+    #[test]
+    fn test_filtered_counts_get() {
+        let mut counts = FilteredCounts::new();
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::ShortRead);
+
+        assert_eq!(counts.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts.get(&FilterReason::ShortRead), 1);
+        assert_eq!(counts.get(&FilterReason::LongRead), 0);
+    }
+
+    #[test]
+    fn test_filtered_counts_total() {
+        let mut counts = FilteredCounts::new();
+        assert_eq!(counts.total(), 0);
+
+        counts.increment_count(FilterReason::EmptyRead);
+        assert_eq!(counts.total(), 1);
+
+        counts.increment_count(FilterReason::ShortRead);
+        counts.increment_count(FilterReason::LongRead);
+        assert_eq!(counts.total(), 3);
+    }
+
+    #[test]
+    fn test_filtered_counts_iter() {
+        let mut counts = FilteredCounts::new();
+        counts.increment_count(FilterReason::EmptyRead);
+        counts.increment_count(FilterReason::ShortRead);
+
+        let vec: Vec<u64> = counts.iter().copied().collect();
+        assert_eq!(vec[0], 1); // empty
+        assert_eq!(vec[1], 1); // short
+        assert_eq!(vec[2], 0); // long
+        assert_eq!(vec[3], 0); // quality
+        assert_eq!(vec[4], 0); // alignment
+    }
+
+    #[test]
+    fn test_filtered_counts_merge() {
+        let mut counts1 = FilteredCounts::new();
+        counts1.increment_count(FilterReason::EmptyRead);
+        counts1.increment_count(FilterReason::ShortRead);
+
+        let mut counts2 = FilteredCounts::new();
+        counts2.increment_count(FilterReason::EmptyRead);
+        counts2.increment_count(FilterReason::LongRead);
+
+        counts1.merge(counts2);
+        assert_eq!(counts1.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts1.get(&FilterReason::ShortRead), 1);
+        assert_eq!(counts1.get(&FilterReason::LongRead), 1);
+    }
+
+    #[test]
+    fn test_filtered_counts_default() {
+        let counts = FilteredCounts::default();
+        assert_eq!(counts.total(), 0);
+    }
+
+    // ---------- FILTERED READS ----------
+    #[test]
+    fn test_filtered_reads_new() {
+        let cfg = FilterConfig::new(None, None, None, None, false);
+        let fr = FilteredReads::new(cfg.clone());
+        assert_eq!(fr.config, cfg);
+        assert_eq!(fr.total(), 0);
+        assert!(fr.counts.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_new_read() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp = rp("ACTG", "FFFF", None, None);
+
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+
+        assert_eq!(fr.total(), 1);
+        let key = rp.key();
+        assert!(fr.counts.contains_key(&key));
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_existing_read() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp = rp("ACTG", "FFFF", None, None);
+
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+        fr.increment_count(&rp, FilterReason::EmptyRead);
+        fr.increment_count(&rp, FilterReason::ShortRead);
+
+        assert_eq!(fr.total(), 3);
+        let key = rp.key();
+        let groups = fr.counts.get(&key).unwrap();
+        let counts = groups.get(&ReadGroup::ungrouped()).unwrap();
+        assert_eq!(counts.get(&FilterReason::EmptyRead), 2);
+        assert_eq!(counts.get(&FilterReason::ShortRead), 1);
+    }
+
+    #[test]
+    fn test_filtered_reads_increment_different_groups() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs("f", None, b"ACTG", b"FFFF"),
+            reverse: None,
+            group: ReadGroup::grouped("0"),
+        };
+        let rp2 = ReadPair {
+            forward: bio::io::fastq::Record::with_attrs("f", None, b"ACTG", b"FFFF"),
+            reverse: None,
+            group: ReadGroup::grouped("1"),
+        };
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp2, FilterReason::EmptyRead);
+
+        assert_eq!(fr.total(), 2);
+        let key = rp1.key();
+        let groups = fr.counts.get(&key).unwrap();
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_filter_readpair_no_increment() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, true));
+        let rp = rp("", "", None, None);
+
+        let result = fr.filter_readpair(&rp, false);
+        assert_eq!(result, Some(FilterReason::EmptyRead));
+        assert_eq!(fr.total(), 0); // Not incremented
+    }
+
+    #[test]
+    fn test_filtered_reads_filter_alignment_no_increment() {
+        let cfg = FilterConfig::new(
+            None,
+            Some(AlignmentTolerance::new(0.8, 100, 100).unwrap()),
+            None,
+            None,
+            false,
+        );
+        let mut fr = FilteredReads::new(cfg);
+        let rp = rp("ACTG", "FFFF", None, None);
+        let aln = Alignment {
+            score: 50,
+            ..Default::default()
+        };
+
+        let result = fr.filter_alignment(&rp, &aln, None, false);
+        assert_eq!(result, Some(FilterReason::BadAlignment));
+        assert_eq!(fr.total(), 0); // Not incremented
+    }
+
+    #[test]
+    fn test_filtered_reads_merge_same_config() {
+        let cfg = FilterConfig::new(None, None, None, None, false);
+        let mut fr1 = FilteredReads::new(cfg.clone());
+        let mut fr2 = FilteredReads::new(cfg.clone());
+
+        let rp = rp("ACTG", "FFFF", None, None);
+        fr1.increment_count(&rp, FilterReason::EmptyRead);
+        fr2.increment_count(&rp, FilterReason::ShortRead);
+
+        let result = fr1.merge(fr2);
+        assert!(result.is_ok());
+        assert_eq!(fr1.total(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_merge_different_config() {
+        let cfg1 = FilterConfig::new(None, None, None, None, false);
+        let cfg2 = FilterConfig::new(Some(20.0), None, None, None, false);
+
+        let mut fr1 = FilteredReads::new(cfg1);
+        let fr2 = FilteredReads::new(cfg2);
+
+        let result = fr1.merge(fr2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_empty() {
+        let fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let vec = fr.to_vector(false);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_unsorted() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = rp("ACTG", "FFFF", None, None);
+        let rp2 = rp("GGGG", "FFFF", None, None);
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp2, FilterReason::ShortRead);
+
+        let vec = fr.to_vector(false);
+        assert_eq!(vec.len(), 2);
+    }
+
+    #[test]
+    fn test_filtered_reads_to_vector_sorted() {
+        let mut fr = FilteredReads::new(FilterConfig::new(None, None, None, None, false));
+        let rp1 = rp("ACTG", "FFFF", None, None);
+        let rp2 = rp("GGGG", "FFFF", None, None);
+
+        fr.increment_count(&rp1, FilterReason::EmptyRead);
+        fr.increment_count(&rp1, FilterReason::ShortRead);
+        fr.increment_count(&rp2, FilterReason::LongRead);
+
+        let vec = fr.to_vector(true);
+        assert_eq!(vec.len(), 2);
+        // First entry should be rp1 with total 2, second rp2 with total 1
+        assert_eq!(vec[0].2.total(), 2);
+        assert_eq!(vec[1].2.total(), 1);
+    }
+
+    #[test]
+    fn test_filter_config_equality() {
+        let cfg1 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        let cfg2 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        assert_eq!(cfg1, cfg2);
+    }
+
+    #[test]
+    fn test_filter_config_inequality() {
+        let cfg1 = FilterConfig::new(Some(20.0), None, Some(50), Some(300), true);
+        let cfg2 = FilterConfig::new(Some(30.0), None, Some(50), Some(300), true);
+        assert_ne!(cfg1, cfg2);
     }
 }

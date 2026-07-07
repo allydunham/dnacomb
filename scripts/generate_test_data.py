@@ -36,6 +36,57 @@ class GeneratedCombination:
     combinations_in_library: str
     combination_index: str
 
+def read_library(path):
+    """
+    Read a sequence library from a TSV file. _id column not supported
+    """
+    lib = {}
+
+    with open(path, "r") as lib_file:
+        l_regs = next(lib_file).strip().split("\t")
+
+        # Ignore ID column for now
+        for r in l_regs:
+            if not r == "_id":
+                lib[r] = []
+
+        for line in lib_file:
+            line = line.strip().split("\t")
+            for r, s in zip(l_regs, line):
+                if not r == "_id":
+                    lib[r].append(s)
+
+    return lib, len(lib[l_regs[-1]])
+
+def combine_libraries(paths, size):
+    """
+    Load multiple libraries and take a product from them to generate a single
+    library dictionary to query
+    """
+    if len(paths) == 1:
+        return read_library(paths[0])
+
+    libraries = [read_library(l) for l in paths]
+
+    out_lib = {}
+
+    for lib, _ in libraries:
+        for reg in lib.keys():
+            if reg in out_lib:
+                raise ValueError(f"Region {reg} in multiple libraries")
+
+            out_lib[reg] = []
+
+    # For each desired sequence, generate one ind per sub-library and append all regions from it
+    for _ in range(size):
+        for lib, lib_size in libraries:
+            ind = GENERATOR.integers(0, lib_size)
+
+            for reg, seqs in lib.items():
+                out_lib[reg].append(seqs[ind])
+
+    return out_lib, size
+
 def mutate_seq(s, sub_rate=0, indel_rate=0):
     """
     Add random indels and subs to a sequence
@@ -88,9 +139,10 @@ def sample_quality(n):
     """
     return 42 - np.clip(GENERATOR.poisson(5, size=n), 0, 42)
 
-def generate_test_data(lib_spec, number=100, library_size=100, output="test_seqs", seqformat="fq",
-                       ngroup=None, contamination_rate=0, recombination_rate=0, mismatch_rate=0,
-                       sub_rate=0, indel_rate=0, truncation_rate=0):
+def generate_test_data(lib_spec, libraries=None, number=100, library_size=100, output="test_seqs",
+                       seqformat="fq", ngroup=None, contamination_rate=0,
+                       recombination_rate=0, mismatch_rate=0, sub_rate=0,
+                       indel_rate=0, truncation_rate=0):
     """
     Generate test data and write to files
     """
@@ -102,22 +154,11 @@ def generate_test_data(lib_spec, number=100, library_size=100, output="test_seqs
     variable_regions = [i["id"] for i in lib_spec["regions"] if i["seq_type"] in ("Library")]
 
     # Load library
-    library = {}
-    try:
-        with open(lib_spec["library"], "r") as lib_file:
-            l_regs = next(lib_file).strip().split("\t")
-
-            for r in l_regs:
-                library[r] = []
-
-            for line in lib_file:
-                line = line.strip().split("\t")
-                for r, s in zip(l_regs, line):
-                    library[r].append(s)
-
-        lib_size = len(library[l_regs[0]])
-    except:
-        print("No library file, generating random library", file=sys.stderr)
+    if libraries is not None:
+        library, lib_size = combine_libraries(libraries, library_size)
+    else:
+        print("No library file, generating simple random library", file=sys.stderr)
+        library = {}
         lib_size = library_size
 
     # Generate any missing variable regions
@@ -305,10 +346,6 @@ def generate_library(lib_spec, n, path=None):
                 for r in variable_regions:
                     seqs.append(library[r][i])
                 print(*seqs, sep="\t", file=file)
-
-        with open(f"{path}.json", "w") as file:
-            lib_spec["library"] = f"{path}.tsv"
-            json.dump(lib_spec, file)
 
     return library
 

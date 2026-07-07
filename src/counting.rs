@@ -1,10 +1,16 @@
-//! Counting the occurance of different reads in sequence files
+//! Counting and region-extraction algorithms for structured sequencing reads.
 //!
-//! Contains methods for counting combinations of expected
-//! regions in DNA sequence input.
-//! Supports multiple approaches for extracting regions of interest
-//! from the input sequence: alignment, pattern matching, inframe
-//! position matching and full read counting.
+//! This module contains the core logic for converting sequencing reads into
+//! `ObservedCombinations`. It supports several extraction strategies with
+//! different robustness/performance tradeoffs:
+//! - alignment to a full template,
+//! - flanking-pattern matching,
+//! - in-frame positional extraction,
+//! - and raw full-read counting.
+//!
+//! It also contains helper logic for pairing forward/reverse evidence within
+//! a region and for dispatching counting work across multiple threads. The
+//! `count_reads` function is one of the key entry points into DNAComb.
 use bio::alignment::AlignmentOperation;
 use bio::alignment::distance::hamming;
 use bio::alignment::pairwise::{Aligner, MatchFunc, Scoring};
@@ -20,6 +26,7 @@ use crate::combination::CombinationKey;
 use crate::combinations::{CacheHit, ObservedCombinations};
 use crate::errors::{AlignmentInfo, LibSpecError, ReadCountError};
 use crate::filters::FilterConfig;
+use crate::interning::seq_from_bytes;
 use crate::lib_spec::{FlankingSequences, LibrarySpec};
 use crate::logging::{Progress, ProgressStyle};
 use crate::parsing::{ReadPairProducer, ThreadedReadPairParser};
@@ -27,15 +34,15 @@ use crate::region::{RegionCompleteness, RegionKey};
 use crate::seqs::{ReadPair, SeqPair};
 use crate::utils::mean_quality;
 
-/// Position in an alignment where a region is found
+/// Query interval and completeness assigned to one expected region:
+/// `(start, end, completeness)`.
 ///
-/// Has the format (start, stop, RegionCompleteness status)
+/// Coordinates are query-sequence positions using the 1-based convention derived
+/// from Rust-Bio alignment paths.
 pub type AlignmentPosition = (usize, usize, RegionCompleteness);
 
-/// Region sequence identified while searching an input sequence, containing
-/// the found sequence, quality and whether it is complete. Convenience type
-/// for counting functions that is quickly processed into region keys and the
-/// proper combination structs.
+/// Observed region sequence, quality values, and completeness status extracted
+/// from one read.e
 type RegionMatch = (Sequence, Vec<u8>, RegionCompleteness);
 
 static WARN_MERGE: Once = Once::new();
@@ -87,7 +94,12 @@ const RAW_LOG_INTERVAL: u64 = 1000;
 #[cfg(not(debug_assertions))]
 const RAW_LOG_INTERVAL: u64 = 10000000;
 
-/// Customisable alignment scoring scheme allowing Ns
+/// Alignment scoring scheme for template-based region extraction.
+///
+/// This wraps the match/mismatch/gap parameters used for semi-global alignment
+/// against the LibSpec template. Matches involving `N` use a separate score so
+/// that variable regions represented by `N` in the template can align flexibly
+/// without being treated as either full matches or full mismatches.
 #[derive(Debug, Copy, Clone)]
 pub struct AlignmentScorer {
     std_match: i32,
@@ -114,19 +126,18 @@ impl AlignmentScorer {
         }
     }
 
-    /// Generate a matching Scoring object to use with Rust Bio alignment
+    /// Build a Rust-Bio `Scoring` object using this scorer for match evaluation.
     pub fn get_scoring(self) -> Scoring<AlignmentScorer> {
         Scoring::new(self.gap_open, self.gap_extend, self)
     }
 }
 
 impl MatchFunc for AlignmentScorer {
-    /// Alignment match scores allowing Ns
+    /// Score a single aligned base pair.
     ///
-    /// Return a (mis)match score that allows alignment of anything against N
-    /// with a moderate penalty. Penalty is greater than a mismatch but less
-    /// than a gap to account for possible sequencing errors before variable
-    /// regions, which otherwise get shunted into the N region
+    /// Return a (mis)match score for a pair of bytes. `N` is treated specially so
+    /// that template positions representing variable regions can absorb sequence
+    /// variation with an intermediate penalty.
     fn score(&self, a: u8, b: u8) -> i32 {
         if a == b'N' || b == b'N' {
             self.n_match
@@ -138,11 +149,22 @@ impl MatchFunc for AlignmentScorer {
     }
 }
 
-/// Extract the regions of a query sequence that match template sections by walking
-/// an alignment path and region position vector together
+/// Map template-region intervals onto query-sequence intervals by walking an
+/// alignment path.
 ///
-/// Returns a vector of AlignmentPostions the same length as region_positions where each entry gives
-/// the corresponding position in the query sequence plus a RegionCompleteness status
+/// `region_positions` should contain template intervals in ascending order,
+/// expressed using the same 1-based coordinate convention as Rust-Bio alignment
+/// paths. The returned vector has the same length, with each element giving the
+/// corresponding query interval and `RegionCompleteness` status if that region
+/// could be located in the alignment.
+///
+/// Regions may be returned as:
+/// - complete,
+/// - truncated at the 5' or 3' end,
+/// - or absent (`None`) if no sequence could be assigned.
+///
+/// This helper is used by alignment-based counting to translate template-relative
+/// region definitions into observed query substrings.
 fn regions_from_alignment_path(
     region_positions: &[(usize, usize)],
     alignment_path: &[(usize, usize, AlignmentOperation)],
@@ -220,8 +242,6 @@ fn regions_from_alignment_path(
             });
         }
 
-        // TODO - need to work out partial matches properly (both alignment end and region expected length?) and need to deal with different alignment opperations
-
         // Check break conditions
         if reg_idx == region_positions.len() {
             // Exhausted regions => break
@@ -256,13 +276,25 @@ fn regions_from_alignment_path(
     Ok(out_regions)
 }
 
-/// Merge a forward and reverse sequence in a region
+/// This combines two region observations derived from opposite reads into a
+/// single observed sequence plus a `RegionCompleteness` state.
 ///
-/// Looks at each position in turn and takes the highest quality option, if any.
-/// Args are tuples with sequence, quality vector and a completeness tag, plus the
-/// expected region length. This only works for fixed length, will need something
-/// more complete if there is variable overlap (plus should really warn to use a read
-/// merger at that point).
+/// Behaviour depends on completeness:
+/// - if only one side is present, that side is used;
+/// - if one side is complete, it takes precedence;
+/// - if both sides are partial and non-overlapping, the result is marked
+///   `MissingCenter`;
+/// - if both sides are partial and overlapping, the result is marked
+///   `Overlapping`;
+/// - if both sides cover the same span, the higher-quality sequence is chosen.
+///
+/// This function assumes a fixed expected region length and uses that to infer
+/// whether partial forward/reverse observations overlap or leave a gap. In general
+/// using hte max length for variable length regions gives reasonable outcomes.
+///
+/// This function is intentionally quite a basic attempt to merge information and
+/// it is recommended (including in a warning on use) that using a dedicated read merger
+/// will be more robust when overlap is expected.
 fn merge_seqs(
     fwd: Option<RegionMatch>,
     rev: Option<RegionMatch>,
@@ -318,8 +350,8 @@ fn merge_seqs(
         (RegionCompleteness::Complete, _) => Ok(Some((f_reg.0, f_reg.2))),
         (_, RegionCompleteness::Complete) => Ok(Some((r_reg.0, r_reg.2))),
 
-        // Both partial in same way - use highest quality
-        // Weird situation but some read trimming could lead here potentially
+        // Both partial in same way - use longest
+        // Should be fairly unusual but strange sequencing designs, trimming or ambiguities can cause
         (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial5Prime) => {
             WARN_MERGE.call_once(|| {
                 log::warn!(
@@ -327,7 +359,7 @@ fn merge_seqs(
                 );
             });
 
-            if mean_quality(&f_reg.1) >= mean_quality(&r_reg.1) {
+            if f_reg.0.len() >= r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial5Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial5Prime)))
@@ -340,7 +372,7 @@ fn merge_seqs(
                 );
             });
 
-            if mean_quality(&f_reg.1) >= mean_quality(&r_reg.1) {
+            if f_reg.0.len() >= r_reg.0.len() {
                 Ok(Some((f_reg.0, RegionCompleteness::Partial3Prime)))
             } else {
                 Ok(Some((r_reg.0, RegionCompleteness::Partial3Prime)))
@@ -348,7 +380,7 @@ fn merge_seqs(
         }
 
         // Both partial with gap - missing centre or overlapping based simply on max region length
-        (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial3Prime) => {
+        (RegionCompleteness::Partial3Prime, RegionCompleteness::Partial5Prime) => {
             let f_end = f_reg.0.len(); // `f` covers [0..f_end)
             let r_start = len - r_reg.0.len(); // `r` covers [r_start..seq_len)
 
@@ -381,7 +413,7 @@ fn merge_seqs(
                 )))
             }
         }
-        (RegionCompleteness::Partial3Prime, RegionCompleteness::Partial5Prime) => {
+        (RegionCompleteness::Partial5Prime, RegionCompleteness::Partial3Prime) => {
             // Reversed, should rarely see this case but some odd trimming could create in theory
             // Basically the reverse of above
             let r_end = r_reg.0.len(); // `r` covers [0..r_end)
@@ -419,15 +451,24 @@ fn merge_seqs(
     }
 }
 
-/// Find region matches by pattern
+/// Extract variable regions by searching for flanking fixed-sequence patterns.
 ///
-/// Search an input sequence for regions flanked by the input patterns, in the order
-/// they occur. Not all regions need to be identified, but those found will be a
-/// continuous subsequence. For instance, it may return hits for regions 2-4 but
-/// be missing regions 1 and 5. Where the first/last flank sequence is None it is
-/// considered to start/end at the sequence start/end. A mismatch tolerance allows
-/// close flank matches to be considered hits to correct for errors, but this requires
-/// care where multiple flank sequences have similar sequences.
+/// Each variable region is defined by one of:
+/// - a start-of-read open flank,
+/// - an end-of-read open flank,
+/// - or fixed flanks on both sides.
+///
+/// Matching proceeds left-to-right through the read. Regions found form a
+/// continuous subsequence of the expected region list: once a required flank is
+/// missed, downstream regions are not recovered later in the read. This simple algorithm
+/// is robust when patterns are unique per region but can produce unexpected results
+/// when they are not sufficiently different as the wrong starting region can be identified.
+/// However, it is important to also deal with messy/truncated reads rather than require
+/// all regions in order.
+///
+/// `tolerance` allows a bounded number of mismatches in flank-pattern matching.
+/// This improves robustness to sequencing errors in fixed regions, but increases
+/// the risk of ambiguous or incorrect matches when flanking patterns are similar.
 ///
 /// Returns a vector of hits, one per input region with None if the region is missing or
 /// Some((Sequence, Phred Quality, RegionCompleteness)) tuple
@@ -463,30 +504,25 @@ fn match_flank_patterns(
     let mut open: bool = false; // whether the region start is found
     let mut dist: u64; // Distance to region
 
-    // Find opening region to assign start point
-    let start_regs: Vec<Sequence> = flanks
-        .iter()
-        .map(|r| match r {
-            FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
-            FlankingSequences::OpenStart(end) => Ok(end.clone()),
-            FlankingSequences::Internal(start, ..) => Ok(start.clone()),
-            FlankingSequences::OpenEnd(start) => Ok(start.clone()),
-        })
-        .collect::<Result<Vec<Sequence>, ReadCountError>>()?;
-
+    // Find opening region to assign start point.
+    //
+    // Scan along the sequence looking for:
+    // - OpenStart(end): end flank closes a 5' partial region.
+    // - Internal(start, end): start flank opens an internal region, end flank closes a truncated partial 5' region
+    // - OpenEnd(start): start flank opens a 3' partial terminal region.
     'outer: while pos < seq.len() {
-        for (i, r) in start_regs.iter().enumerate() {
-            end = pos + r.len();
-            if end > seq.len() {
-                continue;
-            }
+        for (i, flank) in flanks.iter().enumerate() {
+            match flank {
+                FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
 
-            dist = hamming(r, &seq[pos..end]);
+                FlankingSequences::OpenStart(close) => {
+                    end = pos + close.len();
+                    if end > seq.len() {
+                        continue;
+                    }
 
-            if dist <= tolerance {
-                match flanks[i] {
-                    FlankingSequences::Unflanked => unreachable!("Unflanked already checked"),
-                    FlankingSequences::OpenStart(..) => {
+                    dist = hamming(close, &seq[pos..end]);
+                    if dist <= tolerance {
                         out[i] = Some((
                             seq[0..pos].to_vec(),
                             qual[0..pos].to_vec(),
@@ -495,29 +531,63 @@ fn match_flank_patterns(
 
                         reg = i + 1;
                         open = false;
-                        pos = end;
+                        break 'outer;
                     }
-                    FlankingSequences::Internal(..) => {
-                        reg = i;
-                        open = true;
-                        reg_start = end;
-                        pos = end;
+                }
+
+                FlankingSequences::Internal(start, close) => {
+                    // Prefer the normal start flank if both could match at this position.
+                    end = pos + start.len();
+                    if end <= seq.len() {
+                        dist = hamming(start, &seq[pos..end]);
+                        if dist <= tolerance {
+                            reg = i;
+                            open = true;
+                            reg_start = end;
+                            pos = end;
+                            break 'outer;
+                        }
                     }
-                    FlankingSequences::OpenEnd(..) => {
+
+                    // Fallback: first visible region started before the read,
+                    // and we have found its closing flank.
+                    end = pos + close.len();
+                    if end <= seq.len() {
+                        dist = hamming(close, &seq[pos..end]);
+                        if dist <= tolerance {
+                            out[i] = Some((
+                                seq[0..pos].to_vec(),
+                                qual[0..pos].to_vec(),
+                                RegionCompleteness::Partial5Prime,
+                            ));
+
+                            reg = i + 1;
+                            open = false;
+                            break 'outer;
+                        }
+                    }
+                }
+
+                FlankingSequences::OpenEnd(start) => {
+                    end = pos + start.len();
+                    if end > seq.len() {
+                        continue;
+                    }
+
+                    dist = hamming(start, &seq[pos..end]);
+                    if dist <= tolerance {
                         out[i] = Some((
                             seq[end..seq.len()].to_vec(),
                             qual[end..seq.len()].to_vec(),
                             RegionCompleteness::Partial3Prime,
                         ));
 
-                        // An open end region must be at the end (checked in validation)
-                        // so directly return
                         return Ok(out);
                     }
                 }
-                break 'outer;
             }
         }
+
         pos += 1;
     }
 
@@ -579,7 +649,6 @@ fn match_flank_patterns(
                         RegionCompleteness::Complete,
                     ));
 
-                    pos = end;
                     open = false;
                     reg += 1;
                     break 'inner;
@@ -642,18 +711,51 @@ fn join_observed_combinations(
     }
 }
 
-/// Count algorithm to apply
-#[derive(Clone, ValueEnum, Debug, Copy)]
+/// Region-extraction strategy to use during counting.
+///
+/// Different modes trade off robustness, assumptions about read structure, and
+/// speed.
+#[derive(Clone, ValueEnum, Debug, Copy, PartialEq, Eq)]
 pub enum CountMode {
+    /// Count complete read sequences without structured region extraction.
     FullRead,
+
+    /// Extract regions from their expected in-read positions.
+    ///
+    /// Fast, but assumes reads are already in frame and region lengths are fixed.
     Inframe,
+
+    /// Extract regions using fixed flanking sequences.
+    ///
+    /// Faster than alignment and supports variable-length regions, but relies on
+    /// intact flanking sequence and only recovers a continuous block of regions.
     Pattern,
+
+    /// Extract regions by semi-global alignment to the full template.
+    ///
+    /// Most robust and the default choice for complex or noisy data, but slowest.
     Align,
 }
 
-/// Count the occurance of query regions in sequencing reads
+/// Count observed read forms from a sequencing dataset.
 ///
-/// Dispatches counting to the appropriate implementation based on CountMode
+/// This is the main entry point for region extraction and counting. It dispatches
+/// to one of the supported counting modes, applies configured read/alignment
+/// filtering, optionally caches sequence-derived results, and can parallelise the
+/// counting step across worker threads.
+///
+/// Behaviour depends on `mode`:
+/// - `Align` requires a `LibrarySpec` and an `AlignmentScorer`,
+/// - `Pattern` requires a `LibrarySpec`, `pattern_length`, and `pattern_tolerance`,
+/// - `Inframe` requires a `LibrarySpec`,
+/// - `FullRead` can operate without a `LibrarySpec`.
+///
+/// If `full_seq` is true, the full read sequence(s) are stored alongside each
+/// observed combination; otherwise only extracted regions are tracked.
+///
+/// The returned `ObservedCombinations` contains unfiltered counts, filtered-read
+/// summaries, and any read-level cache accumulated during counting. Library
+/// comparison is not performed here.
 pub fn count_reads<T: ReadPairProducer>(
     reads: T,
     lib_spec: &Option<LibrarySpec>,
@@ -801,7 +903,11 @@ pub fn count_reads<T: ReadPairProducer>(
     }
 }
 
-/// Count single end reads by aligning to the library template
+/// Count single-end reads by semi-global alignment to the LibSpec template.
+///
+/// Variable regions are located by mapping the alignment path back onto template
+/// region intervals. This is the most robust structured counting mode, but also
+/// the slowest.
 fn count_single_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -845,11 +951,13 @@ fn count_single_align<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -863,6 +971,7 @@ fn count_single_align<T: ReadPairProducer>(
                 if cache {
                     counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
+                progress.inc(1);
                 continue;
             }
         }
@@ -896,9 +1005,9 @@ fn count_single_align<T: ReadPairProducer>(
                 match record.forward.seq().get((pos.0 - 1)..(pos.1 - 1)) {
                     Some(s) => {
                         comb_key.regions.push(RegionKey::new(
-                            id.to_string(),
+                            id.clone(),
                             // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                            s.to_vec(),
+                            seq_from_bytes(s),
                             pos.2,
                         ));
                     }
@@ -936,7 +1045,12 @@ fn count_single_align<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads by aligning to the library template
+/// Count paired-end reads by aligning forward and reverse reads independently
+/// to the LibSpec template and then merging per-region evidence.
+///
+/// Reverse reads are reverse-complemented before alignment. Where both reads
+/// contribute evidence for the same region, `merge_seqs` is used to reconcile
+/// complete, partial, overlapping, or gapped observations.
 fn count_paired_align<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -991,11 +1105,13 @@ fn count_paired_align<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1036,6 +1152,7 @@ fn count_paired_align<T: ReadPairProducer>(
                 if cache {
                     counts.cache(record.into_seqpair(), CacheHit::Filter(reason));
                 }
+                progress.inc(1);
                 continue;
             }
         }
@@ -1083,9 +1200,9 @@ fn count_paired_align<T: ReadPairProducer>(
                     match r_read.get((r.0 - 1)..(r.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                id.to_string(),
+                                id.clone(),
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                s.to_vec(),
+                                seq_from_bytes(s),
                                 r.2,
                             ));
                         }
@@ -1113,9 +1230,9 @@ fn count_paired_align<T: ReadPairProducer>(
                     match f_read.get((f.0 - 1)..(f.1 - 1)) {
                         Some(s) => {
                             comb_key.regions.push(RegionKey::new(
-                                id.to_string(),
+                                id.clone(),
                                 // Offset seq lookup - rust vec 0 based and AlignmentPath 1 based
-                                s.to_vec(),
+                                seq_from_bytes(s),
                                 f.2,
                             ));
                         }
@@ -1189,9 +1306,11 @@ fn count_paired_align<T: ReadPairProducer>(
                         Some((r_reg_seq.to_vec(), r_reg_qual.to_vec(), r.2)),
                         *len,
                     )? {
-                        Some((seq, comp)) => {
-                            comb_key.regions.push(RegionKey::new(id.clone(), seq, comp))
-                        }
+                        Some((seq, comp)) => comb_key.regions.push(RegionKey::new(
+                            id.clone(),
+                            seq_from_bytes(&seq),
+                            comp,
+                        )),
                         None => continue,
                     };
                 }
@@ -1211,7 +1330,11 @@ fn count_paired_align<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count single end reads using surrounding patterns from the library template
+/// Count single-end reads by identifying variable regions from flanking fixed-sequence patterns.
+///
+/// This mode is faster than alignment and still supports variable-length regions,
+/// but depends on reliable flanking sequence and may fail to recover downstream
+/// regions once an earlier flank is missed.
 fn count_single_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1252,11 +1375,13 @@ fn count_single_pattern<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1275,7 +1400,7 @@ fn count_single_pattern<T: ReadPairProducer>(
             },
             zip(&regions, region_matches)
                 .filter_map(|(id, reg)| match reg {
-                    Some(r) => Some(RegionKey::new(id.clone(), r.0, r.2)),
+                    Some(r) => Some(RegionKey::new(id.clone(), seq_from_bytes(&r.0), r.2)),
                     None => None,
                 })
                 .collect(),
@@ -1294,7 +1419,11 @@ fn count_single_pattern<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads using surrounding patterns from the library template
+/// Count paired-end reads by identifying variable regions from flanking fixed-sequence patterns.
+///
+/// This mode is faster than alignment and still supports variable-length regions,
+/// but depends on reliable flanking sequence and may fail to recover downstream
+/// regions once an earlier flank is missed.
 fn count_paired_pattern<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1346,11 +1475,13 @@ fn count_paired_pattern<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1391,9 +1522,11 @@ fn count_paired_pattern<T: ReadPairProducer>(
 
         for (id, len, fwd, rev) in izip!(&regions, &region_lengths, f_matches, r_matches) {
             if let Some(merged) = merge_seqs(fwd, rev, *len)? {
-                comb_key
-                    .regions
-                    .push(RegionKey::new(id.clone(), merged.0, merged.1));
+                comb_key.regions.push(RegionKey::new(
+                    id.clone(),
+                    seq_from_bytes(&merged.0),
+                    merged.1,
+                ));
             }
         }
 
@@ -1410,7 +1543,11 @@ fn count_paired_pattern<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count single end reads based on their in-frame position in the template
+/// Count single-end reads by extracting regions from expected in-read positions.
+///
+/// This mode assumes reads begin at the configured LibSpec start region and that
+/// region boundaries can be inferred directly from template coordinates. It is
+/// therefore best suited to fixed-length, well-framed reads.
 fn count_single_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1460,11 +1597,13 @@ fn count_single_inframe<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1507,9 +1646,11 @@ fn count_single_inframe<T: ReadPairProducer>(
                 break;
             }
 
-            comb_key
-                .regions
-                .push(RegionKey::new(id.clone(), reg_seq, complete));
+            comb_key.regions.push(RegionKey::new(
+                id.clone(),
+                seq_from_bytes(&reg_seq),
+                complete,
+            ));
         }
 
         counts.add_or_increment_combination(&comb_key, record.group.clone())?;
@@ -1525,7 +1666,11 @@ fn count_single_inframe<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count paired end reads based on their in-frame position in the template
+/// Count paired-end reads by extracting regions from expected in-read positions.
+///
+/// This mode assumes reads begin at the configured LibSpec start region and that
+/// region boundaries can be inferred directly from template coordinates. It is
+/// therefore best suited to fixed-length, well-framed reads.
 fn count_paired_inframe<T: ReadPairProducer>(
     reads: T,
     lib_spec: &LibrarySpec,
@@ -1607,11 +1752,13 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
         // Check if read needs to be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
         // Check if the read has been cached
         if cache && counts.check_cache(&record, true)?.is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1718,7 +1865,11 @@ fn count_paired_inframe<T: ReadPairProducer>(
 
             // Determine which read to use
             match merge_seqs(fwd, rev, *len)? {
-                Some((seq, comp)) => comb_key.regions.push(RegionKey::new(id.clone(), seq, comp)),
+                Some((seq, comp)) => {
+                    comb_key
+                        .regions
+                        .push(RegionKey::new(id.clone(), seq_from_bytes(&seq), comp))
+                }
                 None => continue,
             }
         }
@@ -1736,7 +1887,11 @@ fn count_paired_inframe<T: ReadPairProducer>(
     Ok(counts)
 }
 
-/// Count entire single end reads
+/// Count complete read sequences without structured region extraction.
+///
+/// This mode still applies read-level filtering, but does not use the LibSpec
+/// region structure and stores each full read (or read pair) as a distinct
+/// observed combination.
 fn count_raw<T: ReadPairProducer>(
     reads: T,
     filter_config: FilterConfig,
@@ -1754,6 +1909,7 @@ fn count_raw<T: ReadPairProducer>(
 
         // Check if read should be filtered
         if counts.filter_readpair(&record, true).is_some() {
+            progress.inc(1);
             continue;
         }
 
@@ -1771,8 +1927,330 @@ fn count_raw<T: ReadPairProducer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::ReadPairError;
+    use crate::filters::FilterConfig;
+    use crate::groups::ReadGroup;
     use crate::lib_spec::FlankingSequences;
+    use crate::parsing::ReadPairProducer;
     use crate::region::RegionCompleteness;
+    use bio::alignment::AlignmentOperation;
+    use bio::io::fastq;
+    use regex::Regex;
+
+    struct MockProducer {
+        items: std::vec::IntoIter<Result<ReadPair, ReadPairError>>,
+        has_reverse: bool,
+        group: Option<Regex>,
+        max_reads: u64,
+        read_count: u64,
+    }
+
+    impl MockProducer {
+        fn new(items: Vec<Result<ReadPair, ReadPairError>>, has_reverse: bool) -> Self {
+            Self {
+                items: items.into_iter(),
+                has_reverse,
+                group: None,
+                max_reads: 0,
+                read_count: 0,
+            }
+        }
+    }
+
+    impl Iterator for MockProducer {
+        type Item = Result<ReadPair, ReadPairError>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let next = self.items.next();
+            if next.is_some() {
+                self.read_count += 1;
+            }
+            next
+        }
+    }
+
+    impl ReadPairProducer for MockProducer {
+        fn has_reverse(&self) -> bool {
+            self.has_reverse
+        }
+
+        fn group(&self) -> &Option<Regex> {
+            &self.group
+        }
+
+        fn max_reads(&self) -> u64 {
+            self.max_reads
+        }
+
+        fn read_count(&self) -> u64 {
+            self.read_count
+        }
+    }
+
+    fn make_record(id: &str, seq: &[u8], qual: &[u8]) -> fastq::Record {
+        fastq::Record::with_attrs(id, None, seq, qual)
+    }
+
+    fn make_readpair(
+        f_seq: &[u8],
+        f_qual: &[u8],
+        r_seq: Option<&[u8]>,
+        r_qual: Option<&[u8]>,
+    ) -> ReadPair {
+        ReadPair {
+            forward: make_record("f", f_seq, f_qual),
+            reverse: r_seq.map(|seq| make_record("r", seq, r_qual.expect("reverse qual required"))),
+            group: ReadGroup::ungrouped(),
+        }
+    }
+
+    #[test]
+    fn alignment_scorer_scores_standard_n_and_mismatch_cases() {
+        let scorer = AlignmentScorer::new(6, -2, -3, -10, -4);
+
+        assert_eq!(scorer.score(b'A', b'A'), 6);
+        assert_eq!(scorer.score(b'N', b'A'), -2);
+        assert_eq!(scorer.score(b'A', b'N'), -2);
+        assert_eq!(scorer.score(b'A', b'T'), -3);
+    }
+
+    #[test]
+    fn regions_from_alignment_path_maps_complete_region() {
+        let region_positions = vec![(1, 5)];
+        let path = vec![
+            (1, 1, AlignmentOperation::Match),
+            (2, 2, AlignmentOperation::Match),
+            (3, 3, AlignmentOperation::Match),
+            (4, 4, AlignmentOperation::Match),
+            (5, 5, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], Some((1, 5, RegionCompleteness::Complete)));
+    }
+
+    #[test]
+    fn regions_from_alignment_path_marks_partial_5prime_when_alignment_starts_inside_region() {
+        let region_positions = vec![(2, 5)];
+        let path = vec![
+            (1, 3, AlignmentOperation::Match),
+            (2, 4, AlignmentOperation::Match),
+            (3, 5, AlignmentOperation::Match),
+            (4, 6, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out[0], Some((1, 3, RegionCompleteness::Partial5Prime)));
+    }
+
+    #[test]
+    fn regions_from_alignment_path_leaves_fully_deleted_region_unmapped() {
+        let region_positions = vec![(1, 3)];
+        let path = vec![
+            (1, 1, AlignmentOperation::Del),
+            (1, 2, AlignmentOperation::Del),
+            (1, 3, AlignmentOperation::Match),
+            (2, 4, AlignmentOperation::Match),
+        ];
+
+        let out = regions_from_alignment_path(&region_positions, &path).unwrap();
+        assert_eq!(out, vec![None]);
+    }
+
+    #[test]
+    fn merge_seqs_returns_present_side_when_other_missing() {
+        let fwd = Some((
+            b"ACGT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+        let out = merge_seqs(fwd.clone(), None, 4).unwrap();
+        assert_eq!(out, Some((b"ACGT".to_vec(), RegionCompleteness::Complete)));
+
+        let rev = Some((
+            b"TGCA".to_vec(),
+            b"####".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+        let out = merge_seqs(None, rev, 4).unwrap();
+        assert_eq!(
+            out,
+            Some((b"TGCA".to_vec(), RegionCompleteness::Partial5Prime))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_prefers_higher_quality_for_duplicate_complete_observations() {
+        let low = Some((
+            b"AAAA".to_vec(),
+            b"!!!!".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+        let high = Some((
+            b"TTTT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Complete,
+        ));
+
+        let out = merge_seqs(low, high, 4).unwrap();
+        assert_eq!(out, Some((b"TTTT".to_vec(), RegionCompleteness::Complete)));
+    }
+
+    #[test]
+    fn merge_seqs_combines_non_overlapping_partials_into_missing_center() {
+        let fwd = Some((
+            b"AAA".to_vec(),
+            b"III".to_vec(),
+            RegionCompleteness::Partial3Prime,
+        ));
+        let rev = Some((
+            b"TT".to_vec(),
+            b"II".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+
+        let out = merge_seqs(fwd, rev, 6).unwrap();
+        assert_eq!(
+            out,
+            Some((
+                b"AAA/TT".to_vec(),
+                RegionCompleteness::MissingCenter { split_ind: 3 },
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_combines_overlapping_partials_into_overlapping() {
+        let fwd = Some((
+            b"AAAA".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Partial3Prime,
+        ));
+        let rev = Some((
+            b"TTTT".to_vec(),
+            b"IIII".to_vec(),
+            RegionCompleteness::Partial5Prime,
+        ));
+
+        let out = merge_seqs(fwd, rev, 6).unwrap();
+        assert_eq!(
+            out,
+            Some((
+                b"AAAA/TTTT".to_vec(),
+                RegionCompleteness::Overlapping { split_ind: 4 },
+            ))
+        );
+    }
+
+    #[test]
+    fn merge_seqs_rejects_already_merged_inputs() {
+        let bad1 = Some((
+            b"AA/TT".to_vec(),
+            b"IIIII".to_vec(),
+            RegionCompleteness::MissingCenter { split_ind: 2 },
+        ));
+
+        let bad2 = Some((
+            b"AA/TT".to_vec(),
+            b"IIIII".to_vec(),
+            RegionCompleteness::MissingCenter { split_ind: 2 },
+        ));
+
+        let err = merge_seqs(bad1, bad2, 4).unwrap_err().to_string();
+        assert!(err.contains("already merged") || err.contains("MissingCenter"));
+    }
+
+    #[test]
+    fn count_reads_rejects_zero_threads() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::FullRead,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            0,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("Threads must be >0"));
+    }
+
+    #[test]
+    fn count_reads_align_mode_requires_alignment_scorer() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::Align,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("no AlignmentScorer passed"));
+    }
+
+    #[test]
+    fn count_reads_pattern_mode_requires_length_and_tolerance() {
+        let reads = MockProducer::new(vec![], false);
+        let err = count_reads(
+            reads,
+            &None,
+            CountMode::Pattern,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            Some(10),
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("pattern length and/or tolerance is missing"));
+    }
+
+    #[test]
+    fn count_reads_full_read_mode_counts_unfiltered_reads_without_libspec() {
+        let read = make_readpair(b"ACGT", b"IIII", None, None);
+        let reads = MockProducer::new(vec![Ok(read)], false);
+
+        let counts = count_reads(
+            reads,
+            &None,
+            CountMode::FullRead,
+            false,
+            FilterConfig::new(None, None, None, None, true),
+            None,
+            None,
+            None,
+            false,
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.total_filtered(), 0);
+        assert_eq!(counts.to_vector(false)[0].total_count(), 1);
+    }
 
     #[test]
     fn test_perfect_flank_matching() {
@@ -1817,12 +2295,11 @@ mod tests {
             assert!(false, "match_flank_patterns returned Err(...)")
         }
     }
-
     #[test]
     fn test_flank_matching_with_mismatches() {
         let _ = env_logger::try_init();
 
-        let seq = b"CCCCAATCGGGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
+        let seq = b"CCCCAATCTAGGCGGAAAAGGCCGGTATAGGGGATATAAACGTTTTTT";
         let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()), // 1 mismatch: AATC
@@ -1861,8 +2338,8 @@ mod tests {
 
     #[test]
     fn test_flank_matching_partial_path() {
-        let seq = b"GGGCCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
-        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFF";
+        let seq = b"GGGACCGGAAAAGGCCGGTATAGGGG"; // Starts at region 2
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFF";
         let flanks = vec![
             FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
             FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()),
@@ -1929,5 +2406,40 @@ mod tests {
         let obs =
             match_flank_patterns(seq, qual, &flanks, tolerance).expect("Pattern match failed");
         assert!(obs.is_empty());
+    }
+
+    #[test]
+    fn test_flank_matching_opening_scan_can_start_from_internal_close() {
+        let seq = b"AAAAGGCCGGTATAGGGGATATCGCGTTTT";
+        let qual = b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+
+        let flanks = vec![
+            FlankingSequences::OpenStart(b"AATT".to_vec()), // missing
+            FlankingSequences::Internal(b"CCGG".to_vec(), b"GGCC".to_vec()), // start missing, close present
+            FlankingSequences::Internal(b"TATA".to_vec(), b"ATAT".to_vec()),
+            FlankingSequences::OpenEnd(b"CGCG".to_vec()),
+        ];
+
+        let exp: Vec<Option<RegionMatch>> = vec![
+            None,
+            Some((
+                b"AAAA".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial5Prime,
+            )),
+            Some((
+                b"GGGG".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Complete,
+            )),
+            Some((
+                b"TTTT".to_vec(),
+                b"FFFF".to_vec(),
+                RegionCompleteness::Partial3Prime,
+            )),
+        ];
+
+        let obs = match_flank_patterns(seq, qual, &flanks, 0).expect("Pattern match failed");
+        assert_eq!(obs, exp);
     }
 }

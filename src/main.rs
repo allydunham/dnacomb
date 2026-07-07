@@ -1,6 +1,8 @@
-//! CLI interface to the DNAComb read counting and library comparison tool.
+//! CLI entry point for the DNAComb structured-read counting tool.
+//!
+//! This binary wires together argument parsing, input validation, read parsing,
+//! counting, optional library comparison, and TSV output generation.
 use anyhow::Error;
-use bio::alignment::pairwise::Aligner;
 use clap::{ArgAction, Parser};
 use log::{self, LevelFilter, debug, error, info, warn};
 use regex::Regex;
@@ -8,35 +10,35 @@ use std::fs;
 use std::process::exit;
 use std::str;
 
-use dnacomb::ObservedCombinations;
 use dnacomb::counting::{AlignmentScorer, CountMode, count_reads};
 use dnacomb::filters::{AlignmentTolerance, FilterConfig};
-use dnacomb::lib_spec::{DistanceMetric, Library, LibrarySpec};
+use dnacomb::lib_spec::LibrarySpec;
+use dnacomb::library::{DistanceMetric, Library};
 use dnacomb::logging::ProgressStyle;
 use dnacomb::parsing::{Compression, ReadPairParser, ReadPairProducer, SeqFormat, SeqPath};
+use dnacomb::{
+    ObservedCombinations, write_counts, write_filter_summary, write_library_counts, write_summary,
+};
 
-/// Fast general purpose read counter supporting complex structured reads
+/// Fast general-purpose read counter for structured sequencing reads.
 ///
-/// Count occurances of structured sequence reads, extracting regions of interest from
-/// a library specification and comparing observations to a library of expected combinations.
-/// Supports several alignment modes appropriate for different read structures and data sizes:
+/// DNAComb extracts variable regions from single-end or paired-end reads using
+/// one of several region-extraction modes, optionally compares those regions to
+/// one or more expected libraries, and writes TSV outputs summarising observed
+/// combinations, inferred library assignments, read-category summaries, and
+/// filtered reads.
 ///
-/// Alignment - Align reads to the template via semi-global alignment. Most thorough but
-/// slowest, allows variable region lengths [Default]
+/// Supported counting modes:
+/// - `align`: semi-global alignment to the LibSpec template; most robust, slowest
+/// - `pattern`: flank-pattern matching; faster, less robust to flank mutations
+/// - `inframe`: positional extraction from expected read coordinates; fastest structured mode
+/// - `full-read`: count complete read sequences without structured extraction
 ///
-/// Pattern matching - Use flanking regions to identify regions. Faster than alignment
-/// while allowing variable region length but less robust against variation.
-///
-/// Inframe - Assume regions occur at the correct position in reads (for instance after
-/// using cutadapt). Fastest structured read counting but can't handle variation.
-///
-/// Raw - Count full length sequences, fastest but unstructured
-///
-/// Outputs 1-3 files and logs to stderr:
-/// * {prefix}.counts.tsv - full count table
-/// * {prefix}.library_counts.tsv - summarised counts of library matches only
-/// * {prefix}.summary.tsv - summary read counts for e.g. matches, recombinations, mismatches
-/// * {prefix}.filtered.tsv - filtered read counts for e.g. bad alignments, low quality, short reads
+/// Outputs written:
+/// - `{prefix}.counts.tsv`
+/// - `{prefix}.library_counts.tsv` (when library comparison is performed)
+/// - `{prefix}.summary.tsv`
+/// - `{prefix}.filtered.tsv`
 #[derive(Parser, Debug)]
 #[command(author, version)]
 struct Cli {
@@ -57,6 +59,22 @@ struct Cli {
     /// Input file(s) compression. Currently only supports Gzip.
     #[arg(short = 'z', long, value_enum, default_value_t = Compression::Auto, help_heading = "Input")]
     compression: Compression,
+
+    /// Override fordard start region
+    #[arg(long, help_heading = "Input")]
+    forward_start: Option<String>,
+
+    /// Override fordard read length
+    #[arg(long, help_heading = "Input")]
+    forward_length: Option<u32>,
+
+    /// Override reverse start region
+    #[arg(long, help_heading = "Input")]
+    reverse_start: Option<String>,
+
+    /// Override reverse read length
+    #[arg(long, help_heading = "Input")]
+    reverse_length: Option<u32>,
 
     /// Prefix for output TSV files
     #[arg(
@@ -86,26 +104,29 @@ struct Cli {
     #[arg(short = 'm', long, value_enum, default_value_t = CountMode::Align, help_heading = "Counting")]
     mode: CountMode,
 
-    /// Additionally store the full read sequence associated with each combination. This is useful for debugging
-    /// computation and experiments but also generally each combination is associated with many sequences so it
-    /// doesn't compress results as much.
+    /// Store full read sequence(s) alongside each observed combination.
+    /// Useful for debugging and inspection, but increases output size because
+    /// many observed combinations correspond to multiple underlying full reads.
     #[arg(short = 'F', long, action, help_heading = "Counting")]
     full_seq: bool,
 
-    /// Group counts by applying this capture group regex to forward read names and
-    /// extracting the first capture group match
+    /// Group counts by applying this capture-group regex to forward read names
+    /// and using the first capture as the group label; reads without a match are
+    /// assigned to `_unmatched_`
     #[arg(short = 'g', long, help_heading = "Counting")]
     group: Option<String>,
 
-    /// Calculate similarity to oligo library and output an additional table of library counts
-    #[arg(short = 'c', long, action, help_heading = "Library Comparison")]
-    library_counts: bool,
+    /// Compare observed regions to one or more expected library TSVs and write
+    /// an additional library-summary output table
+    #[arg(short = 'c', long, num_args = 1.., value_delimiter = ' ', help_heading = "Library Comparison")]
+    library: Option<Vec<String>>,
 
-    /// Distance metric to use for library comparison. Hamming counts the number of mismatches
-    /// and levenshtein the number of subs/insertion/deletions required to go from A to B.
-    /// Bounded levenshtein only considers up to some distance and should be faster than unbounded.
-    /// Since we only consider matches with a max distance bounded should be prefered unless a
-    /// special case applies.
+    /// Distance metric to use for library comparison.
+    ///
+    /// Hamming counts substitutions only, while Levenshtein allows substitutions,
+    /// insertions, and deletions. Bounded Levenshtein applies the configured
+    /// maximum distance threshold during lookup and is usually faster while giving
+    /// the same accepted matches.
     #[arg(
         short = 'd',
         long,
@@ -135,11 +156,18 @@ struct Cli {
     )]
     max_matches: usize,
 
+    /// Skip determining the difference between observed sequences and library matches.
+    /// This avoids aligning regions and can provide a modest performance increase in
+    /// libraries with long regions but loses the HGVS-like variant strings from output
+    /// tables.
+    #[arg(long, action, help_heading = "Library Comparison")]
+    skip_variants: bool,
+
     /// Filter reads with mean Phred score below this threshold
     #[arg(short = 'q', long, help_heading = "Filtering")]
     mean_quality_threshold: Option<f32>,
 
-    /// Minimum proportion of expected alignment score to keep
+    /// Minimum proportion of expected alignment score to keep. Only used in alignment mode.
     #[arg(short = 'r', long, help_heading = "Filtering")]
     alignment_tolerance: Option<f32>,
 
@@ -156,12 +184,17 @@ struct Cli {
     #[arg(long, default_value_t = 10, help_heading = "Pattern Matching")]
     pattern_length: usize,
 
-    /// Number of mismatches to accept while matching flanking patterns
+    /// Number of mismatches to accept while matching flanking patterns. Only using in pattern mode.
     #[arg(long, default_value_t = 1, help_heading = "Pattern Matching")]
     pattern_tolerance: u64,
 
     /// Match score for alignment
-    #[arg(long, default_value_t = 6, allow_hyphen_values = true, help_heading = "Alignment")]
+    #[arg(
+        long,
+        default_value_t = 6,
+        allow_hyphen_values = true,
+        help_heading = "Alignment"
+    )]
     match_score: i32,
 
     /// Match score against Ns in alignment
@@ -180,7 +213,8 @@ struct Cli {
     #[arg(long, default_value_t = -4, allow_hyphen_values = true, help_heading = "Alignment")]
     gap_extend_score: i32,
 
-    /// Don't cache reads when in align mode, trading lower memory usage for lower speed
+    /// Disable read-level caching, trading lower memory usage for
+    /// slower repeated processing of duplicate read sequences
     #[arg(long, action = ArgAction::SetTrue, help_heading = "Technical")]
     no_cache: bool,
 
@@ -188,7 +222,8 @@ struct Cli {
     #[arg(long, default_value_t = 0, help_heading = "Technical")]
     max_reads: u64,
 
-    /// Phred value to assume for Fasta files. Only matters when comparing to Fastq.
+    /// Phred byte to assign when reading FASTA input, which lacks quality scores. Only meaningful
+    /// if comparing Fasta and Fastq.
     #[arg(long, default_value_t = b'I', help_heading = "Technical")]
     default_phred: u8,
 
@@ -197,9 +232,7 @@ struct Cli {
     threads: usize,
 }
 
-/// Main function
-///
-/// Runs the pipeline and captures errors
+/// Parse CLI arguments, initialise logging, and run the main pipeline.
 fn main() -> Result<(), Error> {
     // Process arguments
     let args: Cli = Cli::parse();
@@ -223,9 +256,17 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-/// Run the CLI pipeline
+/// Execute the full CLI workflow.
 ///
-/// Manages control flow for CLI tool, dispatching to the appropriate functions
+/// This function:
+/// - validates output paths and options,
+/// - initialises read parsing and grouping,
+/// - loads and validates the LibSpec,
+/// - optionally compiles expected library TSVs,
+/// - constructs alignment/filtering configuration,
+/// - runs read counting,
+/// - optionally performs library comparison,
+/// - and writes all requested TSV outputs.
 fn run(args: Cli) -> Result<(), Error> {
     info!("Using options: {:#?}", args);
 
@@ -291,7 +332,13 @@ fn run(args: Cli) -> Result<(), Error> {
 
     // Load library specification
     let lib_spec: Option<LibrarySpec> = match &args.library_spec {
-        Some(lib_spec) => Some(LibrarySpec::from_file(lib_spec)?),
+        Some(lib_spec) => Some(LibrarySpec::from_file(
+            lib_spec,
+            args.forward_start,
+            args.forward_length,
+            args.reverse_start,
+            args.reverse_length,
+        )?),
         None => None,
     };
 
@@ -301,29 +348,30 @@ fn run(args: Cli) -> Result<(), Error> {
     }
 
     // Validate alignment mode is suitable
-    if let Some(l) = &lib_spec {
-        if matches!(args.mode, CountMode::Inframe) && l.variable_length_regions() > 0 {
-            error!("Can't use inframe matching with variable length regions. Exiting");
-            exit(1)
-        }
+    if let Some(l) = &lib_spec
+        && matches!(args.mode, CountMode::Inframe)
+        && l.variable_length_regions() > 0
+    {
+        error!("Can't use inframe matching with variable length regions. Exiting");
+        exit(1)
     }
 
     // Compare observed combinations to library
     let library: Option<Library>;
-    match (args.library_counts, &lib_spec) {
-        (false, _) => {
+    match (args.library, &lib_spec) {
+        (None, _) => {
             library = None;
-            info!("No library counts requested, library ignored");
+            info!("No library counts requested");
         }
-        (true, None) => {
-            library = None;
-            warn!(
-                "Library counts requested but no library path in LibSpec, skipping library counts"
+        (Some(_), None) => {
+            error!(
+                "Library TSV(s) supplied but no LibSpec, which is required for library counts. Exiting"
             );
+            exit(1)
         }
-        (true, Some(spec)) => {
-            library = Library::from_lib_spec(spec, args.max_distance)?;
-            info!("Compiled library {:?}", spec.library.as_ref().unwrap());
+        (Some(libs), Some(spec)) => {
+            library = Some(Library::from_files(&libs, spec, args.max_distance)?);
+            info!("Compiled library from files: {:?}", libs.join(", "));
         }
     };
 
@@ -351,7 +399,22 @@ fn run(args: Cli) -> Result<(), Error> {
             );
             None
         }
-        (Some(l), Some(t)) => calculate_alignment_tolerance(l, &alignment_scorer, &reader, t)?,
+        (Some(l), Some(t)) => {
+            let r = if reader.has_reverse() {
+                Some(l.expected_reverse_read())
+            } else {
+                None
+            };
+
+            Some(AlignmentTolerance::from_expected_reads(
+                &l.expected_forward_read(),
+                r.as_ref(),
+                &l.template_sequence(),
+                &alignment_scorer,
+                t,
+                true,
+            )?)
+        }
     };
 
     let filter_config = FilterConfig::new(
@@ -389,13 +452,6 @@ fn run(args: Cli) -> Result<(), Error> {
         warn!("All reads filtered. Check input files and filter settings.");
     }
 
-    if args.library_counts && library.is_none() {
-        warn!(
-            "Can't calculate library counts without a library specification that includes a \
-             library file. Skipping library comparison."
-        )
-    }
-
     match library {
         None => (),
         Some(x) => {
@@ -405,6 +461,7 @@ fn run(args: Cli) -> Result<(), Error> {
                 Some(&progress_style),
                 args.distance_metric,
                 args.max_matches,
+                args.skip_variants,
                 args.threads,
             )?;
         }
@@ -417,7 +474,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(count_path)?,
             false => fs::File::create_new(count_path)?,
         };
-        counts.write_tsv(count_file, args.sort)?;
+        write_counts(&counts, count_file, args.sort, args.skip_variants)?;
     }
 
     // Write library count table if applicable
@@ -430,7 +487,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(library_summary_path)?,
             false => fs::File::create_new(library_summary_path)?,
         };
-        counts.write_summary_tsv(library_summary_file, args.sort)?;
+        write_library_counts(&counts, library_summary_file, args.sort)?;
     }
 
     // Calculate and output summary statistics
@@ -441,7 +498,7 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(read_summary_path)?,
             false => fs::File::create_new(read_summary_path)?,
         };
-        read_summary.write_tsv(summary_file)?;
+        write_summary(&read_summary, summary_file)?;
     }
 
     // Write filter count table
@@ -451,61 +508,14 @@ fn run(args: Cli) -> Result<(), Error> {
             true => fs::File::create(filtered_path)?,
             false => fs::File::create_new(filtered_path)?,
         };
-        counts.write_filtered_tsv(filtered_file, args.sort)?;
+        write_filter_summary(counts.filtered_reads(), filtered_file, args.sort)?;
     }
 
     Ok(())
 }
 
-/// Calculate alignment tolerance based on the expected alignment scores
-fn calculate_alignment_tolerance(
-    lib_spec: &LibrarySpec,
-    alignment_scorer: &AlignmentScorer,
-    reader: &ReadPairParser,
-    tolerance: f32,
-) -> Result<Option<AlignmentTolerance>, anyhow::Error> {
-    let exp_f_read = lib_spec.expected_forward_read();
-
-    // Initialise aligner
-    let scoring = alignment_scorer.get_scoring();
-    let mut aligner = Aligner::with_capacity_and_scoring(400, 150, scoring);
-    let template = lib_spec.template_sequence();
-
-    let f_alignment = aligner.semiglobal(&exp_f_read, &template);
-
-    info!(
-        "Expected Fwd Alignment:\nScore: {}, Cigar: {}\n{}",
-        f_alignment.score,
-        f_alignment.cigar(false),
-        f_alignment.pretty(&exp_f_read, &template, 100),
-    );
-
-    let mut r_score = 0;
-    if reader.has_reverse() {
-        let exp_r_read = lib_spec.expected_reverse_read();
-        let r_alignment = aligner.semiglobal(&exp_r_read, &template);
-        r_score = r_alignment.score;
-
-        info!(
-            "Expected Rev Alignment:\nScore: {}, Cigar: {}\n{}",
-            r_alignment.score,
-            r_alignment.cigar(false),
-            r_alignment.pretty(&exp_r_read, &template, 100),
-        );
-    }
-
-    Ok(Some(AlignmentTolerance::new(
-        tolerance,
-        f_alignment.score,
-        r_score,
-    )?))
-}
-
-/// Log SIMD feature presence and whether the tool is compiled
-/// to use them.
-///
-/// This version is for x86/x86_64 where SIMD may be available
-/// via AVX2/SSE4.1
+/// Log whether SIMD-accelerated distance calculations are available and enabled
+/// for this build/runtime combination.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 fn check_simd_features() {
     match (
@@ -526,12 +536,238 @@ fn check_simd_features() {
     }
 }
 
-/// Log SIMD feature presence and whether the tool is compiled
-/// to use them.
-///
-/// This version is for other architectures where SIMD will not
-/// be available.
+/// Log that SIMD-accelerated distance calculations are unavailable on this architecture.
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 fn check_simd_features() {
     log::info!("SIMD features are not available on this architecture.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------- CLI PARSING ----------
+    #[test]
+    fn cli_parse_minimal_args() {
+        let args = Cli::try_parse_from(vec!["prog", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.forward, "forward.fq");
+        assert!(cli.reverse.is_none());
+        assert_eq!(cli.output, "read_counts");
+    }
+
+    #[test]
+    fn cli_parse_with_reverse() {
+        let args = Cli::try_parse_from(vec!["prog", "forward.fq", "reverse.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.forward, "forward.fq");
+        assert_eq!(cli.reverse.as_ref().unwrap(), "reverse.fq");
+    }
+
+    #[test]
+    fn cli_parse_with_library_spec() {
+        let args = Cli::try_parse_from(vec!["prog", "-l", "spec.json", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.library_spec.unwrap(), "spec.json");
+    }
+
+    #[test]
+    fn cli_parse_with_output_prefix() {
+        let args = Cli::try_parse_from(vec!["prog", "-o", "my_output", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.output, "my_output");
+    }
+
+    #[test]
+    fn cli_parse_with_format() {
+        let args = Cli::try_parse_from(vec!["prog", "-f", "fasta", "forward.fa"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.format, SeqFormat::Fasta);
+    }
+
+    #[test]
+    fn cli_parse_with_compression() {
+        let args = Cli::try_parse_from(vec!["prog", "-z", "gzip", "forward.fq.gz"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.compression, Compression::Gzip);
+    }
+
+    #[test]
+    fn cli_parse_with_mode() {
+        let args = Cli::try_parse_from(vec!["prog", "-m", "pattern", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.mode, CountMode::Pattern);
+    }
+
+    #[test]
+    fn cli_parse_with_distance_metric() {
+        let args = Cli::try_parse_from(vec!["prog", "-d", "levenshtein", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.distance_metric, DistanceMetric::Levenshtein);
+    }
+
+    #[test]
+    fn cli_parse_sorting_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-s", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.sort);
+    }
+
+    #[test]
+    fn cli_parse_verbose_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-v", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn cli_parse_overwrite_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-w", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.overwrite);
+    }
+
+    #[test]
+    fn cli_parse_full_seq_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "-F", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.full_seq);
+    }
+
+    #[test]
+    fn cli_parse_grouping_regex() {
+        let args = Cli::try_parse_from(vec!["prog", "-g", r"([A-Z]+)_", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.group.as_ref().unwrap(), r"([A-Z]+)_");
+    }
+
+    #[test]
+    fn cli_parse_quality_threshold() {
+        let args = Cli::try_parse_from(vec!["prog", "-q", "20.5", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.mean_quality_threshold.unwrap(), 20.5);
+    }
+
+    #[test]
+    fn cli_parse_alignment_tolerance() {
+        let args = Cli::try_parse_from(vec!["prog", "-r", "0.9", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.alignment_tolerance.unwrap(), 0.9);
+    }
+
+    #[test]
+    fn cli_parse_read_length_filters() {
+        let args = Cli::try_parse_from(vec!["prog", "-L", "50", "-M", "200", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.minimum_read_length.unwrap(), 50);
+        assert_eq!(cli.maximum_read_length.unwrap(), 200);
+    }
+
+    #[test]
+    fn cli_parse_pattern_length_and_tolerance() {
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "--pattern-length",
+            "15",
+            "--pattern-tolerance",
+            "2",
+            "forward.fq",
+        ]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.pattern_length, 15);
+        assert_eq!(cli.pattern_tolerance, 2);
+    }
+
+    #[test]
+    fn cli_parse_alignment_scores() {
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "--match-score",
+            "5",
+            "--mismatch-score",
+            "-4",
+            "--gap-open-score",
+            "-8",
+            "forward.fq",
+        ]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.match_score, 5);
+        assert_eq!(cli.mismatch_score, -4);
+        assert_eq!(cli.gap_open_score, -8);
+    }
+
+    #[test]
+    fn cli_parse_threads() {
+        let args = Cli::try_parse_from(vec!["prog", "-T", "8", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.threads, 8);
+    }
+
+    #[test]
+    fn cli_parse_max_reads() {
+        let args = Cli::try_parse_from(vec!["prog", "--max-reads", "1000", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.max_reads, 1000);
+    }
+
+    #[test]
+    fn cli_parse_default_phred() {
+        let args = Cli::try_parse_from(vec!["prog", "--default-phred", "35", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert_eq!(cli.default_phred, 35);
+    }
+
+    #[test]
+    fn cli_parse_no_cache_flag() {
+        let args = Cli::try_parse_from(vec!["prog", "--no-cache", "forward.fq"]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        assert!(cli.no_cache);
+    }
+
+    #[test]
+    fn cli_parse_library_files() {
+        let args = Cli::try_parse_from(vec![
+            "prog",
+            "-c",
+            "lib1.tsv",
+            "lib2.tsv",
+            "--",
+            "forward.fq",
+        ]);
+        assert!(args.is_ok());
+        let cli = args.unwrap();
+        let libs = cli.library.unwrap();
+        assert_eq!(libs.len(), 2);
+        assert_eq!(libs[0], "lib1.tsv");
+        assert_eq!(libs[1], "lib2.tsv");
+    }
+
+    // Simd detection
+    #[test]
+    fn check_simd_features_runs() {
+        // Just verify the function runs without panicking
+        check_simd_features();
+    }
 }

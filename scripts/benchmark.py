@@ -46,8 +46,8 @@ def extract_time(time, unit):
 
 BENCH_HEADERS = [
     "name", "fwd", "rev", "lib_spec", "mode", "metric",
-    "no_cache", "sort", "group", "library_counts",
-    "library_size", "read_length", "additional_args",
+    "no_cache", "sort", "group", "library",
+    "library_size", "read_length", "skip_variants", "additional_args",
     "total_time", "reads", "extraction_time", "extraction_rate",
     "unique_regions", "region_matching_time", "region_matching_rate",
     "unique_combinations", "combination_time", "combination_rate",
@@ -55,10 +55,9 @@ BENCH_HEADERS = [
 ]
 
 def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
-                  mode="inframe", metric="exact",
+                  mode="inframe", metric="exact", skip_variants=False,
                   no_cache=False, sort=True, group=None,
-                  threads=1,
-                  library_counts=True, additional_args=None,
+                  threads=1, library=None, additional_args=None,
                   library_size="NA", read_length="NA",
                   outname="bench", path=None):
     """
@@ -66,17 +65,16 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
     """
     print(name, "... ", sep="", end="", flush=True)
     out, time = run_tool(f_file=f_file, r_file=r_file, lib_spec=lib_spec,
-                         output=f"data/benchmark/{outname}", mode=mode, metric=metric,
+                         output=f"data/benchmark/{outname}",
+                         library=library, mode=mode, metric=metric,
                          verbose=True, no_cache=no_cache, sort=sort, threads=threads,
-                         group=group, overwrite=True, library_counts=library_counts,
+                         group=group, overwrite=True,
                          additional_args=additional_args, rm_output=True,
                          path=path)
     if out.returncode != 0:
         print("failed:\n", out.stderr, sep="")
     else:
         print("done in ", round(time, 2), "s", sep="")
-        with open(f"data/benchmark/{outname}.log", "w") as file:
-            print(str(out.stderr), file=file)
 
     # Extract region extraction processing (possibly multiple options as threaded)
     extraction = EXTRACT_RE.findall(str(out.stderr))
@@ -112,8 +110,8 @@ def run_benchmark(name, outfile, f_file, r_file=None, lib_spec=None,
 
     print(name, f_file, r_file, lib_spec,
           mode, metric, no_cache, sort, group,
-          library_counts, library_size, read_length,
-          additional_args, time,
+          "".join(library), library_size, read_length,
+          skip_variants, additional_args, time,
           extraction_count, extraction_time, extraction_items,
           match_count, match_time, match_items,
           lib_count, lib_time, lib_items,
@@ -146,12 +144,13 @@ def main():
 
         if not os.path.exists(f"{inroot}_{lib}_{size}.fq"):
             print(f"    {lib} {size} fastq... ", end="", flush=True)
-            generate_test_data(lib_spec=f"{inroot}_{lib}_{size}.json",
-                               number=10000000, library_size=size,
+            generate_test_data(lib_spec=f"config/{lib}.json",
+                               libraries=[f"{inroot}_{lib}_{size}.tsv"],
+                               number=1000000, library_size=size,
                                output=f"{inroot}_{lib}_{size}",
-                               recombination_rate=0.01, contamination_rate=0.01,
+                               recombination_rate=0.001, contamination_rate=0.01,
                                mismatch_rate=0.01, truncation_rate=0.001,
-                               sub_rate=0.001, indel_rate=0.0001)
+                               sub_rate=0.0001, indel_rate=0.00001)
             print("done")
 
     if args.gen_only:
@@ -167,12 +166,13 @@ def main():
             ["exact", "hamming", "bounded-levenshtein", "levenshtein"],
             [("grna", 156), ("grna_sensor", 244), ("pegrna", 313)],
             [100, 1000, 10000],
-            [100000, 1000000, 10000000],
+            [10000, 100000, 1000000],
+            [True, False],
             [True, False],
             [True, False]
         )
 
-        for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired in param_combs:
+        for mode, metric, (lib, read_length), lib_size, n_reads, nocache, paired, skip_variants in param_combs:
             if mode == "full-read" and not (metric == "exact" and lib_size == 100):
                 continue
 
@@ -183,23 +183,23 @@ def main():
             if metric != "exact" and not (mode == "align" and not nocache and n_reads < 10000000):
                 continue
 
-            name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{args.threads}|cache:{not nocache}|paired:{paired}"
+            name = f"mode:{mode}|metric:{metric}|lib:{lib}|lib_size:{lib_size}|reads:{n_reads}|threads:{args.threads}|cache:{not nocache}|paired:{paired}|variants:{not skip_variants}"
 
             if paired:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
                               outname=f"{outname}_{name}", outfile=file,
                               f_file=f"{inroot}_{lib}_{lib_size}_forward.fq",
                               r_file=f"{inroot}_{lib}_{lib_size}_reverse.fq",
-                              lib_spec=f"{inroot}_{lib}_{lib_size}.json",
-                              mode=mode, metric=metric, library_counts=True, no_cache=nocache,
+                              lib_spec=f"config/{lib}.json",
+                              mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache, skip_variants=skip_variants,
                               threads=args.threads, additional_args=["--max-reads", str(n_reads)],
                               path=args.path)
             else:
                 run_benchmark(name, library_size=lib_size, read_length=read_length,
                               outname=f"{outname}_{name}", outfile=file,
                               f_file=f"{inroot}_{lib}_{lib_size}.fq",
-                              lib_spec=f"{inroot}_{lib}_{lib_size}.json",
-                              mode=mode, metric=metric, library_counts=True, no_cache=nocache,
+                              lib_spec=f"config/{lib}.json",
+                              mode=mode, metric=metric, library=[f"{inroot}_{lib}_{lib_size}.tsv"], no_cache=nocache, skip_variants=skip_variants,
                               threads=args.threads, additional_args=["--max-reads", str(n_reads)],
                               path=args.path)
 

@@ -1,0 +1,6 @@
+group	forward	reverse	count	proportion	empty_read	short_read	long_read	low_mean_quality	bad_alignment
+	GGCCG		5	0.3333	0	5	0	0	0
+	GGCCGAAAGTTTAAGACGACGACGACGAAGAATTTCTTTGCCGG		4	0.2667	0	0	4	0	0
+	GGCCGAAAGTTTAAGAGAATTTCTTTGCCGG		3	0.2000	0	0	0	3	0
+	GGCCGAAAGTGTGCATAGCTTTGGGCC		2	0.1333	0	0	0	0	2
+			1	0.0667	1	0	0	0	0

@@ -8,8 +8,8 @@ import subprocess
 
 def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
              metric="exact", verbose=True, no_cache=False, sort=True,
-             group=None, overwrite=True, library_counts=True, threads=1,
-             path=None, additional_args=None, rm_output=False):
+             group=None, overwrite=True, library=None, threads=1,
+             skip_variants=False, path=None, additional_args=None, rm_output=False):
     """
     Run the tool, returning stdout/err and the completed process and a time in seconds
     """
@@ -36,8 +36,12 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
     if overwrite:
         args.append("--overwrite")
 
-    if library_counts:
-        args.append("--library-counts")
+    if skip_variants:
+        args.append("--skip-variants")
+
+    if library is not None:
+        args.append("--library")
+        args.extend(library)
 
     if group is not None:
         args.append("--group")
@@ -49,6 +53,9 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
 
     if additional_args is not None:
         args.extend(additional_args)
+
+    # Add this to make sure F/R are properly identified
+    args.append("--")
 
     args.append(f_file)
     if r_file is not None:
@@ -65,5 +72,7 @@ def run_tool(f_file, r_file=None, lib_spec=None, output="test", mode="inframe",
             os.remove(f"{output}.library_counts.tsv")
         if os.path.exists(f"{output}.summary.tsv"):
             os.remove(f"{output}.summary.tsv")
+        if os.path.exists(f"{output}.filtered.tsv"):
+            os.remove(f"{output}.filtered.tsv")
 
     return (out, end - start)

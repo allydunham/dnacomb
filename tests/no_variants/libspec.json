@@ -1,0 +1,38 @@
+{
+    "id": "inframe_test",
+    "forward_start_region": "primer_f",
+    "forward_read_length": 24,
+    "reverse_start_region": "primer_r",
+    "reverse_read_length": 24,
+    "regions": [
+        {
+            "id": "primer_f",
+            "seq": "GGCC",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "region1",
+            "seq_type": "Library",
+            "min_length": 5,
+            "max_length": 5,
+            "max_distance": 0
+        },
+        {
+            "id": "scaffold",
+            "seq": "TTTAAGAGAATTT",
+            "seq_type": "Fixed"
+        },
+        {
+            "id": "region2",
+            "seq_type": "Library",
+            "min_length": 5,
+            "max_length": 5,
+            "max_distance": 0
+        },
+        {
+            "id": "primer_r",
+            "seq": "CCGG",
+            "seq_type": "Fixed"
+        }
+    ]
+}

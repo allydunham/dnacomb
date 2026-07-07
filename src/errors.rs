@@ -1,6 +1,8 @@
-//! Custom error types for DNAComb
+//! Error and diagnostic types used throughout DNAComb.
 //!
-//! Defines error types for read counting, LibSpec and read parsing
+//! This module defines the main error enums used for counting, LibSpec parsing,
+//! library import, and sequence-file parsing, as well as helper utilities for
+//! converting sequence bytes into displayable strings for logs and output.
 use bio::bio_types::alignment::Alignment;
 use bio::bio_types::sequence::Sequence;
 use bio::io::fastq;
@@ -8,14 +10,17 @@ use log::warn;
 use std::fmt;
 use std::io;
 
+use crate::interning::RegionID;
+use crate::interning::region_id_to_str;
 use crate::region::RegionCompleteness;
 
-/// Convert a `Vec<u8>` Sequence to a string, logging failure but not panicing
+/// Convert a Sequence `Vec<u8>` to a UTF-8 string for display/output.
 ///
-/// This is useful for writing output files so that bad UTF8 is flagged but doesn't
-/// abort the whole write, meaning the user can more easily observe what has occured
-/// in combination with the warnings. In theory this should rarely occur with good input
-/// and bad input should be caught earlier.
+/// If conversion fails, a warning is logged and an empty string is returned
+/// rather than aborting processing. This is intended for diagnostics and TSV
+/// writing, where best-effort output is preferable to panicking on unexpected
+/// non-UTF-8 sequence content. UTF-8 errors should be very rare for normal input
+/// and will generally be caught earlier.
 pub fn seq_to_string_or_log(seq: &Sequence) -> String {
     match std::str::from_utf8(seq) {
         Ok(i) => i.into(),
@@ -29,26 +34,45 @@ pub fn seq_to_string_or_log(seq: &Sequence) -> String {
     }
 }
 
-/// Error type for read counting
+/// Error type for read counting and region extraction.
 ///
-/// Mostly the generic ReadCountError since the CLI doesn't need to differentiate much.
-/// UnexpectedRegionError is included for ergonomics and clarity.
+/// This is the main operational error type used during counting. It covers
+/// invalid region structure, filter-configuration problems, unexpected alignment
+/// failures, and generic counting errors.
 #[derive(Debug)]
 pub enum ReadCountError {
-    UnexpectedRegion { region: String },
+    UnexpectedRegion { region: RegionID },
     FilterConfigError { desc: String },
     BadAlignment { alignment: Box<AlignmentInfo> },
     Error { desc: String },
 }
 
+/// Detailed debugging information for an alignment/extraction failure.
+///
+/// This is attached to `ReadCountError::BadAlignment` to help diagnose cases
+/// where alignment succeeded but region extraction from the alignment path
+/// produced inconsistent or invalid coordinates.
 #[derive(Debug)]
 pub struct AlignmentInfo {
+    /// Read name
     pub read_id: String,
+
+    /// Read number in input file
     pub read_number: usize,
+
+    /// Alignment string
     pub pretty_alignment: String,
+
+    /// Alignment object
     pub alignment: Alignment,
-    pub region_ids: Vec<String>,
+
+    /// Vector of region names being matched
+    pub region_ids: Vec<RegionID>,
+
+    /// Positions of regions in the template sequence
     pub region_positions: Vec<(usize, usize)>,
+
+    /// Vector of identified region positions positions in the input read
     pub mapped_positions: Vec<Option<(usize, usize, RegionCompleteness)>>,
 }
 
@@ -59,7 +83,7 @@ impl fmt::Display for ReadCountError {
                 write!(
                     f,
                     "Added combination contains an unexpected region: {}",
-                    region
+                    region_id_to_str(region)
                 )
             }
             ReadCountError::BadAlignment { alignment } => {
@@ -95,10 +119,11 @@ impl std::error::Error for ReadCountError {
     }
 }
 
-/// Error type for LibSpec
+/// Error type for LibSpec parsing and validation.
 ///
-/// Includes a range of possible errors and wraps downstream errors from other
-/// modules.
+/// Covers JSON parsing, file I/O, and logical validation errors in the sequence
+/// specification, such as duplicate regions, invalid lengths, or unsupported
+/// region layouts.
 #[derive(Debug)]
 pub enum LibSpecError {
     /// Generic LibSpec error
@@ -108,16 +133,20 @@ pub enum LibSpecError {
     InvalidLibSpec { errs: Vec<String> },
 
     /// A region has min length greater than max length
-    MinGreaterThanMax { id: String, min: usize, max: usize },
+    MinGreaterThanMax {
+        id: RegionID,
+        min: usize,
+        max: usize,
+    },
 
     /// Duplicate regions in library
-    DuplicateRegion { id: String },
+    DuplicateRegion { id: RegionID },
 
     /// Required region missing
-    MissingRegion { id: String },
+    MissingRegion { id: RegionID },
 
-    /// Required region missing
-    NeighbouringVariable { id: String },
+    /// Two variable regions appear consecutively without a fixed anchor region.
+    NeighbouringVariable { id: RegionID },
 
     /// IO errors
     IOError(io::Error),
@@ -140,18 +169,32 @@ impl fmt::Display for LibSpecError {
                 write!(
                     f,
                     "Region {}: min_length ({}) cannot be greater than max_length ({})",
-                    id, min, max
+                    region_id_to_str(id),
+                    min,
+                    max
                 )
             }
             LibSpecError::DuplicateRegion { id } => {
-                write!(f, "Duplciated region id {} in LibSpec", id)
+                write!(
+                    f,
+                    "Duplciated region id {} in LibSpec",
+                    region_id_to_str(id)
+                )
             }
             LibSpecError::MissingRegion { id } => {
-                write!(f, "{} not found in LibSpec Region list", id)
+                write!(
+                    f,
+                    "{} not found in LibSpec Region list",
+                    region_id_to_str(id)
+                )
             }
             LibSpecError::LibSpec { desc } => write!(f, "{}", desc),
             LibSpecError::NeighbouringVariable { id } => {
-                write!(f, "Variable region {} follows another variable region", id)
+                write!(
+                    f,
+                    "Variable region {} follows another variable region",
+                    region_id_to_str(id)
+                )
             }
             LibSpecError::IOError(e) => write!(f, "Error reading LibSpec JSON file: {}", e),
             LibSpecError::ParsingError(e) => write!(f, "Error parsing LibSpec JSON: {}", e),
@@ -177,17 +220,23 @@ impl From<serde_json::Error> for LibSpecError {
     }
 }
 
-/// Error type for library
+/// Error type for expected-library import and lookup setup.
+///
+/// Covers malformed library TSV input, duplicate or missing region definitions,
+/// and incompatibilities between a library TSV and the corresponding LibSpec.
 #[derive(Debug)]
 pub enum LibraryError {
     /// Generic Library error
     Library { desc: String },
 
+    /// Duplicate regions in sub-library
+    DuplicateSubLibraryRegion { id: RegionID },
+
     /// Duplicate regions in library
-    DuplicateRegion { id: String },
+    DuplicateRegion { id: RegionID },
 
     /// Required region missing
-    MissingRegion { id: String },
+    MissingRegion { id: RegionID },
 
     /// IO errors
     IOError(csv::Error),
@@ -196,11 +245,26 @@ pub enum LibraryError {
 impl fmt::Display for LibraryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            LibraryError::DuplicateSubLibraryRegion { id } => {
+                write!(
+                    f,
+                    "Region id {} is found in multiple Libraries",
+                    region_id_to_str(id)
+                )
+            }
             LibraryError::DuplicateRegion { id } => {
-                write!(f, "Duplicated region id {} in Library", id)
+                write!(
+                    f,
+                    "Duplicated region id {} in Library",
+                    region_id_to_str(id)
+                )
             }
             LibraryError::MissingRegion { id } => {
-                write!(f, "{} not found in Library Region list", id)
+                write!(
+                    f,
+                    "{} not found in Library Region list",
+                    region_id_to_str(id)
+                )
             }
             LibraryError::Library { desc } => write!(f, "{}", desc),
             LibraryError::IOError(e) => write!(f, "Error reading Library TSV file: {}", e),
@@ -220,7 +284,9 @@ impl From<csv::Error> for LibraryError {
     }
 }
 
-/// Error type for individual reads
+/// Error while reading an individual sequence record from FASTA or FASTQ input.
+///
+/// Think interface for Rust Bio errors.
 #[derive(Debug)]
 pub enum FastaError {
     Fasta(io::Error),
@@ -254,19 +320,22 @@ impl From<fastq::Error> for FastaError {
     }
 }
 
-/// Error type for read pairs
+/// Error while reading or constructing a forward/reverse read pair.
+///
+/// This includes per-record parsing failures, file-format problems, paired-file
+/// synchronisation issues, and lower-level I/O errors.
 #[derive(Debug)]
 pub enum ReadPairError {
+    /// Forward and/or reverse record parsing failed for the current pair.
     ReadPair {
         forward: Option<FastaError>,
         reverse: Option<FastaError>,
     },
-    Format {
-        desc: String,
-    },
-    EarlyExhastion {
-        read: String,
-    },
+    /// Input file format or auto-detection was invalid.
+    Format { desc: String },
+    /// One paired-end file ended before the other.
+    EarlyExhastion { read: String },
+    /// Generic file IO error.
     IO(io::Error),
 }
 
@@ -327,5 +396,19 @@ mod tests {
         let seq: Sequence = vec![b'A', b'C', b'G', 0xC0]; // Invalid UTF-8 byte
         let string: String = "".to_string();
         assert_eq!(seq_to_string_or_log(&seq), string)
+    }
+
+    #[test]
+    fn test_libspec_error_invalid_multiple_display() {
+        let errs = vec![
+            "Error 1".to_string(),
+            "Error 2".to_string(),
+            "Error 3".to_string(),
+        ];
+        let err = LibSpecError::InvalidLibSpec { errs };
+        let msg = format!("{}", err);
+        assert!(msg.contains("Error 1"));
+        assert!(msg.contains("Error 2"));
+        assert!(msg.contains("Error 3"));
     }
 }
