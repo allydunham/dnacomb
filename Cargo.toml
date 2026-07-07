@@ -1,6 +1,6 @@
 [package]
 name = "dnacomb"
-version = "0.6.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["Alistair Dunham", "Eric Hidari"]
 description = "Count the occurances of structured sequence reads and compare to an expected library"

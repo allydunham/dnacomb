@@ -2,7 +2,7 @@
 
 This file contains a record of the major changes between versions.
 
-## v0.6.0 Interning, combinatorial libraries & sequence differences
+## v1.0.0 Interning, combinatorial libraries & sequence differences
 
 * Added interning of Sequences, Groups and Region IDs to reduce duplication, reduce memory usage and speed up performance
 * Reworked LibSpec/Library specification to move library to a separate argument
@@ -11,6 +11,7 @@ This file contains a record of the major changes between versions.
 * Added many more unit tests and benchmarks
 * Refined pattern matching approach to account for unexpected open start regions and allow overlapping flank patterns
 * Major documentation update pass, both for the CLI and the internal Crate.
+* Primary version for paper release
 
 ## v0.5.0 Deeper tracking, refined config and performance improvements
 
