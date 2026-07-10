@@ -283,12 +283,12 @@ accuracy_results <- accuracy_manifest %>%
   imap(~{
     row <- .x[1, ]
     if (.y %% 10 == 1)
-    message(glue("[{.y}/{nrow(manifest)}] {row$design} level {row$level} rep {row$replicate}"))
+    message(glue("[{.y}/{nrow(accuracy_manifest)}] {row$design} level {row$level} rep {row$replicate}"))
     run_accuracy_dataset(row, luca_configs)
   })  %>%
   bind_rows() %>%
   left_join(
-    select(manifest, design, level, replicate, sub_rate, indel_rate,
+    select(accuracy_manifest, design, level, replicate, sub_rate, indel_rate,
            recombination_rate, contamination_rate, mismatch_rate),
     by = c("design", "level", "replicate")
   ) %>%
@@ -296,7 +296,7 @@ accuracy_results <- accuracy_manifest %>%
            .after = replicate)
 
 write_tsv(accuracy_results, path(out_dir, "luca_accuracy_profile.tsv"))
-safe_unlink(tmp_config_root)
+safe_unlink(c(tmp_config_root, path(out_dir, "tmp"), path(out_dir, "runs")))
 
 # Run benchmark for speed
 bench_reads <- 1000000
@@ -359,9 +359,9 @@ run_benchmark <- function(row) {
 }
 
 benchmark_results <- bench_inputs %>%
-  slice_head(n = 2) %>%
   group_split(row_number()) %>%
   map(~run_benchmark(.x[1, ])) %>%
   bind_rows()
 
 write_tsv(benchmark_results, path(out_dir, "luca_benchmark_runs.tsv"))
+safe_unlink(c(path(out_dir, "tmp_benchmark"), path(out_dir, "benchmark_runs/")))

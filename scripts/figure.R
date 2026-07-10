@@ -1,5 +1,6 @@
 #!/usr/bin/env Rscript
 # Generate paper figure panels
+# Requires mutation_test.py, benchmark.py and luca_test.R to have been run.
 library(tidyverse)
 library(ggpubr)
 library(ggh4x)
@@ -89,6 +90,11 @@ ends_correlation <- select(accuracy, design, level, replicate, mode, metric, end
   group_by(design, mode, metric, name) %>%
   group_modify(~broom::tidy(cor.test(.$single, .$paired)))
 
+# Load LUCA comparison data
+luca_accuracy <- read_tsv("data/luca_profile/luca_accuracy_profile.tsv")
+luca_benchmark <- read_tsv("data/luca_profile/luca_benchmark_runs.tsv")
+
+# Plot figures
 perturbation_labels <- c(
   "0 = Perfect",
   "1 = 0.5% Mutation Rate & 1% Mismatches",
@@ -100,8 +106,13 @@ perturbation_labels <- c(
 )
 
 metric_labels <- c(
-  region = "Regions (All)", match = "Regions (Expected Matches only)", 
+  luca = "LUCA Baseline", region = "Regions (All)", match = "Regions (Expected Matches only)", 
   exact = "Matches (Exact)", hamming = "Matches (Hamming)", `bounded-levenshtein` = "Matches (Bounded-Levenshtein)"
+)
+
+metric_colours <- c(
+  luca = "#6baed6", region = "#ff7f00", match = "#984ea3", 
+  exact = "#4daf4a", hamming = "#377eb8", `bounded-levenshtein` = "#e41a1c"
 )
 
 p_accuracy <- filter(accuracy, end == "single") %>%
@@ -110,25 +121,28 @@ p_accuracy <- filter(accuracy, end == "single") %>%
     select(., design:metric, accuracy = library_accuracy), 
     filter(., metric == "exact") %>% select(design:metric, match_accuracy) %>% mutate(metric = "match") %>% rename(accuracy = match_accuracy),
     filter(., metric == "exact") %>% select(design:metric, region_accuracy) %>% mutate(metric = "region") %>% rename(accuracy = region_accuracy),
+    select(luca_accuracy, design, level, replicate, accuracy = assignment_accuracy) %>% 
+      mutate(metric = "luca", mode = factor("align", levels = c("align", "pattern", "inframe"))) %>%
+      complete(nesting(design, level, replicate, accuracy, metric), mode)
   )} %>%
-  pivot_longer(ends_with("accuracy")) %>%
-  group_by(design, level, mode, metric, name) %>%
-  mutate(mean = mean(value),
-         sd = sd(value)) %>%
+  group_by(design, level, mode, metric) %>%
+  mutate(mean = mean(accuracy),
+         sd = sd(accuracy)) %>%
   ungroup() %>%
   mutate(mode = factor(mode, levels = c("align", "pattern", "inframe")),
          design = factor(design, levels = c("grna_sensor", "pegrna"))) %>%
+  
   {
     ggplot(., aes(x = level, colour = metric, linetype = design)) +
       facet_nested(cols = vars(mode), render_empty = FALSE, labeller = labeller(
         mode = c(align = "Alignment", pattern = "Pattern Matching", inframe = "Inframe"),
       )) +
-      geom_point(aes(y = value), shape = 20) +
+      geom_point(aes(y = accuracy), shape = 20) +
       geom_line(aes(y = mean)) +
       geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.1) +
       scale_y_continuous(name = "Fraction of Reads") +
       scale_x_continuous(name = "Perturbation Level", breaks = 0:6) +
-      scale_colour_brewer(limits = names(metric_labels), labels = metric_labels, name = "", palette = "Set1", direction = -1) +
+      scale_colour_manual(limits = names(metric_labels), labels = metric_labels, name = "", values = metric_colours) +
       scale_linetype_discrete(name = "", labels = c(grna_sensor = "gRNA + Sensor", pegrna = "pegRNA")) +
       theme(text = element_text(size = 12),
             legend.position = "bottom")
@@ -152,13 +166,20 @@ benchmark <- dir("data/benchmark", pattern = "bench_.*.tsv", full.names = TRUE) 
          interning = interning != "no_intern_") %>%
   drop_na(extraction_time)
 
+mode_colours <- c("LUCA" = "#fff", "full-read" = "#fee5d9", "inframe" = "#fcae91", "pattern" = "#fb6a4a", "align" = "#cb181d")
+mode_outlines <- c("LUCA" = "#6baed6", "full-read" = "#000", "inframe" = "#000", "pattern" = "#000", "align" = "#000")
+
 p_mode_benchmark <- filter(benchmark, interning, sort, threads == 1) %>%
   select(mode, no_cache, reads, read_length, extraction_rate, rep) %>%
-  mutate(mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align"))) %>%
+  bind_rows(mutate(luca_benchmark, rep = str_remove(bench, "bench"), mode = "LUCA", no_cache = FALSE,
+                   read_length = c(grna = 156, grna_sensor = 244, pegrna = 313)[design]) %>%
+              select(mode, no_cache, reads, read_length, extraction_rate = reads_per_second, rep)) %>%
+  mutate(mode = factor(mode, levels = c("full-read", "inframe", "pattern", "align", "LUCA"))) %>%
   {
-    ggplot(., aes(x = as.factor(read_length), y = extraction_rate, fill = mode, linetype = no_cache)) +
+    ggplot(., aes(x = as.factor(read_length), y = extraction_rate, fill = mode, linetype = no_cache, colour = mode)) +
       geom_boxplot(outlier.shape = 20, outlier.size = 0.5, linewidth = 0.5) +
-      scale_fill_brewer(name = "", palette = "Reds") +
+      scale_fill_manual(name = "", values = mode_colours, limits = names(mode_colours)) +
+      scale_colour_manual(name = "", values = mode_outlines, limits = names(mode_outlines)) +
       scale_linetype_discrete(name = "", labels = c(`TRUE` = "Uncached", `FALSE` = "Cached")) +
       scale_y_continuous(name = "Reads/s", transform = "log10") +
       scale_x_discrete(name = "", labels = c("156bp\n(gRNA)", "244bp\n(gRNA + Sensor)", "313bp\n(pegRNA)")) + 
@@ -186,6 +207,6 @@ pipeline_schematic <- fig("plots/pipeline.png", b_margin = margin())
 figure <- dnacomb_schematic + pipeline_schematic + p_accuracy + p_mode_benchmark + p_metric_benchmark +
   plot_layout(design = "11\n22\n33\n45", heights = c(8, 8, 3, 3), widths = c(1, 1)) +
   plot_annotation(tag_levels = "A")
-ggsave("plots/figure.pdf", figure, units = "cm", height = 16 * 1.8, width = 19 * 1.8)
-ggsave("plots/figure.png", figure, units = "cm", height = 16 * 1.8, width = 19 * 1.8)
+ggsave("plots/figure.pdf", figure, units = "cm", height = 16 * 1.9, width = 19 * 1.65)
+ggsave("plots/figure.png", figure, units = "cm", height = 16 * 1.9, width = 19 * 1.65)
 
