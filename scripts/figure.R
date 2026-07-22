@@ -95,15 +95,40 @@ luca_accuracy <- read_tsv("data/luca_profile/luca_accuracy_profile.tsv")
 luca_benchmark <- read_tsv("data/luca_profile/luca_benchmark_runs.tsv")
 
 # Plot figures
-perturbation_labels <- c(
-  "0 = Perfect",
-  "1 = 0.5% Mutation Rate & 1% Mismatches",
-  "2 = 1% Mutation Rate, 0.1% Indel Rate, 1% Mismatches & 1% Contaminants",
-  "3 = 1% Mutation Rate, 0.5% Indel Rate, 1% Recombinations, 1% Mismatches & 1% Contaminants",
-  "4 = 1% Mutation Rate, 1% Indel Rate, 2% Recombinations, 2% Mismatches & 2% Contaminants",
-  "5 = 5% Mutation Rate, 1% Indel Rate, 5% Recombinations, 5% Mismatches & 5% Contaminants",
-  "6 = 5% Mutation Rate, 2% Indel Rate, 10% Recombinations, 10% Mismatches & 5% Contaminants"
+perturbation_levels <- tribble(
+  ~level, ~mutation, ~indel, ~recombination, ~mismatch, ~contaminant,
+  0,      0,         0,      0,              0,         0,
+  1,      0.5,       0,      0,              1,         0,
+  2,      1,         0.1,    0,              1,         1,
+  3,      1,         0.5,    1,              1,         1,
+  4,      1,         1,      2,              2,         2,
+  5,      5,         1,      5,              5,         5,
+  6,      5,         2,      10,             10,        5
 )
+
+perturbation_labels <- c(
+  mutation = "Mutations Rate/bp", indel = "Indel Rate/bp",
+  recombination = "Recombination Rate", mismatch = "Mismatch Rate",
+  contaminant = "Contamination Rate"
+)
+
+p_levels <- pivot_longer(perturbation_levels, -level, names_to = "type", values_to = "percent") %>%
+  group_by(type) %>%
+  mutate(f_percent = percent / max(percent),
+         colour = if_else(f_percent > 0.8, "white", "black")) %>%
+  ungroup() %>%
+  {
+    ggplot(., aes(x = level, y = type, fill = f_percent, label = str_c(percent, "%"))) +
+      geom_raster(show.legend = FALSE) +
+      geom_text(aes(colour = colour), size = 3) +
+      scale_x_continuous(name = "Perturbation Level", breaks = 0:6, labels = 0:6) +
+      scale_y_discrete(labels = perturbation_labels, limits = names(perturbation_labels), name = "") +
+      scale_colour_identity() +
+      scale_fill_distiller(palette = "Reds", direction = 1) +
+      theme(text = element_text(size = 12),
+            axis.ticks.x = element_blank(), axis.ticks.y = element_blank(),
+            axis.title.y = element_blank(), panel.grid.major.y = element_blank())
+  }
 
 metric_labels <- c(
   luca = "LUCA Baseline", region = "Regions (All)", match = "Regions (Expected Matches only)", 
@@ -141,12 +166,19 @@ p_accuracy <- filter(accuracy, end == "single") %>%
       geom_line(aes(y = mean)) +
       geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.1) +
       scale_y_continuous(name = "Fraction of Reads") +
-      scale_x_continuous(name = "Perturbation Level", breaks = 0:6) +
+      scale_x_continuous(breaks = c(-0.5, 0:6), name = "Perturbation Level") +
       scale_colour_manual(limits = names(metric_labels), labels = metric_labels, name = "", values = metric_colours) +
       scale_linetype_discrete(name = "", labels = c(grna_sensor = "gRNA + Sensor", pegrna = "pegRNA")) +
+      guides(colour = guide_legend(ncol = 2), linetype = guide_legend(ncol = 2)) +
       theme(text = element_text(size = 12),
-            legend.position = "bottom")
-  }
+            legend.background = element_blank(),
+            legend.byrow = TRUE,
+            legend.margin = margin(-8, 0, -4, 0))
+  } %>%
+  free() +
+  p_levels +
+  guide_area() +
+  plot_layout(widths = c(0.4, 0.6), heights = c(0.7, 0.3), design = "11\n23", guides = "collect")
 
 # Benchmark
 bench_cols <- c(
@@ -201,12 +233,12 @@ p_metric_benchmark <- filter(benchmark, interning, sort, threads == 1, mode == "
   }
 
 # Assemble overall figure
+examples <- fig("plots/examples.png", b_margin = margin())
 dnacomb_schematic <- fig("plots/schematic.png", b_margin = margin())
 pipeline_schematic <- fig("plots/pipeline.png", b_margin = margin())
 
-figure <- dnacomb_schematic + pipeline_schematic + p_accuracy + p_mode_benchmark + p_metric_benchmark +
-  plot_layout(design = "11\n22\n33\n45", heights = c(8, 8, 3, 3), widths = c(1, 1)) +
-  plot_annotation(tag_levels = "A")
-ggsave("plots/figure.pdf", figure, units = "cm", height = 16 * 1.9, width = 19 * 1.65)
-ggsave("plots/figure.png", figure, units = "cm", height = 16 * 1.9, width = 19 * 1.65)
-
+figure <- free(examples) + free(dnacomb_schematic) + free(pipeline_schematic) + free(p_accuracy) + p_mode_benchmark + p_metric_benchmark +
+  plot_layout(design = "11\n22\n33\n44\n56", heights = c(5, 8, 8, 7, 3), widths = c(1, 1)) +
+  plot_annotation(tag_levels = list(c("A", "B", "C", "D", "", "E")))
+ggsave("plots/figure.pdf", figure, units = "cm", height = 25 * 1.5, width = 19 * 1.5)
+ggsave("plots/figure.png", figure, units = "cm", height = 25 * 1.5, width = 19 * 1.5)
