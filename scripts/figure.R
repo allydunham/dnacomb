@@ -239,6 +239,6 @@ pipeline_schematic <- fig("plots/pipeline.png", b_margin = margin())
 
 figure <- free(examples) + free(dnacomb_schematic) + free(pipeline_schematic) + free(p_accuracy) + p_mode_benchmark + p_metric_benchmark +
   plot_layout(design = "11\n22\n33\n44\n56", heights = c(5, 8, 8, 7, 3), widths = c(1, 1)) +
-  plot_annotation(tag_levels = list(c("A", "B", "C", "D", "", "E")))
+  plot_annotation(tag_levels = list(c("A", "B", "C", "D", "", "E", "F")))
 ggsave("plots/figure.pdf", figure, units = "cm", height = 25 * 1.5, width = 19 * 1.5)
 ggsave("plots/figure.png", figure, units = "cm", height = 25 * 1.5, width = 19 * 1.5)
